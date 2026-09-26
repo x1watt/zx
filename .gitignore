@@ -1,0 +1,5 @@
+ref/
+.dart_tool/
+pubspec.lock
+build/
+*.7z.tmp

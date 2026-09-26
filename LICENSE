@@ -1,0 +1,47 @@
+BSD 3-Clause License
+
+Copyright (c) 2026, Max Brito
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-------------------------------------------------------------------------------
+Third party notices
+
+This package is a Dart port of the LZMA SDK 26.01 by Igor Pavlov
+(https://www.7-zip.org/sdk.html), which is placed in the public domain:
+
+  "LZMA SDK is written and placed in the public domain by Igor Pavlov.
+  Anyone is free to copy, modify, publish, use, compile, sell, or distribute
+  the original LZMA SDK code, either in source code form or as a compiled
+  binary, for any purpose, commercial or non-commercial, and by any means."
+
+Parts of the LZMA SDK are based on public domain code by other developers:
+PPMd var.H (2001) by Dmitry Shkarin, and SHA-256 from the Crypto++ library
+by Wei Dai.
+
+Only the public domain LZMA SDK was used as a source. No code from the
+GNU LGPL licensed parts of 7-Zip was used. 7-Zip is a registered trademark
+of Igor Pavlov; this package is not affiliated with or endorsed by him.
