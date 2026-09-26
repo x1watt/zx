@@ -2,7 +2,9 @@
 // the "i" command and the dispatch of the commands) and Console/MainAr.cpp
 // (the exception handlers and exit codes) of the LZMA SDK, 7zr variant.
 
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import '../codec/registry.dart';
@@ -27,9 +29,10 @@ import 'update_callback_console.dart';
 import 'wildcard.dart';
 import 'extracting_file_path.dart';
 import 'prop_id_utils.dart';
+import 'platform.dart';
 
 const String _kVersion = '26.01';
-const String _kDate = '2026-04-27';
+const String _kZxVersion = '0.1.0';
 
 String _cpuName() {
   final v = Platform.version;
@@ -41,11 +44,14 @@ String _cpuName() {
   return 'x64';
 }
 
+// The banner names this port, not 7-Zip: 7-Zip is Igor Pavlov's trademark
+// and this program is not his build.
 String _copyrightString() =>
-    '\n7-Zip (r) $_kVersion (${_cpuName()}) : Igor Pavlov : Public domain : '
-    '$_kDate : Dart port (zx)\n';
+    '\nzx $_kZxVersion (${_cpuName()}) : Dart port of 7-Zip $_kVersion '
+    '(LZMA SDK, Igor Pavlov, public domain) : '
+    'Copyright (c) 2026 Max Brito : BSD 3-clause\n';
 
-const String _kHelpString = 'Usage: 7zr'
+const String _kHelpString = 'Usage: zx'
     ' <command> [<switches>...] <archive_name> [<file_names>...] [@listfile]\n'
     '\n'
     '<Commands>\n'
@@ -146,6 +152,25 @@ int _openMax() {
   } on Object {
     // not Linux
   }
+  if (kIsMac) {
+    // no /proc on macOS: the soft and hard RLIMIT_NOFILE of this process
+    // are the ones a child shell inherits
+    try {
+      final r = Process.runSync('/bin/sh', ['-c', 'ulimit -n; ulimit -Hn']);
+      final lines = (r.stdout as String).trim().split(RegExp(r'\s+'));
+      final soft = int.tryParse(lines[0]) ?? 256;
+      final hard = lines.length > 1
+          ? (lines[1] == 'unlimited' ? 1 << 30 : int.tryParse(lines[1]))
+          : null;
+      const newVal = 1 << 12;
+      if (hard != null && newVal > soft && soft < hard) {
+        return newVal > hard ? hard : newVal;
+      }
+      return soft;
+    } on Object {
+      return 1024;
+    }
+  }
   return 1024;
 }
 
@@ -164,11 +189,11 @@ void _showProgInfo(StdOutStream so) {
   so.write('$sb\n');
 }
 
-// ShowCopyrightAndHelp
+// ShowCopyrightAndHelp (ShowProgInfo is empty on Windows)
 void _showCopyrightAndHelp(StdOutStream? so, bool needHelp) {
   if (so == null) return;
   so.write(_copyrightString());
-  _showProgInfo(so);
+  if (!kIsWin) _showProgInfo(so);
   so.endl();
   if (needHelp) so.write(_kHelpString);
 }
@@ -263,8 +288,52 @@ void _printTime(String s, int val, int totalUs, int kFreq) {
   so.write('%');
 }
 
+// PrintTime (_WIN32): FILETIME ticks.
+void _printTimeWin(String s, int val, int total) {
+  final so = gStdStream!;
+  so.write('\n$s Time =');
+  const kFreq = 10000000;
+  final sec = val ~/ kFreq;
+  so.write(_printNum(sec, 6));
+  so.write('.');
+  final ms = (val - sec * kFreq) ~/ (kFreq ~/ 1000);
+  so.write(_printNum(ms, 3, '0'));
+  while (val > (1 << 56)) {
+    val >>= 1;
+    total >>= 1;
+  }
+  var percent = 0;
+  if (total != 0) percent = val * 100 ~/ total;
+  so.write(' =');
+  so.write(_printNum(percent, 5));
+  so.write('%');
+}
+
+// PrintStat (_WIN32): GetProcessTimes and GetProcessMemoryInfo can not be
+// called from dart:io, so the kernel, user and process times and the
+// virtual memory are left out; the global time and the peak working set
+// (ProcessInfo.maxRss) are printed in the layout of the SDK.
+void _printStatWin(int startTimeUs) {
+  final totalTime = (DateTime.now().microsecondsSinceEpoch - startTimeUs) * 10;
+  _printTimeWin('Global ', totalTime, totalTime);
+  try {
+    final peak = ProcessInfo.maxRss;
+    final so = gStdStream!;
+    so.write('    Physical Memory =');
+    so.write(_printNum((peak + (1 << 20) - 1) >> 20, 7));
+    so.write(' MB');
+  } on Object {
+    // memDefined = false
+  }
+  gStdStream!.endl();
+}
+
 // PrintStat: times(): user and kernel times of the process from /proc
 void _printStat(int startTimeUs) {
+  if (kIsWin) {
+    _printStatWin(startTimeUs);
+    return;
+  }
   final totalTime = DateTime.now().microsecondsSinceEpoch - startTimeUs;
   var utime = 0, stime = 0;
   const kFreq = 100; // sysconf(_SC_CLK_TCK) on Linux
@@ -697,9 +766,9 @@ int runSevenZipCliSync(List<String> args, CliIo io) {
   gErrStream = gStdErr;
   gStdIn = StdInStream(io.stdinStream);
   gSetEcho = io.setEcho;
-  gCaseSensitive = true;
+  gCaseSensitive = defaultCaseSensitive();
   gTimestampShowUtc = false;
-  gPathTrailReplaceMode = false;
+  gPathTrailReplaceMode = kIsWin;
   cliCurrentDirectory = io.workingDirectory;
 
   var res = 0;
@@ -772,4 +841,46 @@ Future<int> runSevenZipCli(List<String> args,
     workingDirectory: workingDirectory,
   );
   return runSevenZipCliSync(args, io);
+}
+
+/// Runs the program as the process: [args] without the program name,
+/// returns the exit code. Linux and macOS run it here with the standard
+/// streams of the process; Windows runs it in a worker isolate that sends
+/// the output to this one (see [windowsWorkerCliIo]).
+Future<int> runSevenZipCliProcess(List<String> args) async {
+  if (!kIsWin) return runSevenZipCliSync(args, processCliIo());
+  final port = ReceivePort();
+  final done = Completer<int>();
+  port.listen((Object? m) {
+    if (m is (int, Object?)) {
+      final (tag, data) = m;
+      if (tag == 1) {
+        stdout.add(data as Uint8List);
+      } else if (tag == 2) {
+        stderr.add(data as Uint8List);
+      } else if (!done.isCompleted) {
+        done.complete(data as int);
+      }
+    } else if (!done.isCompleted) {
+      // the worker isolate ended without a result (onExit)
+      done.complete(ExitCode.fatalError);
+    }
+  });
+  await Isolate.spawn(_windowsWorker, (args, port.sendPort),
+      onExit: port.sendPort, errorsAreFatal: true);
+  final code = await done.future;
+  port.close();
+  await stdout.flush();
+  await stderr.flush();
+  return code;
+}
+
+void _windowsWorker((List<String>, SendPort) msg) {
+  final (args, port) = msg;
+  var code = ExitCode.fatalError;
+  try {
+    code = runSevenZipCliSync(args, windowsWorkerCliIo(port));
+  } finally {
+    port.send((0, code));
+  }
 }

@@ -196,15 +196,32 @@ the decoder about the dictionary. On phones prefer levels up to 5. See
 
 ## Command line
 
-The package includes 7zr's command line, with the same commands and
-switches:
+The package includes 7zr's command line as the `zx` program, with the same
+commands and switches as 7-Zip:
 
 ```sh
-dart run zx:7z <command> [<switches>...] <archive> [<files>...]
-dart run zx:7z a -mx9 backup.7z docs/
-dart run zx:7z x -psecret backup.7z -oout
-dart run zx:7z l -slt backup.7z
+zx <command> [<switches>...] <archive> [<files>...]
+zx a -mx9 backup.7z docs/
+zx x -psecret backup.7z -oout
+zx l -slt backup.7z
 ```
+
+Native binaries (no Dart SDK needed to run them):
+
+| File | Platform |
+|---|---|
+| `zx-linux-x64`, `zx-linux-arm64` | Linux |
+| `zx-windows-x64.exe`, `zx-windows-arm64.exe` | Windows |
+| `zx-macos-arm64`, `zx-macos-x64` | macOS (Apple silicon, Intel) |
+
+The GitHub workflow `.github/workflows/release.yml` builds all six on
+native runners and attaches them to the release when a `v*` tag is pushed.
+Locally, `tool/build_binaries.sh` writes them to `dist/`: the Dart SDK
+cross-compiles only to Linux, so from Linux it builds the two Linux
+binaries, plus `zx-windows-x64.exe` when `DART_WINDOWS` points to a
+Windows Dart SDK and wine is installed; on a Mac it builds that Mac's
+binary. Without a binary, `dart run zx:zx ...` runs the same program from
+source.
 
 ## Speed
 
@@ -240,7 +257,7 @@ not installed.
   files and their C++ coder wrappers).
 - `lib/src/crypto`: AES, SHA-256, 7zAES.
 - `lib/src/format`: the 7z, xz, lzma and split handlers.
-- `lib/src/cli`, `bin/7z.dart`: the command line.
+- `lib/src/cli`, `bin/zx.dart`: the command line (`zx`).
 - `lib/src/api.dart`: the isolate based public API; `lib/src/pool.dart`
   and `lib/src/parallel.dart`: worker isolates and the parallel xz encoder.
 - `docs/architecture.md`: how the port is organised and the rules a change

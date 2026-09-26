@@ -68,8 +68,8 @@ void main() {
   test('help and banner', () async {
     final r = await _run(tmp, []);
     expect(r.code, 0);
-    expect(r.out, contains('7-Zip (r) 26.01'));
-    expect(r.out, contains('Usage: 7zr <command>'));
+    expect(r.out, contains('zx 0.1.0'));
+    expect(r.out, contains('Usage: zx <command>'));
   });
 
   test('i lists the formats and codecs', () async {

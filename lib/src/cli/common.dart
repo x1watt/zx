@@ -6,6 +6,8 @@
 
 import 'dart:io';
 
+import 'platform.dart';
+
 /// HRESULT values used by the UI code (MyWindows.h, 7zTypes.h for POSIX).
 abstract final class HRes {
   static const sOk = 0;
@@ -21,35 +23,89 @@ abstract final class HRes {
   static const internalError = 0x8007054F;
 }
 
-/// errno values of Linux that the UI code uses by name.
+/// The system error codes that the UI code uses by name: errno values on
+/// POSIX (Linux numbering, with the macOS values where they differ), and
+/// the Win32 error codes (GetLastError) that the _WIN32 build uses in the
+/// same places on Windows.
 abstract final class Errno {
-  static const eperm = 1;
-  static const enoent = 2;
-  static const eio = 5;
-  static const ebadf = 9;
-  static const enomem = 12;
-  static const eacces = 13;
-  static const eexist = 17;
-  static const exdev = 18;
-  static const enotdir = 20;
-  static const eisdir = 21;
-  static const einval = 22;
-  static const emfile = 24;
-  static const enospc = 28;
-  static const erofs = 30;
-  static const enametoolong = 36;
-  static const enotempty = 39;
-  static const eloop = 40;
+  static int get eperm => kIsWin ? 5 : 1; // ERROR_ACCESS_DENIED
+  static int get enoent => 2; // ERROR_FILE_NOT_FOUND
+  static int get eio => kIsWin ? 1117 : 5; // ERROR_IO_DEVICE
+  static int get ebadf => kIsWin ? 6 : 9; // ERROR_INVALID_HANDLE
+  static int get enomem => kIsWin ? 8 : 12; // ERROR_NOT_ENOUGH_MEMORY
+  static int get eacces => kIsWin ? 5 : 13; // ERROR_ACCESS_DENIED
+  static int get eexist => kIsWin ? 80 : 17; // ERROR_FILE_EXISTS
+  static int get exdev => kIsWin ? 17 : 18; // ERROR_NOT_SAME_DEVICE
+  static int get enotdir => kIsWin ? 267 : 20; // ERROR_DIRECTORY
+  static int get eisdir => kIsWin ? 5 : 21; // ERROR_ACCESS_DENIED
+  // DI_DEFAULT_ERROR (ERROR_INVALID_FUNCTION) and ERROR_INVALID_PARAMETER
+  static int get einval => kIsWin ? 1 : 22;
+  static int get emfile => kIsWin ? 1450 : 24; // ERROR_NO_SYSTEM_RESOURCES
+  static int get enospc => kIsWin ? 112 : 28; // ERROR_DISK_FULL
+  static int get erofs => kIsWin ? 19 : 30; // ERROR_WRITE_PROTECT
+  static int get enametoolong =>
+      kIsWin ? 206 : (kIsMac ? 63 : 36); // ERROR_FILENAME_EXCED_RANGE
+  static int get enotempty =>
+      kIsWin ? 145 : (kIsMac ? 66 : 39); // ERROR_DIR_NOT_EMPTY
+  static int get eloop => kIsWin ? 1921 : (kIsMac ? 62 : 40);
 }
 
 // MY_FACILITY_ERRNO
 const int _kFacilityErrno = 0x800;
 
-/// HRESULT_FROM_WIN32 (MY_SRes_HRESULT_FROM_WRes) for an errno value.
+/// HRESULT_FROM_WIN32 (MY_SRes_HRESULT_FROM_WRes) for an errno value
+/// (FACILITY_WIN32 for a Win32 error code on Windows).
 int hresultFromErrno(int errno) {
   if (errno <= 0) return errno & 0xFFFFFFFF;
-  return ((errno & 0xFFFF) | (_kFacilityErrno << 16) | 0x80000000) &
-      0xFFFFFFFF;
+  final facility = kIsWin ? 7 : _kFacilityErrno;
+  return ((errno & 0xFFFF) | (facility << 16) | 0x80000000) & 0xFFFFFFFF;
+}
+
+// FormatMessageW texts (English) of the Win32 error codes and HRESULT values
+// the port can meet on Windows, for the codes that dart:io did not report
+// with their text.
+const Map<int, String> _kWinMessages = {
+  1: 'Incorrect function.',
+  2: 'The system cannot find the file specified.',
+  3: 'The system cannot find the path specified.',
+  4: 'The system cannot open the file.',
+  5: 'Access is denied.',
+  6: 'The handle is invalid.',
+  8: 'Not enough memory resources are available to process this command.',
+  14: 'Not enough memory resources are available to complete this operation.',
+  17: 'The system cannot move the file to a different disk drive.',
+  19: 'The media is write protected.',
+  32: 'The process cannot access the file because it is being used by '
+      'another process.',
+  33: 'The process cannot access the file because another process has '
+      'locked a portion of the file.',
+  80: 'The file exists.',
+  87: 'The parameter is incorrect.',
+  109: 'The pipe has been ended.',
+  112: 'There is not enough space on the disk.',
+  123: 'The filename, directory name, or volume label syntax is incorrect.',
+  145: 'The directory is not empty.',
+  183: 'Cannot create a file when that file already exists.',
+  206: 'The filename or extension is too long.',
+  267: 'The directory name is invalid.',
+  1117: 'The request could not be performed because of an I/O device error.',
+  1314: 'A required privilege is not held by the client.',
+  1450: 'Insufficient system resources exist to complete the requested '
+      'service.',
+  1921: 'The name of the file cannot be resolved by the system.',
+  0x80004001: 'Not implemented',
+  0x80004002: 'No such interface supported',
+  0x80004004: 'Operation aborted',
+  0x80004005: 'Unspecified error',
+  0x80030001: 'Unable to perform requested operation.',
+  0x80040111: 'ClassFactory cannot supply requested class',
+};
+
+// MyFormatMessage (_WIN32): FormatMessageW of the system.
+String? _myFormatMessageWin(int errorCode) {
+  var code = errorCode;
+  if ((code & 0xFFFF0000) == 0x80070000) code &= 0xFFFF;
+  return _seenMessages[code] ?? _kWinMessages[code];
 }
 
 // strerror() texts of glibc for the errno values the port can meet.
@@ -101,7 +157,10 @@ final Map<int, String> _seenMessages = {};
 void noteOsError(OSError? e) {
   if (e == null) return;
   if (e.errorCode > 0 && e.message.isNotEmpty) {
-    _seenMessages[e.errorCode] = e.message;
+    var m = e.message;
+    // MyFormatMessage removes the CR LF at the end of the system text
+    if (m.endsWith('\r\n')) m = m.substring(0, m.length - 2);
+    _seenMessages[e.errorCode] = m;
   }
 }
 
@@ -121,6 +180,7 @@ String? _myFormatMessage(int errorCode) {
   if (errorCode == HRes.internalError) {
     return 'Internal Error: The failure in hardware (RAM or CPU), OS or program';
   }
+  if (kIsWin) return _myFormatMessageWin(errorCode);
   String? s;
   switch (errorCode) {
     case HRes.eNotImpl:
@@ -216,11 +276,11 @@ int hresultOfFileSystemException(FileSystemException e) {
 }
 
 /// The errno of a file system exception (for messages that print errno).
-int errnoOf(FileSystemException e, [int def = Errno.eio]) {
+int errnoOf(FileSystemException e, [int? def]) {
   final os = e.osError;
   noteOsError(os);
   if (os != null && os.errorCode > 0) return os.errorCode;
-  return def;
+  return def ?? Errno.eio;
 }
 
 // ---------------------------------------------------------------------------

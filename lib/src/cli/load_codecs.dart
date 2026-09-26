@@ -8,6 +8,7 @@ import 'dart:typed_data';
 
 import '../format/lzma_alone.dart';
 import 'arc_handlers.dart';
+import 'platform.dart';
 
 /// NArcInfoFlags.
 abstract final class ArcInfoFlags {
@@ -173,7 +174,7 @@ class Codecs {
   // FindFormatForArchiveName
   int findFormatForArchiveName(String arcPath) {
     final dotPos = arcPath.lastIndexOf('.');
-    if (dotPos <= arcPath.lastIndexOf('/')) return -1;
+    if (dotPos <= reverseFindPathSepar(arcPath)) return -1;
     final ext = arcPath.substring(dotPos + 1);
     if (ext.isEmpty) return -1;
     if (ext.toLowerCase() == 'exe') return -1;

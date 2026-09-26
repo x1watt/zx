@@ -14,6 +14,7 @@ import 'arc_handlers.dart';
 import 'common.dart';
 import 'fs_utils.dart' show resolvePath;
 import 'load_codecs.dart';
+import 'platform.dart';
 import 'wildcard.dart';
 
 /// kMaxCheckStartPosition: increase it to support larger SFX stubs.
@@ -468,12 +469,14 @@ class Arc {
     }
   }
 
-  // CArc::GetItem_Path
+  // CArc::GetItem_Path. On Windows the path gets the system separators
+  // as GetRawProp (kpidPath) of the 7z handler gives it: '/' becomes '\'
+  // and a '\' inside a name becomes WCHAR_IN_FILE_NAME_BACKSLASH_REPLACEMENT.
   String getItemPath(int index) {
     final p = archive!.getProperty(index, Kpid.path);
     String result;
     if (p is String) {
-      result = p;
+      result = replaceToWinSlashes(p);
     } else if (p == null) {
       result = '';
     } else {
@@ -502,7 +505,7 @@ class Arc {
     var result = getItemPath(index);
     if (askDeleted) {
       if (archiveGetItemBoolProp(archive!, index, Kpid.isDeleted)) {
-        result = '[DELETED]/$result';
+        result = '[DELETED]$kDirSep$result';
       }
     }
     return result;
@@ -533,7 +536,7 @@ class Arc {
         item.mainPath = item.mainPath.substring(0, colon);
         item.altStreamName = item.path.substring(colon + 1);
         item.mainIsDir =
-            colon == 0 || item.path.codeUnitAt(colon - 1) == 0x2F;
+            colon == 0 || isPathSepar(item.path.codeUnitAt(colon - 1));
         item.isAltStream = true;
       }
     }
@@ -1296,7 +1299,7 @@ int findAltStreamColonInPath(String path) {
       if (colonPos < 0) colonPos = i;
       continue;
     }
-    if (c == 0x2F) colonPos = -1;
+    if (c == kDirSepCode) colonPos = -1;
   }
   return colonPos;
 }
@@ -1423,7 +1426,15 @@ class OpenCallbackImp extends ArchiveOpenCallback {
   SeekableInStream? getVolumeStream(String name) {
     if (_subArchiveMode) return null;
     callback?.openCheckBreak();
+    if (kIsWin) name = name.replaceAll('/', '\\');
     if (!isSafePath(name)) return null;
+    if (kIsWin) {
+      // WIN32 allows wildcards in Find() function and doesn't allow
+      // wildcard in File.Open()
+      if (name.contains('*')) return null;
+      final startPos = name.toLowerCase().startsWith('\\\\?\\') ? 3 : 0;
+      if (name.indexOf('?', startPos) >= 0) return null;
+    }
     final fullPath = _folderPrefix + name;
     FileStat st;
     try {
@@ -1468,7 +1479,7 @@ class OpenCallbackImp extends ArchiveOpenCallback {
 
 // CLinkLevelsInfo::Parse + IsSafePath (ArchiveExtractCallback.cpp)
 bool isSafePath(String path) {
-  var isAbsolute = path.startsWith('/');
+  var isAbsolute = isAbsolutePath(path);
   var lowLevel = 0;
   final parts = splitPathToParts(path);
   var level = 0;
@@ -1661,20 +1672,24 @@ class ArchiveLink {
   }
 }
 
-/// NDir::GetFullPathAndSplit: (dir prefix with '/', name).
+/// NDir::GetFullPathAndSplit: (dir prefix with the separator, name).
 (String, String) getFullPathAndSplit(String path) {
   final full = myGetFullPathName(path);
-  final pos = full.lastIndexOf('/');
+  final pos = reverseFindPathSepar(full);
   return (full.substring(0, pos + 1), full.substring(pos + 1));
 }
 
 /// Current directory override for in-process runs.
 String? cliCurrentDirectory;
 
-/// MyGetFullPathName (POSIX): the absolute path, "." and ".." resolved
-/// textually.
+/// MyGetFullPathName: the absolute path, "." and ".." resolved textually.
+/// Windows: GetFullPathNameW, the '/' separators become '\' (the port
+/// resolves the path with GetFullPath of FileName.cpp).
 String myGetFullPathName(String path) {
   final cwd = cliCurrentDirectory ?? Directory.current.path;
+  if (kIsWin) {
+    return getFullPathWin(normalizeDirSeparators(path), cwd) ?? path;
+  }
   var p = path.startsWith('/') ? path : '$cwd/$path';
   final parts = p.split('/');
   final out = <String>[];

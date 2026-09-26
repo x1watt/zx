@@ -13,6 +13,7 @@ import 'hash_calc.dart';
 import 'list.dart' show findFileNameInSortedVector;
 import 'load_codecs.dart';
 import 'open_archive.dart';
+import 'platform.dart';
 import 'wildcard.dart';
 
 /// CExtractOptions.
@@ -28,6 +29,9 @@ class ExtractOptions {
   ExtractNtOptions ntOptions = ExtractNtOptions();
   String outputDir = '';
   String hashDir = '';
+
+  /// NExtract::NZoneIdMode (-snz, Windows): 0 none, 1 all, 2 office.
+  int zoneMode = 0;
 
   bool stdInMode = false;
   bool stdOutMode = false;
@@ -91,7 +95,7 @@ int _decompressArchive(
     final correctedName = getCorrectFsFileName(replaceName);
     if (options.outDirMode == ExtractOutDirMode.addArcName) {
       outDir += correctedName;
-      if (!outDir.endsWith('/')) outDir += '/';
+      outDir = normalizeDirPathPrefix(outDir);
     } else {
       outDir = outDir.replaceAll('*', correctedName);
     }
@@ -103,7 +107,7 @@ int _decompressArchive(
     final (_, name) = splitPathToPartsSmart(outDir);
     elimPrefix = name;
     if (elimPrefix.isNotEmpty) {
-      if (elimPrefix.endsWith('/')) {
+      if (endsWithPathSepar(elimPrefix)) {
         elimPrefix = elimPrefix.substring(0, elimPrefix.length - 1);
       }
       if (elimPrefix.isNotEmpty) elimIsPossible = true;
@@ -140,7 +144,7 @@ int _decompressArchive(
         } else {
           if (s.length == elimPrefix.length) {
             if (!item.mainIsDir) elimIsPossible = false;
-          } else if (s.codeUnitAt(elimPrefix.length) != 0x2F) {
+          } else if (!isPathSepar(s.codeUnitAt(elimPrefix.length))) {
             elimIsPossible = false;
           }
         }
@@ -160,7 +164,7 @@ int _decompressArchive(
   if (elimIsPossible) removePathParts.add(elimPrefix);
 
   if (outDir.isEmpty) {
-    outDir = './';
+    outDir = '.$kDirSep';
   } else if (!createComplexDir(outDir)) {
     final res = hresultFromErrno(lastFindErrno);
     errorMessage.add(
@@ -272,6 +276,11 @@ void extract(
       }
       fiSize = fi.size;
       fiMTime = fi.mTime;
+    }
+
+    if (kIsWin && options.zoneMode != 0 && !options.stdInMode) {
+      ecs.zoneBuf = readZoneFileOfBaseFile(resolvePath(arcPath));
+      ecs.zoneMode = options.zoneMode;
     }
 
     callback.beforeOpen(arcPath, options.testMode);

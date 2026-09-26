@@ -9,6 +9,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'cli/extracting_file_path.dart' show getCorrectFsFileName;
 import 'format/lzma_alone.dart';
 import 'format/sevenz/sevenz.dart';
 import 'format/split.dart';
@@ -704,8 +705,10 @@ bool _isUnder(String name, String dir) =>
 String? _safeRelativePath(String name) {
   final parts = <String>[];
   for (var p in name.replaceAll('\\', '/').split('/')) {
-    if (Platform.isWindows) p = p.replaceAll(RegExp(r'[:*?"<>|]'), '_');
     if (p.isEmpty || p == '.' || p == '..') continue;
+    // Windows: the corrections of ExtractingFilePath.cpp (characters that
+    // Windows does not allow, dots and spaces at the end, device names)
+    if (Platform.isWindows) p = getCorrectFsFileName(p);
     parts.add(p);
   }
   if (parts.isEmpty) return null;
@@ -953,6 +956,20 @@ void _scan(String disk, String stored, bool storeLinks, List<_Scanned> out,
   }
 }
 
+// The attributes 7-Zip stores for a file or directory: on Windows the
+// FILE_ATTRIBUTE_* value (dart:io gives the read-only state only), on POSIX
+// the st_mode in the high 16 bits (FILE_ATTRIBUTE_UNIX_EXTENSION).
+int _diskAttrib(bool isDir, int mode) {
+  if (Platform.isWindows) {
+    var a = isDir ? FileAttrib.directory : FileAttrib.archive;
+    if ((mode & 0x92) == 0) a |= FileAttrib.readOnly;
+    return a;
+  }
+  return (isDir ? FileAttrib.directory : FileAttrib.archive) |
+      FileAttrib.unixExtension |
+      (((isDir ? 0x4000 : 0x8000) | mode) << 16);
+}
+
 SevenZipUpdateItem _newItem(_Scanned s, int indexInArchive) {
   final mt = dateTimeToFileTime(s.stat.modified);
   final mode = s.stat.mode & 0xFFF;
@@ -961,9 +978,7 @@ SevenZipUpdateItem _newItem(_Scanned s, int indexInArchive) {
       return SevenZipUpdateItem.dir(
           path: s.stored,
           mTime: mt,
-          attrib: FileAttrib.directory |
-              FileAttrib.unixExtension |
-              ((0x4000 | mode) << 16),
+          attrib: _diskAttrib(true, mode),
           indexInArchive: indexInArchive);
     case FileSystemEntityType.link:
       final data = Uint8List.fromList(
@@ -983,9 +998,7 @@ SevenZipUpdateItem _newItem(_Scanned s, int indexInArchive) {
           path: s.stored,
           size: s.stat.size,
           mTime: mt,
-          attrib: FileAttrib.archive |
-              FileAttrib.unixExtension |
-              ((0x8000 | mode) << 16),
+          attrib: _diskAttrib(false, mode),
           open: () {
             try {
               return FileInStream.open(disk);

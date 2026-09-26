@@ -88,8 +88,10 @@ Read it together with `docs/performance.md`.
     (LzmaAlone.cpp, Lzma86Enc.c).
   - `split.dart`: split volumes (SplitHandler.cpp, MultiStream.cpp,
     MultiOutStream.cpp).
-- `lib/src/cli`, `bin/7z.dart`: the command line tool, 7zr's commands and
+- `lib/src/cli`, `bin/zx.dart`: the command line tool, 7zr's commands and
   switches (ArchiveCommandLine.cpp, Main.cpp, List, Extract, Update...).
+  `platform.dart` holds the `_WIN32` switches (section 9), `file_link.dart`
+  the reparse data of Windows links (Windows/FileLink.cpp).
 - `lib/src/pool.dart`: worker isolates for one operation.
 - `lib/src/parallel.dart`: parallel block encoding (section 6).
 - `lib/src/api.dart`: the public, isolate based API.
@@ -189,9 +191,12 @@ caller renames the new file over the old one, as 7-Zip does.
   after every regular file, so a link can not redirect a later file.
 - Adding: symbolic links are followed to files, links to directories are
   skipped (no loops), unless `storeSymlinks` stores them as links like
-  `-snl`. POSIX modes are stored in the high attribute bits as 7-Zip does;
-  on extraction modification times are restored, modes are not (dart:io
-  has no chmod).
+  `-snl`. POSIX modes are stored in the high attribute bits as 7-Zip does
+  (on Windows the plain FILE_ATTRIBUTE_* value: directory, archive,
+  read-only); on extraction modification times are restored, modes are
+  not (dart:io has no chmod). On Windows stored names get the corrections
+  of ExtractingFilePath.cpp (characters Windows does not allow, trailing
+  dots and spaces, device names such as `con`).
 
 ## 8. Known limits
 
@@ -203,3 +208,59 @@ caller renames the new file over the old one, as 7-Zip does.
   `MultiOutStream`, the CLI exposes `-v`), NTFS alternate streams and
   security descriptors.
 - The web platform: archives are files.
+
+## 9. Platforms of the command line tool
+
+The SDK chooses the Windows code of the console program at compile time
+(`#ifdef _WIN32`); the port has one build and chooses at run time with
+`kIsWin` (`lib/src/cli/platform.dart`). Linux follows the POSIX code and
+its output must not change. macOS is POSIX with BSD tools.
+
+- Paths: `kDirSep` is WCHAR_PATH_SEPARATOR ('\\' on Windows),
+  `isPathSepar` is IS_PATH_SEPAR (both separators on Windows). Item paths
+  of an archive get the Windows form in `Arc.getItemPath` (CArc::GetItem_Path:
+  '/' to '\\', a '\\' inside a name to U+F05C); the 7z handler and the
+  library keep the stored '/' names, and `handler_out.dart` converts back
+  (ReplaceSlashes_OsToUnix). Drive, UNC and "\\\\?\\" prefixes follow
+  Wildcard.cpp (GetNumPrefixParts) and FileName.cpp (GetRootPrefixSize,
+  GetFullPath, ported in `platform.dart` for MyGetFullPathName).
+- Extraction names: ExtractingFilePath.cpp with its Windows branches, and
+  g_PathTrailReplaceMode on by default. g_CaseSensitive is false on
+  Windows and macOS.
+- Errors: `Errno` gives the Win32 codes the Windows build uses in the same
+  places, `hresultFromErrno` is HRESULT_FROM_WIN32, and `myFormatMessage`
+  gives the FormatMessage text (from dart:io, or a table of the codes the
+  port can meet).
+- Console: the Windows banner has no ShowProgInfo line; text is written in
+  the C runtime text mode ("\\r\\n", "\\r\\n" read as "\\n"); the percent
+  line is cleared with '\\r'; the password prompt always says "(will not be
+  echoed)". The Dart runtime puts the console in CP_UTF8, so UTF-8 is the
+  console code page; `-scc WIN` and `-scc DOS` use the ANSI code page of
+  dart:io's `systemEncoding`. dart:io has no synchronous standard output on
+  Windows, so `runSevenZipCliProcess` runs the program in a worker isolate
+  and the main isolate writes its output. `-bt` prints the global time and
+  the peak working set only (no GetProcessTimes). `-stm` is checked and
+  logged, the affinity is not set (as on POSIX). `-i#` fails with "Cannot
+  open mapping" (no file mappings in dart:io).
+- File system: no program is run for times on Windows. Files get their
+  modification and access times from dart:io, directories where dart:io
+  can set them (it can not on most Windows versions), links not at all.
+  The creation time is not set. Attributes come from dart:io: directory,
+  archive and read-only (hidden and system can not be read). On
+  extraction the read-only, hidden and system bits are set with `attrib`
+  after the file is closed, and `DeleteFileAlways` clears read-only with
+  it. With `-snl` a link is stored as the reparse data that
+  FillLinkData_WinLink makes from the link target, and such data (or a
+  POSIX link) is extracted as a link by `Link.createSync`. `-snz` reads and
+  writes the Zone.Identifier stream by name. Not ported: NTFS alternate
+  streams (`-sns`), security descriptors (`-sni`, the 7z format has
+  neither), ConvertToLongNames (8.3 short names in arguments), the "*:\\"
+  drive scan, device paths, `-seml`.
+- macOS: the lstat times of links come from `stat -f` (BSD) instead of
+  `stat -c` (GNU); directory and link times are set with `touch -d` and an
+  ISO 8601 time (BSD), then `touch -t` (POSIX, seconds) when that fails;
+  OPEN_MAX in the banner comes from `ulimit -n` of a shell (there is no
+  /proc). A `chmod` or `attrib` that is missing or fails is reported like
+  a failed attribute call of 7-Zip ("Cannot set file attribute") and never
+  stops the operation; a failing `touch` is ignored, as 7-Zip ignores a
+  failing SetDirTime.

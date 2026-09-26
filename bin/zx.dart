@@ -5,8 +5,7 @@
 import 'dart:io';
 
 import 'package:zx/src/cli/main.dart';
-import 'package:zx/src/cli/std_stream.dart';
 
-void main(List<String> args) {
-  exitCode = runSevenZipCliSync(args, processCliIo());
+Future<void> main(List<String> args) async {
+  exitCode = await runSevenZipCliProcess(args);
 }

@@ -6,6 +6,7 @@
 import 'common.dart';
 import 'open_archive.dart';
 import 'std_stream.dart';
+import 'platform.dart';
 
 /// NConsoleClose: the break counter. A synchronous Dart program can not
 /// receive SIGINT while it works, so this stays 0 and Ctrl+C ends the
@@ -72,7 +73,10 @@ class PercentPrinter extends PercentPrinterState {
   void closePrint(bool needFlush) {
     final num = _printedString.length;
     if (num != 0) {
-      so!.write('\b' * num + ' ' * num + '\b' * num);
+      // '\r' in old MAC OS means "new line", so POSIX uses '\b'
+      so!.write(kIsWin
+          ? '\r${' ' * num}\r'
+          : '\b' * num + ' ' * num + '\b' * num);
     }
     if (needFlush) so?.flush();
     _printedString = '';
@@ -198,10 +202,15 @@ bool Function(bool echo)? gSetEcho;
 
 // GetPassword: (ok, password)
 (bool, String) _getPassword(StdOutStream? outStream, StdInStream sin) {
-  // the SDK disables echo on Windows only; the port does it where the
+  // the SDK disables echo on Windows only (MY_DISABLE_ECHO, with the text
+  // "(will not be echoed)" in any case); the POSIX port does it where the
   // terminal allows it and then prints the Windows text
+  if (outStream != null && kIsWin) {
+    outStream.write('\nEnter password (will not be echoed):');
+    outStream.flush();
+  }
   final echoOff = gSetEcho?.call(false) ?? false;
-  if (outStream != null) {
+  if (outStream != null && !kIsWin) {
     outStream.write(echoOff
         ? '\nEnter password (will not be echoed):'
         : '\nEnter password:');

@@ -15,6 +15,7 @@ import 'enum_dir_items.dart';
 import 'fs_utils.dart';
 import 'globals.dart';
 import 'wildcard.dart';
+import 'platform.dart';
 
 const int kHashCalcDigestSizeMax = 64;
 const int kHashCalcExtraSize = 8;
@@ -290,7 +291,9 @@ class HashBundle {
       h.hasher.update(h.digests[0], 0, h.digestSize);
       final temp = Uint8List(2);
       for (var k = 0; k < path.length; k++) {
-        final c = path.codeUnitAt(k);
+        var c = path.codeUnitAt(k);
+        // 21.04: we want same hash for linux and windows paths
+        if (c == kDirSepCode) c = 0x2F;
         temp[0] = c & 0xFF;
         temp[1] = (c >> 8) & 0xFF;
         h.hasher.update(temp, 0, 2);

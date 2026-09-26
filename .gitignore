@@ -3,3 +3,4 @@ ref/
 pubspec.lock
 build/
 *.7z.tmp
+dist/

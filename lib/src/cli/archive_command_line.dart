@@ -16,6 +16,7 @@ import 'prop_id_utils.dart';
 import 'update.dart';
 import 'update_pair.dart';
 import 'wildcard.dart';
+import 'platform.dart';
 
 /// NCommandType.
 enum CommandType {
@@ -546,6 +547,9 @@ void _addSwitchWildcardsToCensor(
       _addNameToCensor(censor, nop2, tail);
     } else if (c == '@') {
       _addToCensorFromListFile(null, censor, nop2, tail, codePage);
+    } else if (kIsWin && c == '#') {
+      errorMessage = _parseMapWithPaths(tail);
+      if (errorMessage != null) break;
     } else {
       errorMessage = 'Incorrect wildcard type marker';
       break;
@@ -554,6 +558,22 @@ void _addSwitchWildcardsToCensor(
   if (i != strings.length) {
     throw MessagePathException(errorMessage!, strings[i]);
   }
+}
+
+// ParseMapWithPaths (_WIN32): the names are in a named file mapping of
+// the 7-Zip GUI, which dart:io can not open, so a correct command ends
+// with the error of a failing OpenFileMapping.
+String? _parseMapWithPaths(String s) {
+  const kIncorrectMapCommand = 'Incorrect Map command';
+  final pos = s.indexOf(':');
+  if (pos < 0) return kIncorrectMapCommand;
+  final pos2 = s.indexOf(':', pos + 1);
+  if (pos2 < 0) return kIncorrectMapCommand;
+  final size = _stringToUInt32(s.substring(pos + 1, pos2));
+  if (size == null || size < 2 || size > (1 << 31) || size % 2 != 0) {
+    return 'Unsupported Map data size';
+  }
+  return 'Cannot open mapping';
 }
 
 // ParseUpdateCommandString2: (ok, postString)
@@ -639,9 +659,7 @@ void _setAddCommandOptions(
   if (parser[_K.workingDir].thereIs) {
     final postString = parser[_K.workingDir].postStrings[0];
     if (postString.isEmpty) {
-      var t = Directory.systemTemp.path;
-      if (!t.endsWith('/')) t += '/';
-      options.workingDir = t;
+      options.workingDir = normalizeDirPathPrefix(Directory.systemTemp.path);
     } else {
       options.workingDir = postString;
     }
@@ -861,10 +879,22 @@ class ArcCmdLineParser {
               (c >= 0x61 && c <= 0x66);
           if (!isHex) isError = true;
         }
+        var logValue = s;
+        if (kIsWin) {
+          // ConvertHexStringToUInt64 and PrintHex: at most 16 digits
+          isError = isError || s.length > 16;
+          if (!isError) {
+            var v = 0;
+            for (final c in s.codeUnits) {
+              v = (v << 4) | ((c <= 0x39) ? c - 0x30 : (c | 0x20) - 0x61 + 10);
+            }
+            logValue = hexUpper(v);
+          }
+        }
         if (isError) {
           throw MessagePathException('Unsupported switch postfix -stm', s);
         }
-        parse1Log += 'Set process affinity mask: $s\n';
+        parse1Log += 'Set process affinity mask: $logValue\n';
       }
     }
   }
@@ -1055,6 +1085,7 @@ class ArcCmdLineParser {
         if (s.isNotEmpty && s != '0' && s != '1' && s != '2') {
           throw MessagePathException('Unsupported -snz:', s);
         }
+        eo.zoneMode = s.isEmpty ? 1 : int.parse(s);
       }
 
       options.censor.addPathsToCensor(CensorPathMode.absPath);
@@ -1098,9 +1129,9 @@ class ArcCmdLineParser {
           }
         }
         if (parser[_K.outputDir].thereIs) {
-          var d = parser[_K.outputDir].postStrings[0];
-          if (d.isNotEmpty && !d.endsWith('/')) d += '/';
-          eo.outputDir = d;
+          // NormalizeDirSeparators (_WIN32), NormalizeDirPathPrefix
+          eo.outputDir = normalizeDirPathPrefix(
+              normalizeDirSeparators(parser[_K.outputDir].postStrings[0]));
         }
         if (parser[_K.outDirMode].thereIs) {
           final index = parser[_K.outDirMode].postCharIndex;

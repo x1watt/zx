@@ -1,15 +1,20 @@
 // Scanning of the file system with the censor rules: UI/Common/DirItem.h
 // (CDirItemsStat, CDirItem, CArcItem) and UI/Common/EnumDirItems.cpp
-// (CDirItems, EnumerateItems, EnumerateDirItemsAndSort) of the LZMA SDK,
-// POSIX paths (links are not followed with -snl, and never entered).
+// (CDirItems, EnumerateItems, EnumerateDirItemsAndSort) of the LZMA SDK.
+// POSIX: links are not followed with -snl, and never entered. Windows: the
+// drive and "\\?\" prefixes, the attributes of FindFirstFile, links
+// (reparse points) are not entered with -snl.
 
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'common.dart';
+import '../format/archive_types.dart' show FileAttrib;
+import 'file_link.dart';
 import 'fs_utils.dart';
 import 'open_archive.dart';
+import 'platform.dart';
 import 'wildcard.dart';
 
 /// CDirItemsStat.
@@ -70,6 +75,9 @@ class DirItem {
   String name;
   int size;
   int mode;
+
+  /// The attributes on Windows (CDirItem::Attrib).
+  int attrib;
   FiTime cTime;
   FiTime aTime;
   FiTime mTime;
@@ -82,6 +90,7 @@ class DirItem {
   DirItem(this.name, FileInfo fi, this.phyParent, this.logParent)
       : size = fi.size,
         mode = fi.mode,
+        attrib = fi.attrib,
         cTime = fi.cTime,
         aTime = fi.aTime,
         mTime = fi.mTime;
@@ -90,6 +99,7 @@ class DirItem {
       : name = '',
         size = 0,
         mode = 0,
+        attrib = 0,
         cTime = const FiTime(0),
         aTime = const FiTime(0),
         mTime = const FiTime(0),
@@ -99,7 +109,7 @@ class DirItem {
   bool isDir() => sIsDir(mode);
   bool get isPosixLink => sIsLnk(mode);
   bool areReparseData() => reparseData != null && reparseData!.isNotEmpty;
-  int getWinAttrib() => winAttribFromPosixMode(mode);
+  int getWinAttrib() => kIsWin ? attrib : winAttribFromPosixMode(mode);
   int getPosixAttrib() => mode;
 
   /// SetAs_StdInFile: [st] is fstat(0) when available.
@@ -107,6 +117,7 @@ class DirItem {
     final now = FiTime.fromDateTime(DateTime.now());
     size = -1;
     mode = 0x1000 | 0x1FF; // S_IFIFO | 0777
+    attrib = 0; // ClearBase (Windows: GetFileInformationByHandle is not available)
     cTime = now;
     aTime = now;
     mTime = now;
@@ -123,19 +134,19 @@ class DirItem {
 
 // FindFile_KeepDots
 FileInfo? _findFileKeepDots(String path, bool followLink) {
-  final fi = findFile(path, followLink: followLink);
+  final fi = findFile(path, followLink: followLink, exactName: true);
   if (fi == null) return null;
   if (path.isEmpty) return fi;
   var p = path.length - 1;
   if (path.codeUnitAt(p) != 0x2E) return fi;
   if (p != 0) {
     var c = path.codeUnitAt(p - 1);
-    if (c != 0x2F) {
+    if (!isPathSepar(c)) {
       if (c != 0x2E) return fi;
       p--;
       if (p != 0) {
         c = path.codeUnitAt(p - 1);
-        if (c != 0x2F) return fi;
+        if (!isPathSepar(c)) return fi;
       }
     }
   }
@@ -238,9 +249,13 @@ class DirItems {
     return files;
   }
 
-  // SetLinkInfo (POSIX)
+  // SetLinkInfo
   void setLinkInfo(DirItem dirItem, FileInfo fi, String phyPrefix) {
     if (!symLinks) return;
+    if (kIsWin) {
+      _setLinkInfoWin(dirItem, fi, phyPrefix);
+      return;
+    }
     if (!fi.isPosixLink) return;
     final target = fi.linkTarget;
     if (target != null) {
@@ -250,6 +265,29 @@ class DirItems {
       return;
     }
     addError(phyPrefix + fi.name, Errno.einval);
+  }
+}
+
+// IsVirtualFsFolder (Windows): true for a non real folder like "\\SERVER\".
+bool _isVirtualFsFolder(String prefix, String name) {
+  if (!kIsWin) return false;
+  final s = '$prefix$name$kDirSep';
+  return isPathSepar(s.codeUnitAt(0)) && getRootPrefixSize(s) == 0;
+}
+
+extension on DirItems {
+  // SetLinkInfo (_WIN32): the reparse data of the link (GetReparseData),
+  // made from the link target (see file_link.dart).
+  void _setLinkInfoWin(DirItem dirItem, FileInfo fi, String phyPrefix) {
+    if (!fi.hasReparsePoint) return;
+    final target = fi.linkTarget;
+    final data = target == null ? null : fillLinkDataWinLink(target, true);
+    if (data != null) {
+      dirItem.reparseData = data;
+      stat.filesSize -= fi.size;
+      return;
+    }
+    addError(phyPrefix + fi.name, 4392); // ERROR_INVALID_REPARSE_DATA
   }
 }
 
@@ -263,7 +301,7 @@ void _enumerateDirItemsSpec(
     List<String> addParts,
     DirItems dirItems,
     bool enterToSubFolders) {
-  final name2 = '$curFolderName/';
+  final name2 = '$curFolderName$kDirSep';
   final parent = dirItems.addPrefix(phyParent, logParent, name2);
   final numItems = dirItems.items.length;
   _enumerateDirItems(curNode, parent, parent, phyPrefix + name2, addParts,
@@ -301,7 +339,7 @@ void _enumerateForItem(
     if (dirItem.areReparseData()) return;
   }
 
-  if (!fi.isPosixLink) {
+  if (kIsWin || !fi.isPosixLink) {
     if (!fi.isDir) return;
   }
 
@@ -316,7 +354,13 @@ void _enumerateForItem(
 
   if (nextNode == null) {
     if (!enterToSubFolders) return;
-    if (fi.isPosixLink) return;
+    if (kIsWin) {
+      // 20.03: in SymLinks mode: we don't enter to directory that has
+      // reparse point and has no CCensorNode
+      if (dirItems.symLinks && fi.hasReparsePoint) return;
+    } else if (fi.isPosixLink) {
+      return;
+    }
     nextNode = curNode;
   }
 
@@ -352,11 +396,23 @@ void _enumerateDirItems(CensorNode curNode, int phyParent, int logParent,
 
         if (phyPrefix.isEmpty) {
           if (!item.forFile) {
-            if (name.isEmpty) fullPath = '/';
+            if (name.isEmpty) {
+              fullPath = kDirSep;
+            } else if (item.isDriveItem()) {
+              fullPath += kDirSep;
+            }
           }
         }
 
-        final fi = _findFileKeepDots(fullPath, !dirItems.symLinks);
+        FileInfo? fi;
+        if (_isVirtualFsFolder(phyPrefix, name)) {
+          fi = FileInfo()
+            ..mode = sIFDIR | 0x1FF
+            ..attrib = FileAttrib.directory
+            ..name = name;
+        } else {
+          fi = _findFileKeepDots(fullPath, !dirItems.symLinks);
+        }
         if (fi == null) {
           dirItems.addError(fullPath, lastFindErrno);
           continue;
@@ -375,7 +431,7 @@ void _enumerateDirItems(CensorNode curNode, int phyParent, int logParent,
           if (dirItem.areReparseData()) continue;
         }
 
-        if (!fi.isPosixLink) {
+        if (kIsWin || !fi.isPosixLink) {
           if (!isDir) continue;
         }
 
@@ -389,7 +445,11 @@ void _enumerateDirItems(CensorNode curNode, int phyParent, int logParent,
           needEnterVector[index] = false;
           nextNode = curNode.subNodes[index];
         } else {
-          if (fi.isPosixLink) continue;
+          if (kIsWin) {
+            if (dirItems.symLinks && fi.hasReparsePoint) continue;
+          } else if (fi.isPosixLink) {
+            continue;
+          }
           nextNode = curNode;
           newParts = [name];
         }
@@ -405,11 +465,18 @@ void _enumerateDirItems(CensorNode curNode, int phyParent, int logParent,
         var fullPath = phyPrefix + nextNode.name;
         FileInfo? fi;
         if (nextNode.name.isEmpty) {
-          if (phyPrefix.isEmpty) fullPath = '/';
+          if (phyPrefix.isEmpty) fullPath = kDirSep;
+        } else if (kIsWin &&
+            (phyPrefix.isEmpty ||
+                (phyPrefix.length == kSuperPathPrefixSize &&
+                    isSuperPath(phyPrefix)))) {
+          if (isDriveColonName(nextNode.name)) fullPath += kDirSep;
         }
-        if (phyPrefix.isEmpty && nextNode.name.isEmpty) {
+        if ((phyPrefix.isEmpty && nextNode.name.isEmpty) ||
+            _isVirtualFsFolder(phyPrefix, nextNode.name)) {
           fi = FileInfo()
             ..mode = sIFDIR | 0x1FF
+            ..attrib = FileAttrib.directory
             ..name = nextNode.name;
         } else {
           fi = _findFileKeepDots(fullPath, !dirItems.symLinks);

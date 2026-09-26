@@ -8,6 +8,7 @@ import 'extract_callback_console.dart' show printDirItemsStat;
 import 'hash_calc.dart';
 import 'std_stream.dart';
 import 'update_callback_console.dart';
+import 'platform.dart';
 
 const String _kEmptyFileAlias = '[Content]';
 const int _kSizeFieldLen = 13;
@@ -58,7 +59,7 @@ class HashCallbackConsole extends CallbackConsoleBase implements HashCallbackUI 
       percent.files = st.numDirs + st.numFiles + st.numAltStreams;
       percent.completed = st.getTotalBytes();
       var p = path;
-      if (isDir && p.isNotEmpty && !p.endsWith('/')) p += '/';
+      if (isDir) p = normalizeDirPathPrefix(p);
       percent.fileName = p;
       percent.print();
     }
@@ -169,8 +170,8 @@ class HashCallbackConsole extends CallbackConsoleBase implements HashCallbackUI 
   @override
   void getStream(String name, bool isDir) {
     _fileName = name;
-    if (isDir && _fileName.isNotEmpty && !_fileName.endsWith('/')) {
-      _fileName += '/';
+    if (isDir && _fileName.isNotEmpty && !endsWithPathSepar(_fileName)) {
+      _fileName += kDirSep;
     }
     if (needPercents()) {
       if (printNameInPercents) percent.fileName = name;

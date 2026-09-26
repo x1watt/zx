@@ -1,13 +1,21 @@
 // Console streams: Common/StdOutStream.cpp (CStdOutStream with the path and
 // terminal character normalization) and Common/StdInStream.cpp
 // (CStdInStream::ScanAStringUntilNewLine), over the byte sinks of [CliIo].
+//
+// Windows: 7-Zip writes its text through the C runtime in text mode, so
+// every '\n' becomes "\r\n" and a "\r\n" of the standard input is read as
+// '\n'. The text is converted to the code page of the console: the Dart
+// runtime switches the console to CP_UTF8 while the program runs, so UTF-8
+// is the console code page here (-scc selects another one).
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import '../io/streams.dart';
 import 'common.dart';
+import 'platform.dart';
 
 /// The process streams the console program uses. The real program uses the
 /// file descriptors 0, 1 and 2 synchronously; tests pass memory sinks.
@@ -109,12 +117,41 @@ class StdOutStream {
   void write(Object? s) {
     final str = '$s';
     if (str.isEmpty) return;
-    _emit(Uint8List.fromList(utf8.encode(str)));
+    if (kIsWin) {
+      _emit(_encodeWin(str));
+    } else {
+      _emit(Uint8List.fromList(utf8.encode(str)));
+    }
     if (isTerminalMode && buffered && str.contains('\n')) flush();
   }
 
+  // Convert_UString_to_AString and the text mode of the C runtime.
+  Uint8List _encodeWin(String str) {
+    final t = str.contains('\n') ? str.replaceAll('\n', '\r\n') : str;
+    if (codePage == -1 || codePage == 65001) {
+      return Uint8List.fromList(utf8.encode(t));
+    }
+    final enc = codePageEncoding(codePage);
+    if (enc == latin1) {
+      return Uint8List.fromList(
+          [for (final c in t.codeUnits) c < 0x100 ? c : 0x3F]);
+    }
+    return Uint8List.fromList(enc.encode(t));
+  }
+
   /// operator<<(char) with a raw byte.
-  void writeBytes(Uint8List b) => _emit(b);
+  void writeBytes(Uint8List b) {
+    if (kIsWin && b.contains(0x0A)) {
+      final r = <int>[];
+      for (final c in b) {
+        if (c == 0x0A) r.add(0x0D);
+        r.add(c);
+      }
+      _emit(Uint8List.fromList(r));
+      return;
+    }
+    _emit(b);
+  }
 
   /// endl
   void endl() => write('\n');
@@ -132,7 +169,7 @@ class StdOutStream {
       if (isTerminalMode) {
         r.writeCharCode(_isDangerousTerminalChar(c) ? 0x5F : c);
       } else {
-        r.writeCharCode(c == 0x0A ? 0x5F : c);
+        r.writeCharCode(c == 0x0A || (kIsWin && c == 0x0D) ? 0x5F : c);
       }
     }
     return r.toString();
@@ -140,8 +177,12 @@ class StdOutStream {
 
   // Normalize_UString_Path
   String normalizeStringPath(String s) {
-    if (listPathSeparatorSlash.def && !listPathSeparatorSlash.val) {
-      s = s.replaceAll('/', '\\');
+    if (listPathSeparatorSlash.def) {
+      if (kIsWin) {
+        if (listPathSeparatorSlash.val) s = s.replaceAll('\\', '/');
+      } else if (!listPathSeparatorSlash.val) {
+        s = s.replaceAll('/', '\\');
+      }
     }
     return normalizeString(s);
   }
@@ -200,7 +241,11 @@ class StdInStream {
       final c = getChar();
       if (c < 0) return s;
       if (c == 0) return null;
-      if (c == 0x0A) return s;
+      if (c == 0x0A) {
+        // text mode of the C runtime (Windows): "\r\n" is read as '\n'
+        if (kIsWin && s.isNotEmpty && s.last == 0x0D) s.removeLast();
+        return s;
+      }
       s.add(c);
     }
   }
@@ -209,6 +254,9 @@ class StdInStream {
   (bool, String) scanUStringUntilNewLine() {
     final a = scanAStringUntilNewLine();
     final bytes = a ?? const <int>[];
+    if (kIsWin && codePage != -1 && codePage != 65001) {
+      return (a != null, codePageEncoding(codePage).decode(bytes));
+    }
     return (a != null, utf8.decode(bytes, allowMalformed: true));
   }
 }
@@ -342,6 +390,51 @@ CliIo processCliIo() {
         return null;
       }
     },
+    setEcho: (echo) {
+      try {
+        if (!stdin.hasTerminal) return false;
+        stdin.echoMode = echo;
+        return true;
+      } on Object {
+        return false;
+      }
+    },
+  );
+}
+
+/// The [CliIo] of the running process on Windows, used in a worker
+/// isolate: dart:io has no synchronous write to the standard streams there
+/// (no /dev/stdout), so the bytes go to the main isolate, which writes them
+/// while this isolate runs the synchronous program (and while it waits for
+/// an answer on the standard input). [port] receives (1, bytes) for
+/// standard output and (2, bytes) for standard error.
+CliIo windowsWorkerCliIo(SendPort port) {
+  var width = 80;
+  bool outTerm = false, errTerm = false, inTerm = false;
+  try {
+    outTerm = stdout.hasTerminal;
+    if (outTerm) width = stdout.terminalColumns;
+  } on Object {
+    width = 80;
+  }
+  try {
+    errTerm = stderr.hasTerminal;
+  } on Object {
+    errTerm = false;
+  }
+  try {
+    inTerm = stdin.hasTerminal;
+  } on Object {
+    inTerm = false;
+  }
+  return CliIo(
+    writeOut: (b) => port.send((1, b)),
+    writeErr: (b) => port.send((2, b)),
+    stdinStream: _StdinReader(),
+    stdinIsTerminal: inTerm,
+    stdoutIsTerminal: outTerm,
+    stderrIsTerminal: errTerm,
+    consoleWidth: width,
     setEcho: (echo) {
       try {
         if (!stdin.hasTerminal) return false;

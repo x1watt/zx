@@ -20,6 +20,7 @@ import 'open_archive.dart';
 import 'update_callback.dart';
 import 'update_pair.dart';
 import 'wildcard.dart';
+import 'platform.dart';
 
 /// EArcNameMode.
 enum ArcNameMode { smart, exact, add }
@@ -120,7 +121,7 @@ int _compareTwoNames(String s1, String s2) {
     if (c1 == 0 || c2 == 0) return i;
     if (c1 == c2) continue;
     if (!gCaseSensitive && myCharUpper(c1) == myCharUpper(c2)) continue;
-    if (c1 == 0x2F && c2 == 0x2F) continue;
+    if (isPathSepar(c1) && isPathSepar(c2)) continue;
     return i;
   }
 }
@@ -145,15 +146,15 @@ class RenamePair {
     int at(String s, int i) => i < s.length ? s.codeUnitAt(i) : 0;
     if (at(oldName, num) == 0) {
       if (at(src, num) != 0 &&
-          at(src, num) != 0x2F &&
+          !isPathSepar(at(src, num)) &&
           num != 0 &&
-          at(src, num - 1) != 0x2F) {
+          !isPathSepar(at(src, num - 1))) {
         return null;
       }
     } else {
       if (!isFolder ||
           at(src, num) != 0 ||
-          at(oldName, num) != 0x2F ||
+          !isPathSepar(at(oldName, num)) ||
           at(oldName, num + 1) != 0) {
         return null;
       }
@@ -225,7 +226,7 @@ class UpdateOptions {
       typeExt = arcInfo.getMainExt();
     }
     var ext = typeExt;
-    if (sfxMode) ext = '';
+    if (sfxMode) ext = kIsWin ? 'exe' : ''; // kSFXExtension
     archivePath.baseExtension = ext;
     archivePath.volExtension = typeExt;
     archivePath.parseFromPath(arcPath, arcNameMode);
@@ -922,8 +923,8 @@ void updateArchive(
         ap.temp = true;
         ap.tempPrefix =
             options.workingDir.isNotEmpty ? options.workingDir : ap.prefix;
-        if (ap.tempPrefix.isNotEmpty && !ap.tempPrefix.endsWith('/')) {
-          ap.tempPrefix += '/';
+        if (ap.tempPrefix.isNotEmpty && !endsWithPathSepar(ap.tempPrefix)) {
+          ap.tempPrefix += kDirSep;
         }
       }
     }
@@ -1055,7 +1056,7 @@ void updateArchive(
           if (fileInfo != null) {
             bool isSameSize;
             if (options.symLinks.val && dirItem.areReparseData()) {
-              isSameSize = fileInfo.isPosixLink;
+              isSameSize = fileInfo.isOsSymLink;
             } else {
               isSameSize = fileInfo.size == dirItem.size;
             }
@@ -1068,7 +1069,13 @@ void updateArchive(
           }
         }
       }
-      int numSlashes(String s) => '/'.allMatches(s).length;
+      int numSlashes(String s) {
+        var n = 0;
+        for (var i = 0; i < s.length; i++) {
+          if (isPathSepar(s.codeUnitAt(i))) n++;
+        }
+        return n;
+      }
       final paths = [for (final i in dirIndices) dirItems.getPhyPath(i)];
       final order = List<int>.generate(paths.length, (i) => i);
       order.sort((a, b) {

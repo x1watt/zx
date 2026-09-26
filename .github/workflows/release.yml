@@ -1,0 +1,76 @@
+# Builds the zx command line tool for Linux, Windows and macOS.
+# Every push and pull request runs the tests and uploads the binaries as
+# workflow artifacts; a pushed tag v* also attaches them to a GitHub release.
+name: build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: sudo apt-get update && sudo apt-get install -y 7zip xz-utils
+      - run: sudo ln -sf "$(command -v 7z || command -v 7zz)" /usr/bin/7z || true
+      - run: dart pub get
+      - run: dart analyze --fatal-infos
+      - run: dart test
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, name: zx-linux-x64, args: --target-os linux --target-arch x64 }
+          - { os: ubuntu-latest, name: zx-linux-arm64, args: --target-os linux --target-arch arm64 }
+          - { os: windows-latest, name: zx-windows-x64.exe, args: '' }
+          - { os: windows-11-arm, name: zx-windows-arm64.exe, args: '' }
+          - { os: macos-latest, name: zx-macos-arm64, args: '' }
+          - { os: macos-15-intel, name: zx-macos-x64, args: '' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get
+      - run: mkdir -p dist
+        shell: bash
+      - run: dart compile exe ${{ matrix.args }} bin/zx.dart -o dist/${{ matrix.name }}
+        shell: bash
+      - name: Smoke test
+        if: ${{ !contains(matrix.args, 'arm64') }}
+        shell: bash
+        run: |
+          mkdir -p smoke/in && echo hello > smoke/in/a.txt
+          ./dist/${{ matrix.name }} a smoke/t.7z ./smoke/in
+          ./dist/${{ matrix.name }} t smoke/t.7z
+          ./dist/${{ matrix.name }} x -osmoke/out smoke/t.7z
+          cmp smoke/in/a.txt smoke/out/in/a.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

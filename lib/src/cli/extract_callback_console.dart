@@ -13,6 +13,7 @@ import 'load_codecs.dart';
 import 'open_archive.dart';
 import 'prop_id_utils.dart';
 import 'std_stream.dart';
+import 'platform.dart';
 
 const String _kError = 'ERROR: ';
 
@@ -398,7 +399,7 @@ class ExtractCallbackConsole extends OpenCallbackConsole
       so.write('$s ');
       var tempU = so.normalizeStringPath(name);
       if (isFolder) {
-        if (tempU.isNotEmpty && !tempU.endsWith('/')) tempU += '/';
+        if (tempU.isNotEmpty && !tempU.endsWith(kDirSep)) tempU += kDirSep;
       }
       so.write(tempU);
       if (position != null) so.write(' <${u64ToString(position)}>');

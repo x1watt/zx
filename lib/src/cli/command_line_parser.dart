@@ -6,6 +6,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'platform.dart';
+
 /// NSwitchType.
 enum SwitchType { simple, minus, string, char }
 
@@ -235,6 +237,8 @@ ListFileResult readNamesFromListFile2(String fileName, int codePage) {
       } on FormatException {
         return const ListFileResult(null, 0);
       }
+    } else if (kIsWin) {
+      u = codePageEncoding(codePage).decode(data);
     } else {
       u = latin1.decode(data);
     }

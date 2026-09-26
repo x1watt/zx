@@ -1,15 +1,20 @@
 // File name masks and the censor tree of the include / exclude rules:
-// Common/Wildcard.cpp of the LZMA SDK (POSIX build: '/' is the only path
-// separator and names are case sensitive unless -ssc- is given).
+// Common/Wildcard.cpp of the LZMA SDK. POSIX: '/' is the only path
+// separator. Windows (_WIN32): '\' and '/' are both separators, drive and
+// "\\?\" prefixes are kept in the censor prefix, and names are case
+// insensitive unless -ssc is given.
 
 import 'common.dart';
+import 'platform.dart';
 
-/// g_CaseSensitive (true on Linux; -ssc / -ssc- change it).
-bool gCaseSensitive = true;
+export 'platform.dart' show isPathSepar;
 
-const int _kSep = 0x2F; // '/'
+/// The default of g_CaseSensitive: false on Windows and macOS, true
+/// elsewhere (Wildcard.cpp; __APPLE__ without TARGET_OS_IPHONE).
+bool defaultCaseSensitive() => !(kIsWin || kIsMac);
 
-bool isPathSepar(int c) => c == _kSep;
+/// g_CaseSensitive (-ssc / -ssc- change it).
+bool gCaseSensitive = defaultCaseSensitive();
 
 int _upper(int c) {
   if (c < 0x80) {
@@ -31,8 +36,8 @@ int _compareFileNames(String s1, String s2, bool caseSensitive) {
     if (c1 != c2) {
       if (c1 == 0) return -1;
       if (c2 == 0) return 1;
-      var a = c1 == _kSep ? 0 : c1;
-      var b = c2 == _kSep ? 0 : c2;
+      var a = isPathSepar(c1) ? 0 : c1;
+      var b = isPathSepar(c2) ? 0 : c2;
       if (!caseSensitive) {
         a = _upper(a);
         b = _upper(b);
@@ -88,7 +93,7 @@ List<String> splitPathToParts(String path) {
   if (path.isEmpty) return parts;
   var prev = 0;
   for (var i = 0; i < path.length; i++) {
-    if (path.codeUnitAt(i) == _kSep) {
+    if (isPathSepar(path.codeUnitAt(i))) {
       parts.add(path.substring(prev, i));
       prev = i + 1;
     }
@@ -101,7 +106,7 @@ List<String> splitPathToParts(String path) {
 (String, String) splitPathToParts2(String path) {
   var p = path.length;
   for (; p != 0; p--) {
-    if (path.codeUnitAt(p - 1) == _kSep) break;
+    if (isPathSepar(path.codeUnitAt(p - 1))) break;
   }
   return (path.substring(0, p), path.substring(p));
 }
@@ -110,9 +115,9 @@ List<String> splitPathToParts(String path) {
 (String, String) splitPathToPartsSmart(String path) {
   var p = path.length;
   if (p != 0) {
-    if (path.codeUnitAt(p - 1) == _kSep) p--;
+    if (isPathSepar(path.codeUnitAt(p - 1))) p--;
     for (; p != 0; p--) {
-      if (path.codeUnitAt(p - 1) == _kSep) break;
+      if (isPathSepar(path.codeUnitAt(p - 1))) break;
     }
   }
   return (path.substring(0, p), path.substring(p));
@@ -120,7 +125,7 @@ List<String> splitPathToParts(String path) {
 
 /// ExtractFileNameFromPath.
 String extractFileNameFromPath(String path) =>
-    path.substring(path.lastIndexOf('/') + 1);
+    path.substring(reverseFindPathSepar(path) + 1);
 
 /// DoesWildcardMatchName.
 bool doesWildcardMatchName(String mask, String name) =>
@@ -151,6 +156,14 @@ class WildcardItem {
     ..forFile = forFile
     ..forDir = forDir
     ..wildcardMatching = wildcardMatching;
+
+  // CItem::IsDriveItem (Windows)
+  bool isDriveItem() =>
+      kIsWin &&
+      pathParts.length == 1 &&
+      !forFile &&
+      forDir &&
+      isDriveColonName(pathParts[0]);
 
   // CItem::AreAllAllowed
   bool areAllAllowed() =>
@@ -379,10 +392,29 @@ class CensorPath {
   CensorPath(this.path, this.include, this.props);
 }
 
-// GetNumPrefixParts (POSIX)
+/// IsDriveColonName: "c:".
+bool isDriveColonName(String s) => s.length == 2 && isDrivePath2(s);
+
+// GetNumPrefixParts
 int _getNumPrefixParts(List<String> pathParts) {
   if (pathParts.isEmpty) return 0;
-  return pathParts[0].isEmpty ? 1 : 0;
+  if (!kIsWin) return pathParts[0].isEmpty ? 1 : 0;
+  if (isDriveColonName(pathParts[0])) return 1;
+  if (pathParts[0].isNotEmpty) return 0;
+  if (pathParts.length == 1) return 1;
+  if (pathParts[1].isNotEmpty) return 1;
+  if (pathParts.length == 2) return 2;
+  if (pathParts[2] == '.') return 3;
+  var networkParts = 2;
+  if (pathParts[2] == '?') {
+    if (pathParts.length == 3) return 3;
+    if (isDriveColonName(pathParts[3])) return 4;
+    if (pathParts[3].toUpperCase() != 'UNC') return 3;
+    networkParts = 4;
+  }
+  networkParts += 1; // server
+  if (pathParts.length <= networkParts) return pathParts.length;
+  return networkParts;
 }
 
 /// CCensor.
@@ -464,7 +496,7 @@ class Censor {
           if (i >= numPrefixParts && doesNameContainWildcard(front)) break;
         }
         prefix.write(front);
-        prefix.write('/');
+        prefix.write(kDirSep);
         pathParts.removeAt(0);
       }
     }

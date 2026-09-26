@@ -193,6 +193,7 @@ abstract final class FileAttrib {
   static const system = 0x4;
   static const directory = 0x10;
   static const archive = 0x20;
+  static const reparsePoint = 0x400;
 
   /// 7-Zip stores the POSIX st_mode in the high 16 bits and sets this flag.
   static const unixExtension = 0x8000;

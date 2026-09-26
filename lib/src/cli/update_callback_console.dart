@@ -12,6 +12,7 @@ import 'open_archive.dart';
 import 'std_stream.dart';
 import 'update.dart';
 import 'update_callback.dart';
+import 'platform.dart';
 
 const String _kEmptyFileAlias = '[Content]';
 const String _kError = 'ERROR: ';
@@ -108,7 +109,7 @@ class CallbackConsoleBase {
       var tempU = '';
       if (name != null) {
         tempU = name;
-        if (isDir && tempU.isNotEmpty && !tempU.endsWith('/')) tempU += '/';
+        if (isDir) tempU = normalizeDirPathPrefix(tempU);
         tempU = so.normalizeStringPath(tempU);
       }
       so.write(tempU);

@@ -11,10 +11,12 @@ import '../format/archive_types.dart';
 import '../io/streams.dart';
 import 'common.dart';
 import 'extracting_file_path.dart';
+import 'file_link.dart';
 import 'fs_utils.dart';
 import 'globals.dart';
 import 'hash_calc.dart';
 import 'open_archive.dart';
+import 'platform.dart';
 import 'wildcard.dart';
 
 /// NExtract::NPathMode.
@@ -58,6 +60,58 @@ abstract class FolderArchiveExtractCallback {
   void setOperationResult(int opRes, bool encrypted);
   void reportExtractResult(int opRes, bool encrypted, String name);
   String cryptoGetTextPassword();
+}
+
+// kOfficeExtensions
+const String _kOfficeExtensions = ' doc dot wbk'
+    ' docx docm dotx dotm docb wll wwl'
+    ' xls xlt xlm'
+    ' xlsx xlsm xltx xltm xlsb xla xlam'
+    ' ppt pot pps ppa ppam'
+    ' pptx pptm potx potm ppam ppsx ppsm sldx sldm'
+    ' ';
+
+// FindExt2
+bool _findExt2(String p, String name) {
+  final pathPos = reverseFindPathSepar(name);
+  final dotPos = name.lastIndexOf('.');
+  if (dotPos < 0 || dotPos < pathPos || dotPos == name.length - 1) {
+    return false;
+  }
+  final ext = name.substring(dotPos + 1);
+  for (final c in ext.codeUnits) {
+    if (c >= 0x80) return false;
+  }
+  return p.contains(' ${ext.toLowerCase()} ');
+}
+
+const String _kZoneIdStreamNameWithColonPrefix = ':Zone.Identifier';
+
+// Is_ZoneId_StreamName
+bool _isZoneIdStreamName(String s) =>
+    s.toLowerCase() == _kZoneIdStreamNameWithColonPrefix.substring(1).toLowerCase();
+
+/// ReadZoneFile_Of_BaseFile (Windows): the Zone.Identifier stream of
+/// [fileName] (dart:io opens alternate streams by name on NTFS).
+Uint8List? readZoneFileOfBaseFile(String fileName) {
+  try {
+    final f = File(fileName + _kZoneIdStreamNameWithColonPrefix);
+    final data = f.readAsBytesSync();
+    if (data.isEmpty || data.length >= (1 << 15)) return null;
+    return data;
+  } on FileSystemException {
+    return null;
+  }
+}
+
+// WriteZoneFile_To_BaseFile
+bool _writeZoneFileToBaseFile(String fileName, Uint8List buf) {
+  try {
+    File(fileName + _kZoneIdStreamNameWithColonPrefix).writeAsBytesSync(buf);
+    return true;
+  } on FileSystemException {
+    return false;
+  }
 }
 
 /// CensorNode_CheckPath2: (found, include).
@@ -173,16 +227,36 @@ class _LinkInfo {
     }
     if (u.isEmpty) return false;
     isRelative = !u.startsWith('/');
-    linkPath = u;
+    // REPLACE_SLASHES_from_Linux_to_Sys
+    linkPath = replaceToWinSlashes(u);
+    return true;
+  }
+
+  // Parse_from_WindowsReparseData (used by the Windows build)
+  bool parseFromWindowsReparseData(Uint8List data) {
+    final reparse = ReparseAttr();
+    if (!reparse.parse(data)) return false;
+    linkPath = reparse.getPath();
+    if (reparse.isSymLinkWsl) {
+      isRelative = reparse.isRelativeWsl;
+      linkPath = replaceToWinSlashes(linkPath);
+    } else {
+      isRelative = reparse.isRelativeWin;
+      linkPath = linkPath.replaceAll(kIsWin ? '/' : '\\', kDirSep);
+    }
     return true;
   }
 
   // Remove_AbsPathPrefixes
   void _removeAbsPathPrefixes() {
     while (linkPath.isNotEmpty) {
-      if (!linkPath.startsWith('/')) break;
+      var n = getRootPrefixSize(linkPath);
+      if (n == 0) {
+        if (!isPathSepar(linkPath.codeUnitAt(0))) break;
+        n = 1;
+      }
       isRelative = false;
-      linkPath = linkPath.substring(1);
+      linkPath = linkPath.substring(n);
     }
   }
 
@@ -192,7 +266,9 @@ class _LinkInfo {
     final sb = StringBuffer();
     for (var i = 0; i < linkPath.length; i++) {
       final c = linkPath[i];
-      if (c == '/' && sb.length >= 2 && sb.toString().endsWith('/')) continue;
+      if (c == kDirSep && sb.length >= 2 && sb.toString().endsWith(kDirSep)) {
+        continue;
+      }
       sb.write(c);
     }
     linkPath = sb.toString();
@@ -232,7 +308,7 @@ class _LinkLevelsInfo {
   int finalLevel = 0;
 
   void parse(String path) {
-    isAbsolute = path.startsWith('/');
+    isAbsolute = isAbsolutePath(path);
     lowLevel = 0;
     finalLevel = 0;
     parentDirDotsAfterNonParent = false;
@@ -403,6 +479,10 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
   /// DirPathPrefix_for_HashFiles.
   String dirPathPrefixForHashFiles = '';
 
+  /// ZoneBuf and ZoneMode (-snz, Windows).
+  Uint8List? zoneBuf;
+  int zoneMode = 0;
+
   // InitForMulti
   void initForMulti(bool multiArchives, PathMode pathMode,
       OverwriteMode overwriteMode, bool keepAndReplaceEmptyDirPrefixes) {
@@ -449,12 +529,9 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     _removePathParts = removePathParts;
     _removePartsForAltStreams = removePartsForAltStreams;
     _arc = arc;
-    _dirPathPrefix = directoryPath;
-    if (_dirPathPrefix.isNotEmpty && !_dirPathPrefix.endsWith('/')) {
-      _dirPathPrefix += '/';
-    }
-    _dirPathPrefixFull = myGetFullPathName(directoryPath);
-    if (!_dirPathPrefixFull.endsWith('/')) _dirPathPrefixFull += '/';
+    _dirPathPrefix = normalizeDirPathPrefix(directoryPath);
+    _dirPathPrefixFull =
+        normalizeDirPathPrefix(myGetFullPathName(directoryPath));
   }
 
   @override
@@ -502,7 +579,7 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     var fullPath =
         (_pathMode == PathMode.absPaths && isAbsPath) ? '' : _dirPathPrefix;
     for (var i = 0; i < dirPathParts.length; i++) {
-      if (i != 0) fullPath += '/';
+      if (i != 0) fullPath += kDirSep;
       fullPath += dirPathParts[i];
       final isFinalDir =
           i == dirPathParts.length - 1 && isFinal && _item.isDir;
@@ -627,7 +704,7 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     if (fileInfo != null) {
       if (_overwriteMode == OverwriteMode.skip) return (fullProcessedPath, true);
       if (_overwriteMode == OverwriteMode.ask) {
-        final slashPos = fullProcessedPath.lastIndexOf('/');
+        final slashPos = reverseFindPathSepar(fullProcessedPath);
         final realFullProcessedPath =
             fullProcessedPath.substring(0, slashPos + 1) + fileInfo.name;
         final answer = _extractCallback2.askOverwrite(
@@ -709,7 +786,7 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     if (!isAnti) _createFolders();
 
     var fullProcessedPath = processedPath;
-    if (_pathMode != PathMode.absPaths || !processedPath.startsWith('/')) {
+    if (_pathMode != PathMode.absPaths || !isAbsolutePath(processedPath)) {
       fullProcessedPath = _makePathFrom2Parts(_dirPathPrefix, fullProcessedPath);
     }
 
@@ -822,6 +899,20 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     final wc = _wildcardCensor;
     if (wc != null) {
       if (!censorNodeCheckPath(wc, _item)) return null;
+    }
+
+    final zb = zoneBuf;
+    if (kIsWin &&
+        askExtractMode == AskMode.extract &&
+        !_testMode &&
+        _item.isAltStream &&
+        zb != null &&
+        _isZoneIdStreamName(_item.altStreamName)) {
+      if (zoneMode != 2 ||
+          _item.pathParts.isEmpty ||
+          _findExt2(_kOfficeExtensions, _item.pathParts.last)) {
+        return null;
+      }
     }
 
     if (pathParts.isEmpty) {
@@ -943,6 +1034,13 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     } on FileSystemException catch (e) {
       throw SystemException(hresultOfFileSystemException(e));
     }
+    final zb = zoneBuf;
+    if (kIsWin && zb != null && !_item.isAltStream) {
+      if (zoneMode != 2 || _findExt2(_kOfficeExtensions, _diskFilePath)) {
+        // we must write zone file before setting of timestamps
+        _writeZoneFileToBaseFile(resolvePath(_diskFilePath), zb);
+      }
+    }
     final t = _getFiTimesCAM(_fi, _arc!);
     if (t.isSomeTimeDefined()) setFileTimes(out.path, t.mTime, t.aTime);
     _outFileStream = null;
@@ -961,7 +1059,7 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
       if (_curSizeDefined && reparseSize == mem.buf.length) {
         needSetReparse = _isSymLinkInDataLinux
             ? link.parseFromLinuxData(mem.buf)
-            : false;
+            : (kIsWin && link.parseFromWindowsReparseData(mem.buf));
         if (!needSetReparse) {
           _sendMessageErrorWithError(
               HRes.eFail, 'Incorrect reparse stream', _item.path);
@@ -1026,7 +1124,7 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     if (fi.isDir) {
       if (removeDirAlwaysIfEmpty(path)) return;
     } else {
-      if (checkThatFileIsEmpty && !fi.isPosixLink && fi.size != 0) {
+      if (checkThatFileIsEmpty && !fi.isOsSymLink && fi.size != 0) {
         _sendMessageError('Temporary link file is not empty', path);
         return;
       }
@@ -1047,8 +1145,8 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     for (final s in v) {
       path2 += s;
       final fi = findFile(path2);
-      if (fi != null && fi.isPosixLink) return false;
-      path2 += '/';
+      if (fi != null && fi.isOsSymLink) return false;
+      path2 += kDirSep;
     }
     return true;
   }
@@ -1061,7 +1159,7 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     var path = '';
     {
       final s = postLink.itemPathParts[0];
-      if (s.isNotEmpty && !s.startsWith('/')) path = pathPrefixInFs;
+      if (s.isNotEmpty && !isAbsolutePath(s)) path = pathPrefixInFs;
     }
     if (!_checkLinkPathInFsForPathParts(path, postLink.itemPathParts)) {
       return false;
@@ -1094,7 +1192,7 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
             if (len != 0) break;
           }
           path = makePathFromParts(v);
-          if (path.isNotEmpty && !path.endsWith('/')) path += '/';
+          path = normalizeDirPathPrefix(path);
           relativePathPrefix = path;
         }
         path += link.linkPath;
@@ -1147,9 +1245,13 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     }
   }
 
+  // SetAttrib_Base: the error of a queued attribute change.
+  void _attribError(String path, int errorCode) => _sendMessageErrorWithError(
+      hresultFromErrno(errorCode), 'Cannot set file attribute', path);
+
   // SetAttrib
   void _setAttrib() {
-    if (_isSymLinkCreated) return;
+    if (!kIsWin && _isSymLinkCreated) return;
     if (_itemFailure || _diskFilePath.isEmpty || _stdOutMode || !_extractMode) {
       return;
     }
@@ -1223,7 +1325,13 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
   void _setDirsTimes() {
     if (_arc == null) return;
     final pairs = List<int>.generate(_extractedFolders.length, (i) => i);
-    int numSlashes(String s) => '/'.allMatches(s).length;
+    int numSlashes(String s) {
+      var n = 0;
+      for (var i = 0; i < s.length; i++) {
+        if (isPathSepar(s.codeUnitAt(i))) n++;
+      }
+      return n;
+    }
     pairs.sort((a, b) {
       final la = numSlashes(_extractedFolders[a].path);
       final lb = numSlashes(_extractedFolders[b].path);
@@ -1233,7 +1341,7 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     });
     // chmod before the times (the times of directories do not change with
     // chmod, but they do when files are added)
-    flushFileAttribs();
+    flushFileAttribs(_attribError);
     for (final i in pairs) {
       final dpt = _extractedFolders[i];
       final mt = dpt.t.mTime;
@@ -1250,7 +1358,7 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
       stdOutStream?.flush();
       _setPostLinks();
       _setDirsTimes();
-      flushFileAttribs();
+      flushFileAttribs(_attribError);
       _arc = null;
     }
   }
