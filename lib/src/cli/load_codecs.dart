@@ -6,7 +6,18 @@
 
 import 'dart:typed_data';
 
+import '../format/arj/arj_handler.dart';
+import '../format/bzip2/bzip2_handler.dart';
+import '../format/lha/lha_handler.dart';
 import '../format/lzma_alone.dart';
+import '../format/tar/tar_header.dart';
+import 'arc_arj.dart';
+import 'arc_bzip2.dart';
+import 'arc_gzip.dart';
+import 'arc_lzh.dart';
+import 'arc_rar.dart';
+import 'arc_tar.dart';
+import 'arc_zip.dart';
 import 'arc_handlers.dart';
 import 'platform.dart';
 
@@ -98,6 +109,10 @@ class ArcInfoEx {
 int _isArcLzma(Uint8List p, int size) => isArcLzma(p, 0, size);
 int _isArcLzma86(Uint8List p, int size) => isArcLzma86(p, 0, size);
 
+// IsArc_BZip2
+int _isArcBzip2(Uint8List p, int size) =>
+    isBzip2Signature(p, 0, size) ? IsArcRes.yes : IsArcRes.no;
+
 // AddExts: "xz txz" with "* .tar"
 List<ArcExtInfo> _exts(String ext, [String addExt = '']) {
   final e = ext.split(' ').where((s) => s.isNotEmpty).toList();
@@ -143,6 +158,59 @@ class Codecs {
       ArcInfoEx('lzma86', _exts('lzma86'), ArcInfoFlags.keepName, const [],
           isArcFunc: _isArcLzma86, createInArchive: () => LzmaArc(true)),
       ArcInfoEx(
+          'bzip2',
+          _exts('bz2 bzip2 tbz2 tbz', '* * .tar .tar'),
+          ArcInfoFlags.keepName,
+          [
+            Uint8List.fromList([0x42, 0x5A, 0x68])
+          ],
+          isArcFunc: _isArcBzip2,
+          createInArchive: Bzip2Arc.new,
+          updateEnabled: true),
+      ArcInfoEx(
+          'gzip',
+          _exts('gz gzip tgz tpz apk', '* * .tar .tar .tar'),
+          ArcInfoFlags.keepName | ArcInfoFlags.mTime,
+          [
+            Uint8List.fromList([0x1F, 0x8B, 8])
+          ],
+          createInArchive: GzipArc.new,
+          updateEnabled: true),
+      ArcInfoEx('Lzh', _exts('lzh lha'),
+          ArcInfoFlags.mTime | ArcInfoFlags.mTimeDefault,
+          [
+            Uint8List.fromList([0x2D, 0x6C, 0x68]),
+            Uint8List.fromList([0x2D, 0x6C, 0x7A]),
+            Uint8List.fromList([0x2D, 0x70, 0x6D])
+          ],
+          signatureOffset: 2,
+          isArcFunc: isArcLzh,
+          createInArchive: LzhArc.new,
+          updateEnabled: true),
+      ArcInfoEx('Arj', _exts('arj'),
+          ArcInfoFlags.mTime | ArcInfoFlags.mTimeDefault,
+          [
+            Uint8List.fromList([0x60, 0xEA])
+          ],
+          isArcFunc: isArcArj,
+          createInArchive: ArjArc.new,
+          updateEnabled: true),
+      ArcInfoEx(
+          'tar',
+          _exts('tar ova'),
+          ArcInfoFlags.startOpen |
+              ArcInfoFlags.symLinks |
+              ArcInfoFlags.hardLinks |
+              ArcInfoFlags.mTime |
+              ArcInfoFlags.mTimeDefault,
+          [
+            Uint8List.fromList([0x75, 0x73, 0x74, 0x61, 0x72])
+          ],
+          signatureOffset: 257,
+          isArcFunc: isArcTar,
+          createInArchive: TarArc.new,
+          updateEnabled: true),
+      ArcInfoEx(
           'xz',
           _exts('xz txz', '* .tar'),
           ArcInfoFlags.keepName,
@@ -150,6 +218,39 @@ class Codecs {
             Uint8List.fromList([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00])
           ],
           createInArchive: XzArc.new,
+          updateEnabled: true),
+      ArcInfoEx(
+          'zip',
+          _exts('zip z01 zipx jar xpi odt ods docx xlsx epub ipa apk appx'),
+          ArcInfoFlags.findSignature |
+              ArcInfoFlags.multiSignature |
+              ArcInfoFlags.useGlobalOffset |
+              ArcInfoFlags.symLinks |
+              ArcInfoFlags.cTime |
+              ArcInfoFlags.aTime |
+              ArcInfoFlags.mTime |
+              ArcInfoFlags.mTimeDefault,
+          [
+            Uint8List.fromList([0x50, 0x4B, 0x03, 0x04]),
+            Uint8List.fromList([0x50, 0x4B, 0x05, 0x06]),
+            Uint8List.fromList(
+                [0x50, 0x4B, 0x07, 0x08, 0x50, 0x4B, 0x03, 0x04]),
+          ],
+          isArcFunc: isArcZipFunc,
+          createInArchive: ZipArc.new,
+          updateEnabled: true),
+      ArcInfoEx('Rar', _exts('rar r00'), 0, [rar4ArcSignature],
+          createInArchive: RarArc.new, updateEnabled: true),
+      ArcInfoEx(
+          'Rar5',
+          _exts('rar r00'),
+          ArcInfoFlags.symLinks |
+              ArcInfoFlags.cTime |
+              ArcInfoFlags.aTime |
+              ArcInfoFlags.mTime |
+              ArcInfoFlags.mTimeDefault,
+          [rar5ArcSignature],
+          createInArchive: Rar5Arc.new,
           updateEnabled: true),
     ];
     // Formats.Sort(): by name, ordinal compare
@@ -234,7 +335,10 @@ class CodecInfoEntry {
 }
 
 /// g_Codecs of 7zr in registration order (the SDK's 7zr has no PPMd; the
-/// port has it, so it is listed after LZMA as in the full 7-Zip order).
+/// port has it, so it is listed after LZMA as in the full 7-Zip order),
+/// then the methods of the zip, rar, arj and lzh handlers. The last ones
+/// are not 7z coders: they are listed so that `i` shows what the port can
+/// decode (D) and encode (E); Lzh stands for lh0 to lh7 and the others.
 const List<CodecInfoEntry> kCodecs = [
   CodecInfoEntry(4, true, true, false, 0x303011B, 'BCJ2'),
   CodecInfoEntry(1, true, true, true, 0x3030103, 'BCJ'),
@@ -254,6 +358,20 @@ const List<CodecInfoEntry> kCodecs = [
   CodecInfoEntry(1, true, true, false, 0x30401, 'PPMD'),
   CodecInfoEntry(1, true, true, true, 0x6F10701, '7zAES'),
   CodecInfoEntry(1, true, true, true, 0x6F00181, 'AES256CBC'),
+  // the codecs of the other formats, with the ids of DOC/Methods.txt
+  CodecInfoEntry(1, true, true, false, 0x40108, 'Deflate'),
+  CodecInfoEntry(1, false, true, false, 0x40109, 'Deflate64'),
+  CodecInfoEntry(1, true, true, false, 0x40202, 'BZip2'),
+  CodecInfoEntry(1, false, true, false, 0x40101, 'Shrink'),
+  CodecInfoEntry(1, false, true, false, 0x40106, 'Implode'),
+  CodecInfoEntry(1, true, true, false, 0x40162, 'PPMdZip'),
+  CodecInfoEntry(1, true, true, true, 0x40163, 'wzAES'),
+  CodecInfoEntry(1, true, true, true, 0x6F10101, 'ZipCrypto'),
+  CodecInfoEntry(1, false, true, false, 0x40303, 'Rar3'),
+  CodecInfoEntry(1, true, true, false, 0x40305, 'Rar5'),
+  CodecInfoEntry(1, true, true, false, 0x40401, 'Arj'),
+  CodecInfoEntry(1, true, true, false, 0x40402, 'Arj4'),
+  CodecInfoEntry(1, true, true, false, 0x406, 'Lzh'),
 ];
 
 /// CHasherInfo of 7zr: (digest size, id, name) in registration order.

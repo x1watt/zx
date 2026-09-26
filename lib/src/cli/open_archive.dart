@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import '../common/method_props.dart';
 import '../format/archive_types.dart';
 import '../io/streams.dart';
+import 'arc_compound.dart';
 import 'arc_handlers.dart';
 import 'common.dart';
 import 'fs_utils.dart' show resolvePath;
@@ -269,6 +270,15 @@ class OpenOptions {
   List<MapEntry<String, String>>? props;
   bool stdInMode = false;
   String filePath = '';
+
+  /// Open a tar inside a compressor as the next level even when the names
+  /// do not say it is one (arc_compound.dart).
+  bool forceCompound = false;
+
+  /// Not null: a tar inside a compressor is decoded to a temporary file in
+  /// this folder (with its separator, empty for the current folder) and
+  /// opened seekable, for an update. null: it is read in one pass.
+  String? compoundTempDir;
 }
 
 /// CReadArcItem.
@@ -375,6 +385,18 @@ class Arc {
   /// The file stream the archive was opened from (closed by [close]).
   FileInStream? fileStream;
 
+  /// A tar inside a compressor (arc_compound.dart): the format index of
+  /// the compressor, -1 otherwise.
+  int compoundOuterIndex = -1;
+
+  /// The archive is read in one pass (a compound tar without a temporary
+  /// file): extraction goes through the items in order, as with -si.
+  bool isSeq = false;
+
+  /// The temporary file of a compound tar opened for an update, deleted by
+  /// [close].
+  String? tempPath;
+
   int getEstmatedPhySize() => phySizeDefined ? phySize : fileSize;
   int getGlobalOffset() => arcStreamOffset + offset;
 
@@ -387,6 +409,28 @@ class Arc {
       // ignore
     }
     fileStream = null;
+    final t = tempPath;
+    if (t != null) {
+      tempPath = null;
+      try {
+        File(t).deleteSync();
+      } on FileSystemException {
+        // ignore
+      }
+    }
+  }
+
+  /// The error flags of a one pass archive after its headers were read
+  /// (the listing reads them all after Open).
+  void refreshSeqErrors() {
+    final a = archive;
+    if (a == null) return;
+    final d = [false];
+    errorInfo.errorFlags =
+        _getOpenArcErrorFlags(a.getArchiveProperty(Kpid.errorFlags), d);
+    errorInfo.errorFlagsDefined = d[0];
+    errorInfo.warningFlags =
+        _getOpenArcErrorFlags(a.getArchiveProperty(Kpid.warningFlags));
   }
 
   // CArc::ReadBasicProps
@@ -1536,6 +1580,8 @@ class ArchiveLink {
     release();
     if (op.types.length >= 32) return HRes.eNotImpl;
 
+    var forceCompound = op.forceCompound;
+    final callerStream = op.stream;
     int resSpec;
     for (;;) {
       resSpec = HRes.sOk;
@@ -1559,6 +1605,17 @@ class ArchiveLink {
           ..path = op.filePath
           ..subfileIndex = -1;
         final result = arc.openStreamOrFile(op, stdinData);
+        if (result == HRes.sFalse && _isTarType(op) && !op.stdInMode) {
+          // -ttar on a compressed tar: the compressor, then the tar
+          final outer = _openCompoundOuter(op, callerStream);
+          if (outer != null) {
+            arc.close();
+            arcs.add(outer);
+            forceCompound = true;
+            continue;
+          }
+          op.stream = callerStream;
+        }
         if (result != HRes.sOk) {
           if (result == HRes.sFalse) {
             nonOpenErrorInfo = arc.nonOpenErrorInfo;
@@ -1618,8 +1675,133 @@ class ArchiveLink {
       arc2.mTime.copyFrom(arc.getItemMTime(mainSubfile));
       arcs.add(arc2);
     }
+
+    // a tar inside a compressor (arc_compound.dart): without -t by the
+    // names, with -ttar, with the chain -ttar.gzip (tar inside gzip) or
+    // when the caller asks for it
+    if (arcs.length == 1) {
+      final tarIndex = op.codecs.findFormatForArchiveType('tar');
+      final chain = op.types.length == 2 && op.types[0].formatIndex == tarIndex;
+      if (chain || forceCompound || op.types.isEmpty) {
+        final r = _openCompoundTar(op, chain || forceCompound, tarIndex);
+        if (r == HRes.sOk) {
+          resSpec = HRes.sOk;
+        } else if (r != HRes.sFalse) {
+          return r;
+        } else if (chain || forceCompound) {
+          // -ttar (or the chain) and the compressed data is not a tar
+          nonOpenArcPath = arcs[0].path;
+          nonOpenErrorInfo = ArcErrorInfo()..errorFormatIndex = tarIndex;
+          return HRes.sFalse;
+        }
+      }
+    }
     isOpen = arcs.isNotEmpty;
     return resSpec;
+  }
+
+  bool _isTarType(OpenOptions op) =>
+      op.types.length == 1 &&
+      op.types[0].formatIndex >= 0 &&
+      op.codecs.formats[op.types[0].formatIndex].name == 'tar';
+
+  // Opens the file with format detection, for -ttar on a compressed tar;
+  // null when it is not a compressor.
+  Arc? _openCompoundOuter(OpenOptions op, SeekableInStream? callerStream) {
+    op.stream = callerStream;
+    op.openType = OpenType();
+    final arc = Arc()
+      ..filePath = op.filePath
+      ..path = op.filePath
+      ..subfileIndex = -1;
+    final r = arc.openStreamOrFile(op, null);
+    if (r == HRes.sOk &&
+        arc.formatIndex >= 0 &&
+        isCompoundOuterFormat(op.codecs.formats[arc.formatIndex])) {
+      return arc;
+    }
+    arc.close();
+    op.stream = callerStream;
+    return null;
+  }
+
+  // The tar level of a compound archive over arcs[0]; S_FALSE when it is
+  // not one.
+  int _openCompoundTar(OpenOptions op, bool forced, int tarIndex) {
+    final outer = arcs[0];
+    final outerArchive = outer.archive;
+    if (tarIndex < 0 || outer.formatIndex < 0 || outerArchive == null) {
+      return HRes.sFalse;
+    }
+    if (!isCompoundOuterFormat(op.codecs.formats[outer.formatIndex])) {
+      return HRes.sFalse;
+    }
+    if (outerArchive.numberOfItems != 1) return HRes.sFalse;
+    final innerPath = outer.getItemPath(0);
+    if (!forced) {
+      if (op.stdInMode) return HRes.sFalse;
+      if (!looksLikeCompoundTar(outer.path, innerPath)) return HRes.sFalse;
+    }
+    final arc2 = Arc()
+      ..path = innerPath
+      ..subfileIndex = 0
+      ..compoundOuterIndex = outer.formatIndex;
+    op.callbackSpec?.setSubArchiveName(innerPath);
+
+    final tempDir = op.compoundTempDir;
+    if (tempDir != null && !op.stdInMode) {
+      final tmp = decodeCompoundToTempFile(outerArchive, tempDir);
+      if (tmp == null) return HRes.sFalse;
+      final FileInStream f;
+      try {
+        f = FileInStream.open(tmp);
+      } on FileSystemException catch (e) {
+        File(tmp).deleteSync();
+        return hresultOfFileSystemException(e);
+      }
+      arc2
+        ..fileStream = f
+        ..tempPath = tmp;
+      final op2 = OpenOptions()
+        ..props = op.props
+        ..codecs = op.codecs
+        ..openType = (OpenType()
+          ..formatIndex = tarIndex
+          ..zerosTailIsAllowed = true)
+        ..excludedFormats = const []
+        ..stream = f
+        ..filePath = innerPath
+        ..callback = op.callback
+        ..callbackSpec = op.callbackSpec;
+      final r = arc2.openStream(op2);
+      if (r != HRes.sOk) {
+        arc2.close();
+        return r;
+      }
+    } else {
+      final decoded = outerArchive.getSeqStream(0);
+      if (decoded == null) return HRes.sFalse;
+      final a = SeqTarArc(decoded);
+      final props = op.props;
+      if (props != null && props.isNotEmpty) setArchiveProperties(a, props);
+      final int r;
+      try {
+        r = a.openSeqTar();
+      } on SevenZipException {
+        return HRes.sFalse;
+      }
+      if (r != HRes.sOk) return HRes.sFalse;
+      arc2
+        ..archive = a
+        ..formatIndex = tarIndex
+        ..isSeq = true
+        ..defaultName = getDefaultName2(
+            extractFileNameFromPath(innerPath), 'tar', '');
+      arc2.refreshSeqErrors();
+    }
+    arc2.mTime.copyFrom(outer.getItemMTime(0));
+    arcs.add(arc2);
+    return HRes.sOk;
   }
 
   // CArchiveLink::Open2

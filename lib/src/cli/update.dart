@@ -9,7 +9,9 @@ import '../common/method_props.dart' show InvalidArgException;
 import '../format/archive_types.dart';
 import '../format/split.dart';
 import '../io/streams.dart';
+import 'arc_compound.dart';
 import 'arc_handlers.dart';
+import 'arc_tar.dart';
 import 'archive_extract_callback.dart' show censorNodeCheckPath2, StdOutFileStream;
 import 'common.dart';
 import 'enum_dir_items.dart';
@@ -197,6 +199,10 @@ class UpdateOptions {
   List<RenamePair> renamePairs = [];
   List<int> volumesSizes = [];
 
+  /// A new compound archive (a tar inside this compressor, by the archive
+  /// name or -ttar.gzip): the format index of the compressor, else -1.
+  int compoundOuterIndex = -1;
+
   // InitFormatIndex
   bool initFormatIndex(Codecs codecs, List<OpenType> types, String arcPath) {
     if (types.length > 1) return false;
@@ -353,6 +359,11 @@ void _compress(
     FinishArchiveStat st) {
   InArchive outArchive;
   var formatIndex = options.methodMode.type.formatIndex;
+  final compoundOuter =
+      arc != null ? arc.compoundOuterIndex : options.compoundOuterIndex;
+  if (arc == null && compoundOuter >= 0) {
+    formatIndex = codecs.findFormatForArchiveType('tar');
+  }
   if (arc != null) {
     formatIndex = arc.formatIndex;
     if (formatIndex < 0) throw const SystemException(HRes.eNotImpl);
@@ -371,6 +382,16 @@ void _compress(
       throw const StringException(
           'update operations are not supported for this archive');
     }
+  }
+
+  if (compoundOuter >= 0) {
+    // the tar written into the compressor (arc_compound.dart)
+    final create = codecs.formats[compoundOuter].createInArchive;
+    if (create == null || outArchive is! TarArc) {
+      throw const SystemException(HRes.eNotImpl);
+    }
+    outArchive = CompoundOutArc(create(), outArchive,
+        compoundInnerName(extractFileNameFromPath(archivePath.getFinalPath())));
   }
 
   // SetProperties
@@ -728,6 +749,21 @@ void updateArchive(
   if (options.stdOutMode && options.eMailMode) {
     throw const SystemException(HRes.eFail);
   }
+  // -ttar.gzip (tar inside gzip, 7-Zip's order of the chain): a compound
+  // archive (arc_compound.dart)
+  var chainOuter = -1;
+  if (types.length == 2) {
+    final t0 = types[0].formatIndex;
+    final t1 = types[1].formatIndex;
+    if (t0 >= 0 &&
+        t1 >= 0 &&
+        codecs.formats[t0].name == 'tar' &&
+        isCompoundOuterFormat(codecs.formats[t1]) &&
+        codecs.formats[t1].updateEnabled) {
+      chainOuter = t1;
+      types = [types[1]];
+    }
+  }
   if (types.length > 1) throw const SystemException(HRes.eNotImpl);
 
   final renameMode = options.renamePairs.isNotEmpty;
@@ -781,6 +817,19 @@ void updateArchive(
     arcPath = '${options.archivePath.getFinalVolPath()}.001';
   }
 
+  if (chainOuter >= 0) {
+    options.compoundOuterIndex = chainOuter;
+  } else if (types.isEmpty && options.compoundOuterIndex < 0) {
+    // x.tar.gz, x.tgz, x.tar.bz2, x.txz...: a tar inside the compressor
+    final f = options.methodMode.type.formatIndex;
+    if (f >= 0 &&
+        isCompoundOuterFormat(codecs.formats[f]) &&
+        codecs.formats[f].updateEnabled &&
+        isCompoundTarName(extractFileNameFromPath(arcPath))) {
+      options.compoundOuterIndex = f;
+    }
+  }
+
   try {
     if (cmdArcPath2.isEmpty) {
       if (options.methodMode.type.formatIndex < 0) {
@@ -824,7 +873,9 @@ void updateArchive(
           ..excludedFormats = const []
           ..stdInMode = false
           ..stream = null
-          ..filePath = arcPath;
+          ..filePath = arcPath
+          ..forceCompound = options.compoundOuterIndex >= 0
+          ..compoundTempDir = _compoundTempDir(options, arcPath);
 
         callback.startOpenArchive(arcPath);
         int result;
@@ -845,7 +896,8 @@ void updateArchive(
         final arc = arcLink.arcs.last;
         arc.mTime.def = true;
         arc.mTime.setFromFiTime(fi.mTime);
-        if (arc.errorInfo.thereIsTail) {
+        if (arc.errorInfo.thereIsTail &&
+            !(arc.compoundOuterIndex >= 0 && arc.errorInfo.ignoreTail)) {
           errorInfo.message =
               'There is some data block after the end of the archive';
           throw const SystemException(HRes.eNotImpl);
@@ -1096,4 +1148,14 @@ void updateArchive(
   } finally {
     arcLink.close();
   }
+}
+
+// The folder of the temporary tar of a compound archive being updated:
+// the -w folder, else the folder of the archive (with its separator).
+String _compoundTempDir(UpdateOptions options, String arcPath) {
+  var dir = options.workingDir;
+  if (dir.isEmpty) dir = splitPathToParts2(arcPath).$1;
+  dir = resolvePath(dir);
+  if (dir.isNotEmpty && !endsWithPathSepar(dir)) dir += kDirSep;
+  return dir;
 }

@@ -116,7 +116,11 @@ int _decompressArchive(
 
   final allFilesAreAllowed = wildcardCensor.areAllAllowed();
 
-  if (!options.stdInMode) {
+  // a one pass archive (-si, or a compound tar read without a temporary
+  // file, arc_compound.dart): all items in order, the censor selects
+  final seqMode = options.stdInMode || arc.isSeq;
+
+  if (!seqMode) {
     final numItems = archive.numberOfItems;
     final item = ReadArcItem();
     for (var i = 0; i < numItems; i++) {
@@ -174,7 +178,7 @@ int _decompressArchive(
 
   ecs.init(
       options.ntOptions,
-      options.stdInMode ? wildcardCensor : null,
+      seqMode ? wildcardCensor : null,
       arc,
       callback,
       options.stdOutMode,
@@ -188,10 +192,10 @@ int _decompressArchive(
   var result = HRes.sOk;
   final testMode = options.testMode && !calcCrc;
   try {
-    if (options.stdInMode) {
+    if (seqMode) {
       archive.extract(null, testMode, ecs);
       final p = archive.getArchiveProperty(Kpid.phySize);
-      if (p is int) stdInProcessed = p;
+      if (p is int && options.stdInMode) stdInProcessed = p;
     } else {
       ecs.setCompleted(0);
       archive.extract(realIndices, testMode, ecs);

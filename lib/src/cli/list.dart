@@ -777,6 +777,14 @@ class ListOptions {
     }
 
     try {
+      final lastArc = arcLink.arcs.last;
+      if (lastArc.isSeq) {
+        // a compound tar read in one pass: its headers (and errors) are
+        // known after all were read
+        lastArc.archive!.numberOfItems;
+        lastArc.refreshSeqErrors();
+      }
+
       for (final a in arcLink.arcs) {
         final arc = a.errorInfo;
         if (arc.warningMessage.isNotEmpty) numWarnings++;

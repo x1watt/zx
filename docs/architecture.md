@@ -72,8 +72,28 @@ Read it together with `docs/performance.md`.
     ARM, ARMT, ARM64, SPARC, RISCV), `delta.dart`, `swap.dart`,
     `bcj2.dart` (Bcj2.c, Bcj2Enc.c, Bcj2Coder.cpp), `filter_coder.dart`.
   - `copy.dart`, `registry.dart`.
+  - `deflate/`: zlib 1.3.1 (`deflate.dart`, `trees.dart`, `inflate.dart`,
+    `inftrees.dart`, `zutil.dart`), `infback9.dart` (Deflate64 decoding,
+    zlib's contrib/infback9) and `deflate_coder.dart` (the coder shapes).
+  - `bzip2/`: bzip2 1.0.8 (`compress.dart`, `blocksort.dart`,
+    `huffman.dart`, `decompress.dart`, `bzip2_tables.dart`) and
+    `bzip2_coder.dart`.
+  - `ppmd8/`: Ppmd8.c, Ppmd8Dec.c, Ppmd8Enc.c (PPMd var.I, zip method 98,
+    from the public domain C files of 7-Zip).
+  - `lzh/`: the LHA decoders of lhasa (`lha_decoder.dart`,
+    `lh1_decoder.dart`, `lh_new_decoder.dart` for lh4 to lh7,
+    `larc_decoders.dart`, `pma_decoders.dart`), ARJ method 4
+    (`arj4_decoder.dart`), and `lzh_encoder.dart` (lh5, lh6, lh7 and ARJ
+    methods 1 to 3, written from the format).
+  - `rar/`: the RAR 2.9/3.x decoder and its PPMd variant (after
+    libarchive), the RAR5 decoder (after libarchive) and the RAR5 encoder
+    (written from the format), `rar_huffman.dart`.
 - `lib/src/crypto`: `aes.dart` (Aes.c, CBC), `sha256.dart`,
-  `seven_zip_aes.dart` (7zAes.cpp: key derivation, properties, coder).
+  `seven_zip_aes.dart` (7zAes.cpp: key derivation, properties, coder),
+  `sha1.dart` (Sha1.c), `hmac_sha1.dart` (HMAC and PBKDF2, RFC 2104 and
+  2898), `zip_crypto.dart` (PKWARE traditional encryption, APPNOTE),
+  `winzip_aes.dart` (WinZip AE-1/AE-2), `rar5_kdf.dart` and `blake2sp.dart`
+  (RAR5 keys and file hashes).
 - `lib/src/format`: the archive handlers.
   - `archive_types.dart`: PropID.h and IArchive.h (Kpid, OperationResult,
     the extract and update callbacks).
@@ -88,8 +108,29 @@ Read it together with `docs/performance.md`.
     (LzmaAlone.cpp, Lzma86Enc.c).
   - `split.dart`: split volumes (SplitHandler.cpp, MultiStream.cpp,
     MultiOutStream.cpp).
+  - `gzip/`: the gzip handler (RFC 1952: several members, all the header
+    fields; `GzipDecoderInStream` for one pass reading).
+  - `bzip2/`: the bzip2 handler (several streams).
+  - `tar/`: the tar handler (after libarchive: ustar, GNU and pax headers,
+    long names, sparse files; writing GNU or pax, `updateItemsSteps` for a
+    tar written into a compressor).
+  - `zip/`: the zip handler (after libarchive and APPNOTE: zip64, data
+    descriptors, Unicode names, extra time fields, symbolic links; Store,
+    Shrink, Reduce, Implode, Deflate, Deflate64, BZip2, LZMA, xz, PPMd;
+    ZipCrypto and WinZip AES; writing and updating).
+  - `lha/`: the LZH handler (after lhasa; level 0, 1, 2 headers; writes
+    level 2 headers).
+  - `arj/`: the ARJ handler (ARJ technote; methods 0 to 4 both ways).
+  - `rar/`: the RAR handlers ("Rar" for RAR 1.5 to 4.x archives, "Rar5"),
+    reading after libarchive, RAR5 writing (`rar5_out.dart`), volumes and
+    encryption (`rar_crypto.dart`).
 - `lib/src/cli`, `bin/zx.dart`: the command line tool, 7zr's commands and
   switches (ArchiveCommandLine.cpp, Main.cpp, List, Extract, Update...).
+  `load_codecs.dart` registers the formats (7zr's plus gzip, bzip2, tar,
+  zip, Lzh, Arj, Rar and Rar5) and lists the codecs for `i`;
+  `arc_handlers.dart` and the `arc_*.dart` files adapt each handler to the
+  IInArchive / IOutArchive shape the UI code calls. `arc_compound.dart`
+  makes a tar inside gzip, bzip2, xz or lzma one archive (section 8).
   `platform.dart` holds the `_WIN32` switches (section 9), `file_link.dart`
   the reparse data of Windows links (Windows/FileLink.cpp).
 - `lib/src/pool.dart`: worker isolates for one operation.
@@ -198,12 +239,33 @@ caller renames the new file over the old one, as 7-Zip does.
   of ExtractingFilePath.cpp (characters Windows does not allow, trailing
   dots and spaces, device names such as `con`).
 
-## 8. Known limits
+## 8. Known limits and differences from 7-Zip
 
-- Formats and methods of the full 7-Zip that the SDK does not contain:
-  zip, rar, gzip, bzip2, tar, cab, iso, wim and the others; Deflate,
-  Deflate64, BZip2, ZSTD methods inside 7z. Archives using them open and
-  list, and those items fail with `unsupportedMethod`.
+- Formats beyond the SDK: gzip, bzip2, tar, zip (jar and the other zip
+  extensions), LZH, ARJ, RAR and RAR5 are read and written (RAR: extract
+  RAR 2.9, 3.x and RAR5, create RAR5 only). Not supported: the RAR 1.5 and
+  2.0 methods, RAR 3.x encryption, RAR7 (version 1 compression), writing
+  RAR volumes and recovery records, Deflate64 compression (decoding only),
+  ARJ garbled (password) files, and the other formats of the full 7-Zip
+  (cab, iso, wim...). Deflate, Deflate64, BZip2 and ZSTD methods inside
+  7z archives are not decoded: those items fail with `unsupportedMethod`.
+- Compound archives (`arc_compound.dart`) are behavior of the port, not
+  of 7-Zip. 7-Zip opens x.tar.gz as a gzip archive holding x.tar, because
+  CArchiveLink::Open goes to the next level only with kpidMainSubfile and
+  a seekable stream of it. The port adds that level when the archive is
+  gzip, bzip2, xz or lzma, and item 0 is named `*.tar` or the archive is
+  named `x.tar.*` or x.tgz, x.tbz, x.tbz2, x.txz, x.tlz... (or with `-ttar`,
+  or the chain `-ttar.gzip`, tar inside gzip in 7-Zip's order). Reading
+  goes through the decoded data in one pass (`getSeqStream`, TarHandler
+  OpenSeq), like `-si`; errors of the compressor (CRC, data) are reported
+  on the last item and as errors of the archive. Creating runs the tar
+  writer in steps (`TarHandler.updateItemsSteps`) as the input of the
+  compressor, with no temporary file; updating decodes the tar to a
+  temporary file in the `-w` folder (or next to the archive), updates it
+  and writes the new compressed archive with 7-Zip's temporary archive and
+  rename. `-m` switches go to the compressor, except `-mm=gnu|pax|posix`,
+  `-mtm`, `-mtc`, `-mta`, `-mtp` and `-mcp`, which go to tar. `-tgzip`,
+  `-tbzip2`, `-txz` and `-tlzma` keep 7-Zip's single level.
 - SFX modules, multi-volume creation from the API (the writer supports
   `MultiOutStream`, the CLI exposes `-v`), NTFS alternate streams and
   security descriptors.
@@ -264,3 +326,26 @@ its output must not change. macOS is POSIX with BSD tools.
   a failed attribute call of 7-Zip ("Cannot set file attribute") and never
   stops the operation; a failing `touch` is ignored, as 7-Zip ignores a
   failing SetDirTime.
+
+## 10. Allowed sources for the other formats
+
+The package is BSD 3-clause. Code may only be ported from sources whose
+license allows that, and the notice of each one goes into LICENSE:
+
+| Source (in `ref/`, not committed) | License | Used for |
+|---|---|---|
+| `lzma-sdk-26.01` | public domain | 7z, xz, lzma, all SDK codecs, the CLI |
+| `7zip-public-domain-c` (only the C files of 7-Zip whose header says public domain) | public domain | PPMd var.I (Ppmd8, zip method 98), HuffEnc, BwtSort |
+| `zlib-1.3.1` (including `contrib/infback9` for Deflate64) | zlib | Deflate, Deflate64, gzip |
+| `bzip2-1.0.8` | bzip2 (BSD style) | BZip2 |
+| `libarchive` | BSD 2-clause (check each file header) | tar, zip, RAR 2.9 to 4 and RAR5 reading, LHA |
+| `lhasa` | ISC | LHA decoders |
+| Public format documents: PKWARE APPNOTE, RFC 1951/1952, POSIX ustar/pax, WinZip AES (AE-1/AE-2), RAR5 technote, ARJ technote | documents | everything written from a specification |
+
+Never read or copy the LGPL parts of 7-Zip (its CPP handlers and coders for
+zip, gzip, bzip2, tar, rar, arj, lzh, deflate), the unRAR source (its
+license forbids using it to recreate the RAR compressor), or the GPL ARJ
+source. Encoders that no permissive source provides (RAR5, ARJ, LHA) are
+written here from the format definition, and verified against the
+reference tools in `ref/tools/root/usr/bin` (rar 7.00, arj 3.10, lhasa,
+jlha) and the system unzip, gzip, bzip2, tar and unrar.

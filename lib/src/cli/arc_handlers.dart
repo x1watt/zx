@@ -63,6 +63,12 @@ abstract class InArchive {
   /// IInArchiveGetStream::GetStream; null when not supported.
   SeekableInStream? getStream(int index) => null;
 
+  /// IInArchiveGetStream::GetStream when the stream is only sequential
+  /// (ISequentialInStream): the decoded data of item [index] of a
+  /// compressor (gzip, bzip2, xz, lzma), read once. null when not
+  /// supported. Used for a tar inside a compressor (arc_compound.dart).
+  InStream? getSeqStream(int index) => null;
+
   // ---- IOutArchive / ISetProperties ----
 
   bool get supportsUpdate => false;
@@ -197,6 +203,9 @@ class XzArc extends InArchive {
   SeekableInStream? getStream(int index) => h.getStream(index);
 
   @override
+  InStream? getSeqStream(int index) => index == 0 ? h.getSeqStream() : null;
+
+  @override
   bool get supportsUpdate => true;
 
   @override
@@ -319,6 +328,9 @@ class LzmaArc extends InArchive {
   @override
   void extract(List<int>? indices, bool testMode, ArchiveExtractCallback cb) =>
       h.extract(indices, testMode, cb);
+
+  @override
+  InStream? getSeqStream(int index) => index == 0 ? h.getSeqStream() : null;
 }
 
 /// The Split handler.

@@ -32,7 +32,7 @@ import 'prop_id_utils.dart';
 import 'platform.dart';
 
 const String _kVersion = '26.01';
-const String _kZxVersion = '0.1.0';
+const String _kZxVersion = '0.2.0';
 
 String _cpuName() {
   final v = Platform.version;

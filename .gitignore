@@ -4,3 +4,4 @@ pubspec.lock
 build/
 *.7z.tmp
 dist/
+__pycache__/

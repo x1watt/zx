@@ -9,6 +9,11 @@ write **byte for byte the output of the SDK** at the same settings, so
 archives match 7-Zip's (see Compatibility for the one exception), and
 7-Zip reads everything written here.
 
+On top of the SDK, the command line tool reads and writes zip (and jar),
+tar, gzip, bzip2, tar.gz / tgz, tar.bz2, tar.xz, LZH and ARJ, and reads
+RAR (writing RAR5), ported from permissively licensed sources (zlib,
+bzip2, libarchive, lhasa) or written from the format specifications.
+
 No native code, no FFI, no plugins, no run-time dependencies: it works
 wherever `dart:io` does (Android, iOS, Linux, macOS, Windows). All heavy
 work happens in background isolates, so the UI isolate never blocks.
@@ -26,10 +31,20 @@ function, and it would not exist without it.
 | **LZMA SDK**: 7z, xz and lzma formats, LZMA, LZMA2, the branch filters, BCJ2, Delta, 7zAES, the 7zr program | **Igor Pavlov**: <https://www.7-zip.org/sdk.html>. Public domain. Version 26.01 is the specification this port follows, file by file. |
 | **PPMd var.H**, the PPMd model used by 7z (`lib/src/codec/ppmd`) | **Dmitry Shkarin** (2001). Public domain, as included in the LZMA SDK. |
 | **SHA-256** (`lib/src/crypto/sha256.dart`) | **Wei Dai**, from the Crypto++ library. Public domain, as included in the LZMA SDK. |
+| **zlib**: Deflate, Deflate64 (contrib/infback9), used by gzip and zip (`lib/src/codec/deflate`) | **Jean-loup Gailly** and **Mark Adler**: <https://zlib.net>. zlib license. Version 1.3.1. |
+| **bzip2 / libbzip2**: BZip2, used by bzip2 files and zip (`lib/src/codec/bzip2`) | **Julian Seward**: <https://sourceware.org/bzip2/>. bzip2 license (BSD style). Version 1.0.8. |
+| **libarchive**: tar, zip, the RAR 2.9/3.x and RAR5 readers, parts of the LHA reader | **Tim Kientzle** and contributors (Michihiro Nakajima, Andres Mejia, Grzegorz Antoniak and others): <https://www.libarchive.org>. BSD 2-clause. |
+| **lhasa**: the LHA decoders (`lib/src/codec/lzh`) | **Simon Howard**: <https://github.com/fragglet/lhasa>. ISC license. |
+| **PPMd var.I**, zip method 98 (`lib/src/codec/ppmd8`) | **Dmitry Shkarin** (2001), as ported to C by Igor Pavlov. Public domain. |
+| **BLAKE2sp**, the RAR5 file hash | **Samuel Neves**, the BLAKE2 reference code. CC0 1.0. |
 
-Only the public domain LZMA SDK was used as a source. No code from the GNU
-LGPL licensed parts of 7-Zip was read or used, which is why this package
-can be BSD licensed. 7-Zip is a registered trademark of Igor Pavlov; this
+The 7z, xz and lzma code comes only from the public domain LZMA SDK; the
+other formats come from the permissive sources above or were written from
+the format documents (PKWARE APPNOTE, RFC 1951 and 1952, POSIX ustar and
+pax, WinZip AES, the RAR5 and ARJ technotes). No code from the GNU LGPL
+licensed parts of 7-Zip, from unRAR or from the GPL ARJ was read or used,
+which is why this package can be BSD licensed; each notice is in
+`LICENSE`. 7-Zip is a registered trademark of Igor Pavlov; this
 package is not affiliated with or endorsed by him.
 
 The Dart port itself (the ports of the SDK files, the isolate based API,
@@ -51,6 +66,7 @@ Brito, BSD 3-clause, see `LICENSE`.
   blocks in parallel isolates and writes the bytes `7z a -txz -mmt=N`
   writes.
 - **lzma**: `.lzma` (LzmaAlone) and `.lzma86` files.
+- **Other formats** (command line tool): see the table below.
 - **Levels 0 to 9** exactly as 7-Zip maps them to dictionary, match finder
   and fast bytes.
 
@@ -73,12 +89,32 @@ archives are equally valid but not always identical. The port also follows
 SDK 26.01 where it differs from older 7-Zip versions (level 5 uses a 32 MB
 dictionary; 7-Zip 23.01 used 16 MB).
 
-Not in the SDK, so not here: zip, rar, gzip, bzip2, tar, cab, iso, wim and
-the other formats of the full 7-Zip, and the Deflate, Deflate64, BZip2 and
-ZSTD methods inside 7z (such archives list, and those items report
+### Formats of the command line tool
+
+| Format | Extract | Create and update | Checked with |
+|---|---|---|---|
+| 7z | all SDK methods, AES | LZMA, LZMA2, PPMd, Copy, filters, AES | 7z |
+| xz | yes | yes | xz, 7z |
+| lzma, lzma86 | yes | through the library (`lzmaCompressFile`) | 7z |
+| zip, jar (and zipx, docx, epub...) | Store, Shrink, Reduce, Implode, Deflate, Deflate64, BZip2, LZMA, xz, PPMd; ZipCrypto, WinZip AES | Store, Deflate, BZip2, LZMA, xz, PPMd (`-mm=`); ZipCrypto, AES-128/192/256 (`-mem=`, `-p`); `-mcu`, `-mx` | unzip, jar, 7z |
+| tar | ustar, GNU, pax, long names, sparse files | GNU (default), pax (`-mm=pax`, `-mm=posix`) | tar |
+| gzip (`.gz`) | several members | one file, Deflate, `-mx` | gzip |
+| bzip2 (`.bz2`) | several streams | one file, `-mx` | bzip2 |
+| tar.gz, tgz, tar.bz2, tbz2, tar.xz, txz, tar.lzma | as one archive (see below) | as one archive (not tar.lzma) | tar |
+| LZH (`.lzh`, `.lha`) | every method lhasa decodes (lh0 to lh7, lzs, lz4, lz5, pm0 to pm2) | lh5 (default), lh6, lh7, lh0 (`-mm=`) | lhasa, jlha |
+| ARJ | methods 0 to 4 | methods 0 to 4 (`-mm=`, default 1) | arj 3.10 |
+| RAR (`.rar`) | RAR 2.9, 3.x and RAR5, volumes, RAR5 encryption | RAR5 | unrar, rar 7.00 |
+
+Not supported: the RAR 1.5 and 2.0 methods, RAR 3.x encryption, RAR7
+(version 1 compression), writing RAR volumes and recovery records,
+Deflate64 compression, ARJ garbled files, cab, iso, wim and the other
+formats of the full 7-Zip, and the Deflate, Deflate64, BZip2 and ZSTD
+methods inside 7z (such archives list, and those items report
 `unsupportedMethod`). Also absent: SFX modules, NTFS alternate streams and
 security data, restoring POSIX permissions (dates are restored), and the
-web platform.
+web platform. The library API (`SevenZipArchive` and the helpers) covers
+7z, xz and lzma; the other formats have synchronous handlers in
+`lib/src/format` and are used through the command line tool.
 
 ## Use
 
@@ -204,7 +240,41 @@ zx <command> [<switches>...] <archive> [<files>...]
 zx a -mx9 backup.7z docs/
 zx x -psecret backup.7z -oout
 zx l -slt backup.7z
+zx a site.zip public/ -mm=deflate -mx9
+zx a -psecret -mem=AES256 private.zip notes/
+zx a src.tar.gz src/            # a tar written straight into gzip
+zx x release.tar.xz -oout
+zx a old.lzh docs/ -mm=lh7
+zx t backup.arj
 ```
+
+The format comes from the extension (`-t` chooses it: `-tzip`, `-ttar`,
+`-tgzip`, `-tbzip2`, `-tLzh`, `-tArj`, `-tRar5`...), and the `-m`
+switches are the ones 7-Zip has for that format.
+
+**Compressed tar archives.** 7-Zip opens `x.tar.gz` as a gzip archive that
+holds one file, `x.tar`. `zx` treats a tar inside gzip, bzip2, xz or lzma
+as one archive when the names say so (`x.tar.gz`, `x.tgz`, `x.tar.bz2`,
+`x.tbz2`, `x.tar.xz`, `x.txz`, `x.tar.lzma`, `x.tlz`..., or a stored name
+ending in `.tar`): `l` lists the tar items (with a block for each level,
+as 7-Zip prints nested archives), `x`, `e` and `t` read the tar in one
+pass through the decompressor, `a` writes the tar straight into the
+compressor, and `a`, `u`, `d` and `rn` on an existing archive decompress
+the tar to a temporary file (in the `-w` folder or next to the archive),
+update it and write the new archive in its place. `-m` switches go to the
+compressor (`-mx`, `-mmt`...), except `-mm=gnu|pax|posix`, `-mtm`, `-mtc`,
+`-mta`, `-mtp` and `-mcp`, which go to tar. `-ttar` opens any compressed
+tar this way, and so does the type chain `-ttar.gzip` (7-Zip's order:
+tar inside gzip). `-tgzip`, `-tbzip2`, `-txz` and `-tlzma` keep 7-Zip's
+view of one compressed file.
+
+### Installing
+
+- With the Dart SDK: `dart pub global activate --source path <repo>` puts
+  a `zx` command on the PATH (in `~/.pub-cache/bin`, which must be on it).
+- Without it: copy a binary from `dist/` (or from a release) into a
+  folder on the PATH, as `zx` (`zx.exe` on Windows), and make it
+  executable (`chmod +x`).
 
 Native binaries (no Dart SDK needed to run them):
 
@@ -254,9 +324,12 @@ not installed.
 ## Layout
 
 - `lib/src/codec`: LZMA, LZMA2, PPMd, filters, BCJ2 (ports of the SDK's C
-  files and their C++ coder wrappers).
-- `lib/src/crypto`: AES, SHA-256, 7zAES.
-- `lib/src/format`: the 7z, xz, lzma and split handlers.
+  files and their C++ coder wrappers); Deflate and Deflate64 (zlib),
+  BZip2, PPMd var.I, the LHA and ARJ codecs, the RAR codecs.
+- `lib/src/crypto`: AES, SHA-256, 7zAES, SHA-1, ZipCrypto, WinZip AES,
+  the RAR5 key derivation and BLAKE2sp.
+- `lib/src/format`: the 7z, xz, lzma and split handlers; gzip, bzip2, tar,
+  zip, LHA, ARJ and RAR.
 - `lib/src/cli`, `bin/zx.dart`: the command line (`zx`).
 - `lib/src/api.dart`: the isolate based public API; `lib/src/pool.dart`
   and `lib/src/parallel.dart`: worker isolates and the parallel xz encoder.
@@ -268,4 +341,5 @@ not installed.
 
 BSD 3-clause, Copyright (c) 2026 Max Brito, see `LICENSE`. The LZMA SDK by
 Igor Pavlov, and the PPMd var.H and SHA-256 code it includes, are public
-domain. See Credits above.
+domain. The zlib, bzip2, libarchive, lhasa and BLAKE2 parts keep their own
+permissive licenses, reproduced in `LICENSE`. See Credits above.

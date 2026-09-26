@@ -483,6 +483,29 @@ class LzmaAloneHandler {
     _seqStream = stream;
   }
 
+  /// The decoded data of the first stream as a sequential stream
+  /// (IInArchiveGetStream for item 0), for a tar inside a .lzma file read
+  /// without a temporary file. null for lzma86. The archive stream is
+  /// rewound when it was read before.
+  InStream? getSeqStream() {
+    if (lzma86) return null;
+    final s = _seqStream;
+    if (s == null) return null;
+    if (_needSeekToStart) {
+      final st = _stream;
+      if (st == null) return null;
+      st.position = 0;
+    } else {
+      _needSeekToStart = true;
+    }
+    final buf = Uint8List(_headerSize);
+    if (readFully(s, buf, 0, buf.length) != buf.length) return null;
+    final h = LzmaAloneHeader();
+    if (!h.parse(buf, false)) return null;
+    return LzmaDecoderStream(Uint8List.fromList(h.lzmaProps), s,
+        outSize: h.hasSize ? h.size : null);
+  }
+
   /// IInArchive::Close
   void close() {
     _isArc = false;

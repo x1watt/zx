@@ -1,6 +1,8 @@
 // Registers every decoder of the port (7-Zip's REGISTER_CODEC tables).
 
+import 'bzip2/bzip2_coder.dart';
 import 'codec.dart';
+import 'deflate/deflate_coder.dart';
 import 'copy.dart';
 import 'filters/filters.dart';
 import 'lzma/lzma_coder.dart';
@@ -19,4 +21,6 @@ void registerAllCodecs() {
   registerPpmdCodecs(decoderRegistry);
   registerFilterCodecs(decoderRegistry);
   registerCryptoCodecs(decoderRegistry);
+  registerBzip2Codecs(decoderRegistry);
+  registerDeflateCodecs(decoderRegistry);
 }

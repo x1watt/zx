@@ -409,6 +409,23 @@ class XzHandler {
     _needSeekToStart = false;
   }
 
+  /// The decoded data as a sequential stream (IInArchiveGetStream for
+  /// item 0 without the block index, so without the memory of [getStream]),
+  /// for a tar inside the xz file read without a temporary file. The
+  /// archive stream is rewound when it was read before.
+  InStream? getSeqStream() {
+    final s = _seqStream;
+    if (s == null) return null;
+    if (_needSeekToStart) {
+      final st = _stream;
+      if (st == null) return null;
+      st.position = 0;
+    } else {
+      _needSeekToStart = true;
+    }
+    return XzDecoderInStream(s);
+  }
+
   /// IInArchive::Close
   void close() {
     _stat.clear();
@@ -1047,5 +1064,69 @@ class XzArchive {
     final h = XzHandler();
     h.setPropertiesFromStrings(properties);
     h.updateItems(output, 1, _SingleUpdateCallback(input, size, progress));
+  }
+}
+
+/// The xz streams of an input decoded as a pull stream: the single thread
+/// loop of XzDecMt_Decode_ST (XzUnpacker_Code with a caller buffer).
+/// Throws [SevenZipException] (data, crc, unexpectedEnd, unsupportedMethod)
+/// for bad data; bytes after the last stream that do not start a new one
+/// end the stream and set [dataAfterEnd].
+class XzDecoderInStream implements InStream {
+  final InStream _input;
+  final XzUnpacker _dec = XzUnpacker();
+  final Uint8List _inBuf = Uint8List(1 << 16);
+  int _inPos = 0;
+  int _inLim = 0;
+  bool _inEnd = false;
+  bool _finished = false;
+
+  /// Data that is not an xz stream follows the last stream.
+  bool dataAfterEnd = false;
+
+  XzDecoderInStream(this._input);
+
+  @override
+  int read(Uint8List buf, int off, int len) {
+    if (_finished || len <= 0) return 0;
+    for (;;) {
+      if (_inPos == _inLim && !_inEnd) {
+        _inPos = 0;
+        _inLim = _input.read(_inBuf, 0, _inBuf.length);
+        if (_inLim == 0) _inEnd = true;
+      }
+      final res = _dec.code(buf, off, len, _inBuf, _inPos, _inLim - _inPos,
+          _inEnd, coderFinishAny);
+      final srcUsed = _dec.srcProcessed;
+      final n = _dec.destProcessed;
+      _inPos += srcUsed;
+      if (res != szOk) {
+        if (res == szErrorNoArchive && _dec.numFinishedStreams > 0) {
+          // not a stream header after a finished stream
+          dataAfterEnd = true;
+          _finished = true;
+          return n;
+        }
+        throw SevenZipException(
+            'xz: decoding error $res',
+            switch (res) {
+              szErrorCrc => SevenZipError.crc,
+              szErrorInputEof => SevenZipError.unexpectedEnd,
+              szErrorUnsupported => SevenZipError.unsupportedMethod,
+              _ => SevenZipError.data,
+            });
+      }
+      if (n > 0) return n;
+      if (srcUsed == 0 && _inPos < _inLim) {
+        // no progress with input left
+        throw const SevenZipException('xz: data error', SevenZipError.data);
+      }
+      if (srcUsed == 0 && _inPos == _inLim && _inEnd) {
+        _finished = true;
+        if (_dec.isStreamWasFinished) return 0;
+        throw const SevenZipException(
+            'xz: unexpected end of data', SevenZipError.unexpectedEnd);
+      }
+    }
   }
 }
