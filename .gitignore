@@ -5,3 +5,7 @@ build/
 *.7z.tmp
 dist/
 __pycache__/
+native/nautilus/libzx-nautilus.so
+native/nautilus/zx-nautilus-test
+native/nautilus/libzx-nautilus.so
+native/nautilus/zx-nautilus-test

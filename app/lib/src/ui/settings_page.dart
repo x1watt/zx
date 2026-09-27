@@ -222,9 +222,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         title: const Text(
                           'Add "Extract to folder" to the file manager right-click menu',
                         ),
-                        subtitle: const Text(
-                          'Nautilus (script and extension) and Thunar',
-                        ),
+                        subtitle: const Text('Nautilus and Thunar'),
                         value: st?.contextMenu ?? false,
                         onChanged: st == null || _working
                             ? null

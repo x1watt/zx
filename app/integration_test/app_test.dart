@@ -49,6 +49,7 @@ void main() {
         '/opt/zx/zx_app',
         runner: (e, a) async => ProcessResult(0, 0, '', ''),
         systemConfigDirs: const [],
+        packaged: false,
       ),
     );
     key = GlobalKey<BrowserPageState>();
@@ -576,7 +577,7 @@ void main() {
           .value,
     );
     expect(File(integ.nautilusScript).existsSync(), isTrue);
-    expect(File(integ.nautilusExtension).existsSync(), isTrue);
+    expect(File(integ.contextMenuDisabledFile).existsSync(), isFalse);
     expect(
       File(integ.thunarActions).readAsStringSync(),
       contains('zx-extract-to-folder'),
@@ -590,6 +591,7 @@ void main() {
           .value,
     );
     expect(File(integ.nautilusScript).existsSync(), isFalse);
+    expect(File(integ.contextMenuDisabledFile).existsSync(), isTrue);
     await tester.tap(find.byKey(const Key('set-assoc')));
     await pumpUntil(
       tester,

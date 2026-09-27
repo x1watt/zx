@@ -2,9 +2,12 @@
 // associations and the "Extract to folder" entry of the file manager.
 //
 // Linux: a desktop entry with the archive MIME types, the default
-// applications in mimeapps.list, a Nautilus script, a nautilus-python
-// extension (a top level menu item once python3-nautilus is installed) and
-// a Thunar custom action. Windows: ProgIDs and verbs under
+// applications in mimeapps.list, a Thunar custom action and, for Nautilus,
+// the switch file of the native extension of the package
+// (native/nautilus, ~/.config/zx/context-menu-disabled) or, when zx is
+// installed per user without the package, a Nautilus script. When the app
+// runs from the package (/opt/zx), the desktop entry and the icons are the
+// system ones and are not written per user. Windows: ProgIDs and verbs under
 // HKCU\Software\Classes through reg.exe. macOS: done by the app bundle
 // (Info.plist) and a Finder Quick Action, see app/README.md.
 //
@@ -17,6 +20,7 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import 'desktop_entry.dart';
 import 'formats.dart';
 import 'settings.dart';
 
@@ -126,9 +130,23 @@ class UnsupportedIntegration implements DesktopIntegration {
 // ---------------------------------------------------------------------------
 // Linux
 
-const _desktopId = 'zx.desktop';
+const _desktopId = kDesktopId;
 const _thunarId = 'zx-extract-to-folder';
 const _scriptName = 'Extract to folder (zx)';
+
+/// Where the package installs the bundle (tool/build_deb.sh).
+const kPackageDir = '/opt/zx';
+
+/// The file name of the native Nautilus extension of the package.
+const kNautilusExtensionName = 'libzx-nautilus.so';
+
+/// The folders Nautilus (43 and later) loads extensions from.
+const kNautilusExtensionDirs = <String>[
+  '/usr/lib/x86_64-linux-gnu/nautilus/extensions-4',
+  '/usr/lib/aarch64-linux-gnu/nautilus/extensions-4',
+  '/usr/lib64/nautilus/extensions-4',
+  '/usr/lib/nautilus/extensions-4',
+];
 
 class LinuxIntegration implements DesktopIntegration {
   final AppPaths paths;
@@ -145,13 +163,25 @@ class LinuxIntegration implements DesktopIntegration {
   /// assets of the bundle next to [executable].
   final String? iconSource;
 
+  /// The app runs from the package: the desktop entry, the icons and the
+  /// Nautilus extension are system files; per user there are only the
+  /// defaults, the Thunar action and the switch of the extension.
+  /// Default: [executable] is inside [kPackageDir].
+  final bool packaged;
+
+  /// Where to look for the native Nautilus extension.
+  final List<String> nautilusExtensionDirs;
+
   LinuxIntegration(
     this.paths,
     this.executable, {
     this.runner = runCommand,
     List<String>? systemConfigDirs,
     this.iconSource,
-  }) : systemConfigDirs = systemConfigDirs ?? _xdgConfigDirs();
+    bool? packaged,
+    this.nautilusExtensionDirs = kNautilusExtensionDirs,
+  }) : systemConfigDirs = systemConfigDirs ?? _xdgConfigDirs(),
+       packaged = packaged ?? p.isWithin(kPackageDir, executable);
 
   static List<String> _xdgConfigDirs() {
     final v = Platform.environment['XDG_CONFIG_DIRS'];
@@ -172,8 +202,11 @@ class LinuxIntegration implements DesktopIntegration {
   String get mimeappsFile => p.join(paths.configHome, 'mimeapps.list');
   String get nautilusScript =>
       p.join(paths.dataHome, 'nautilus', 'scripts', _scriptName);
-  String get nautilusExtension =>
-      p.join(paths.dataHome, 'nautilus-python', 'extensions', 'zx_extract.py');
+
+  /// While this file exists the native Nautilus extension shows nothing
+  /// (native/nautilus/zx-nautilus.c reads it each time the menu opens).
+  String get contextMenuDisabledFile =>
+      p.join(paths.appConfigDir, 'context-menu-disabled');
   String get thunarActions => p.join(paths.configHome, 'Thunar', 'uca.xml');
   String get iconsDir => p.join(paths.dataHome, 'icons', 'hicolor');
   String get _previousDefaultsFile =>
@@ -191,34 +224,34 @@ class LinuxIntegration implements DesktopIntegration {
     final assoc = kPrimaryMimeTypes.every(
       (t) => (defaults[t] ?? const []).firstOrNull == _desktopId,
     );
-    final menu = await File(nautilusScript).exists();
+    final disabled = await File(contextMenuDisabledFile).exists();
+    final bool menu;
     final notes = <String>[];
-    if (menu && !await _nautilusPythonInstalled()) {
-      notes.add(
-        'Nautilus shows the entry under Scripts. For a top level '
-        '"Extract to <name>/" item install python3-nautilus '
-        '(sudo apt install python3-nautilus) and restart Nautilus '
-        '(nautilus -q).',
-      );
+    if (packaged) {
+      final ext = await nautilusExtensionInstalled();
+      menu = !disabled && (ext || await _hasThunarAction());
+    } else {
+      menu = await File(nautilusScript).exists();
+      if (menu && !await nautilusExtensionInstalled()) {
+        notes.add(
+          'Nautilus shows the entry under Scripts in the right-click menu. '
+          'The zx package (.deb) adds it as a top level '
+          '"Extract to <name>/" item.',
+        );
+      }
     }
     return IntegrationStatus(
       associations: assoc,
       contextMenu: menu,
-      registered: await File(desktopFile).exists(),
+      registered: packaged || await File(desktopFile).exists(),
       notes: notes,
     );
   }
 
-  static Future<bool> _nautilusPythonInstalled() async {
-    for (final d in const [
-      '/usr/lib/x86_64-linux-gnu/nautilus/extensions-4',
-      '/usr/lib/aarch64-linux-gnu/nautilus/extensions-4',
-      '/usr/lib64/nautilus/extensions-4',
-      '/usr/lib/nautilus/extensions-4',
-      '/usr/lib/x86_64-linux-gnu/nautilus/extensions-3.0',
-      '/usr/lib/nautilus/extensions-3.0',
-    ]) {
-      if (await File(p.join(d, 'libnautilus-python.so')).exists()) {
+  /// The native extension of the package is where Nautilus loads it.
+  Future<bool> nautilusExtensionInstalled() async {
+    for (final d in nautilusExtensionDirs) {
+      if (await File(p.join(d, kNautilusExtensionName)).exists()) {
         return true;
       }
     }
@@ -229,6 +262,8 @@ class LinuxIntegration implements DesktopIntegration {
 
   @override
   Future<void> register() async {
+    // the package brings the desktop entry and the icons
+    if (packaged) return;
     await Directory(applicationsDir).create(recursive: true);
     await _writeAtomic(desktopFile, desktopEntry());
     await _installIcons();
@@ -236,22 +271,7 @@ class LinuxIntegration implements DesktopIntegration {
   }
 
   /// The contents of zx.desktop.
-  String desktopEntry() =>
-      '''
-[Desktop Entry]
-Type=Application
-Name=zx
-GenericName=Archive Manager
-Comment=Open, create and extract archives: 7z, zip, rar, tar, gz, bz2, xz, lzh, arj
-Exec=${_desktopExec([executable])} %F
-Icon=zx
-Terminal=false
-Categories=Utility;Archiving;Compression;
-Keywords=archive;compress;extract;zip;7z;rar;tar;
-MimeType=${kArchiveMimeTypes.join(';')};
-StartupWMClass=io.github.maxbrito.zx
-StartupNotify=true
-''';
+  String desktopEntry() => linuxDesktopEntry(executable);
 
   Future<void> _installIcons() async {
     final src = _iconSource;
@@ -290,7 +310,7 @@ StartupNotify=true
   @override
   Future<void> setAssociations(bool on) async {
     if (on) {
-      if (!await File(desktopFile).exists()) await register();
+      if (!packaged && !await File(desktopFile).exists()) await register();
       await _setDefaults();
     } else {
       await _unsetDefaults();
@@ -443,27 +463,44 @@ StartupNotify=true
 
   @override
   Future<void> setContextMenu(bool on) async {
+    await _removeLegacyPythonExtension();
     if (on) {
-      if (!await File(desktopFile).exists()) await register();
-      await _writeAtomic(
-        nautilusScript,
-        nautilusScriptText(),
-        executable: true,
-      );
-      await _writeAtomic(nautilusExtension, nautilusExtensionText());
+      await _delete(contextMenuDisabledFile);
+      if (packaged) {
+        // the native extension of the package shows the item; a script
+        // left from a per user install would only repeat it
+        await _delete(nautilusScript);
+      } else {
+        if (!await File(desktopFile).exists()) await register();
+        await _writeAtomic(
+          nautilusScript,
+          nautilusScriptText(),
+          executable: true,
+        );
+      }
       await _addThunarAction();
     } else {
+      await Directory(paths.appConfigDir).create(recursive: true);
+      await _writeAtomic(
+        contextMenuDisabledFile,
+        'The "Extract to folder" item of the file manager is switched off '
+        'in the settings of zx.\n',
+      );
       await _delete(nautilusScript);
-      await _delete(nautilusExtension);
-      final cache = p.join(p.dirname(nautilusExtension), '__pycache__');
-      if (await Directory(cache).exists()) {
-        await for (final e in Directory(cache).list()) {
-          if (p.basename(e.path).startsWith('zx_extract.')) {
-            await _delete(e.path);
-          }
-        }
-      }
       await _removeThunarAction();
+    }
+  }
+
+  /// Earlier versions wrote a nautilus-python extension; the native
+  /// extension of the package replaces it.
+  Future<void> _removeLegacyPythonExtension() async {
+    final dir = p.join(paths.dataHome, 'nautilus-python', 'extensions');
+    await _delete(p.join(dir, 'zx_extract.py'));
+    final cache = Directory(p.join(dir, '__pycache__'));
+    if (await cache.exists()) {
+      await for (final e in cache.list()) {
+        if (p.basename(e.path).startsWith('zx_extract.')) await _delete(e.path);
+      }
     }
   }
 
@@ -481,81 +518,6 @@ if [ -n "\$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS" ]; then
 fi
 exec ${_shQuote(executable)} --extract-to-folder "\$@"
 ''';
-
-  String nautilusExtensionText() {
-    final exts = kArchiveExtensions.map((e) => "'.$e'").join(', ');
-    final mimes = kArchiveMimeTypes.map((e) => "'$e'").join(', ');
-    return '''
-# zx: "Extract to <name>/" in the Nautilus context menu of archives.
-# Installed by zx (Settings, Integration); switching the option off
-# removes it. Needs python3-nautilus.
-import os
-import re
-import subprocess
-from urllib.parse import unquote, urlparse
-
-from gi.repository import GObject, Nautilus
-
-ZX = ${jsonEncode(executable)}
-EXTS = ($exts)
-COMPOUND = ('.tar.gz', '.tar.bz2', '.tar.xz', '.tar.lzma', '.tar.bz', '.tar.z')
-MIMES = {$mimes}
-
-
-def _is_archive(f):
-    if f.get_uri_scheme() != 'file' or f.is_directory():
-        return False
-    if f.get_mime_type() in MIMES:
-        return True
-    n = f.get_name().lower()
-    return n.endswith(EXTS) or re.search(r'\\.(\\d{3}|r\\d\\d)\$', n) is not None
-
-
-def folder_name(name):
-    """The folder an archive extracts to (as zx names it)."""
-    low = name.lower()
-    m = re.search(r'\\.\\d{3}\$', low)
-    if m:
-        name, low = name[:m.start()], low[:m.start()]
-    m = re.search(r'\\.part\\d+\\.rar\$', low) or re.search(r'\\.r\\d\\d\$', low)
-    if m:
-        return name[:m.start()] or 'archive'
-    for e in COMPOUND:
-        if low.endswith(e) and len(low) > len(e):
-            return name[:-len(e)]
-    dot = low.rfind('.')
-    if dot > 0 and (low[dot:] in EXTS or low[dot:] in ('.gz', '.bz2', '.xz', '.lzma', '.z')):
-        name = name[:dot]
-    return name or 'archive'
-
-
-class ZxExtractMenu(GObject.GObject, Nautilus.MenuProvider):
-    def get_file_items(self, *args):
-        files = args[-1]
-        if not files or not all(_is_archive(f) for f in files):
-            return []
-        paths = [unquote(urlparse(f.get_uri()).path) for f in files]
-        if len(paths) == 1:
-            label = 'Extract to "%s/"' % folder_name(os.path.basename(paths[0]))
-        else:
-            label = 'Extract each to its folder'
-        item = Nautilus.MenuItem(
-            name='ZxExtractMenu::extract_to_folder',
-            label=label,
-            tip='Extract into a folder named after the archive (zx)',
-            icon='zx')
-        item.connect('activate', self._activate, paths)
-        return [item]
-
-    def get_background_items(self, *args):
-        return []
-
-    def _activate(self, _item, paths):
-        subprocess.Popen([ZX, '--extract-to-folder'] + paths,
-                         start_new_session=True,
-                         cwd=os.path.dirname(paths[0]))
-''';
-  }
 
   String thunarActionXml() {
     final patterns = <String>{
@@ -583,8 +545,10 @@ class ZxExtractMenu(GObject.GObject, Nautilus.MenuProvider):
   Future<void> _addThunarAction() async {
     final f = File(thunarActions);
     String text;
+    String? before;
     if (await f.exists()) {
       text = await f.readAsString();
+      before = text;
       await _backupOnce(thunarActions);
     } else {
       // Thunar reads the user's file instead of the system one: start from
@@ -607,8 +571,41 @@ class ZxExtractMenu(GObject.GObject, Nautilus.MenuProvider):
     }
     text =
         '${text.substring(0, end)}${thunarActionXml()}\n${text.substring(end)}';
+    if (text == before) return; // already there: no restart
     await f.parent.create(recursive: true);
     await _writeAtomic(thunarActions, text);
+    await _reloadThunar();
+  }
+
+  /// Thunar reads uca.xml only when it starts, and its session keeps a
+  /// background process ("Thunar --daemon") running for weeks: restart it
+  /// so the action appears (or disappears) now. This closes the open
+  /// Thunar windows; the daemon is started again if it was running.
+  Future<void> _reloadThunar() async {
+    final r = await runner('pgrep', ['-x', 'Thunar']);
+    final r2 = await runner('pgrep', ['-x', 'thunar']);
+    final running = (r != null && r.exitCode == 0) ||
+        (r2 != null && r2.exitCode == 0);
+    if (!running) return;
+    final daemon = await runner('pgrep', ['-f', '^/usr/bin/Thunar --daemon']);
+    final wasDaemon = daemon != null && daemon.exitCode == 0;
+    await runner('thunar', ['-q']);
+    if (wasDaemon) {
+      try {
+        await Process.start('Thunar', ['--daemon'],
+            mode: ProcessStartMode.detached);
+      } on ProcessException {
+        // Thunar starts again the next time a window is opened
+      }
+    }
+  }
+
+  Future<bool> _hasThunarAction() async {
+    final f = File(thunarActions);
+    if (!await f.exists()) return false;
+    return (await f.readAsString()).contains(
+      '<unique-id>$_thunarId</unique-id>',
+    );
   }
 
   Future<void> _removeThunarAction() async {
@@ -616,7 +613,10 @@ class ZxExtractMenu(GObject.GObject, Nautilus.MenuProvider):
     if (!await f.exists()) return;
     final text = await f.readAsString();
     final t2 = _withoutZxAction(text);
-    if (t2 != text) await _writeAtomic(thunarActions, t2);
+    if (t2 != text) {
+      await _writeAtomic(thunarActions, t2);
+      await _reloadThunar();
+    }
   }
 
   static String _withoutZxAction(String text) => text.replaceAllMapped(
@@ -634,6 +634,9 @@ class ZxExtractMenu(GObject.GObject, Nautilus.MenuProvider):
     await setAssociations(false);
     await _delete(desktopFile);
     await _removeIcons();
+    // per user nothing is left; with the package the switch file keeps its
+    // Nautilus extension off, as asked
+    if (!packaged) await _delete(contextMenuDisabledFile);
     await _refreshDatabases();
   }
 
@@ -679,16 +682,6 @@ String _xmlEscape(String s) => s
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
-
-/// The Exec value of a desktop entry (the quoting rules of the Desktop
-/// Entry Specification, then the escaping of string values).
-String _desktopExec(List<String> args) => args
-    .map((a) {
-      if (RegExp(r'^[A-Za-z0-9_./+-]+$').hasMatch(a)) return a;
-      final q = a.replaceAllMapped(RegExp(r'["`$\\]'), (m) => '\\${m[0]}');
-      return '"$q"'.replaceAll(r'\', r'\\');
-    })
-    .join(' ');
 
 /// A small reader and writer of the key files of mimeapps.list that keeps
 /// every line it does not change (comments, order, other sections).

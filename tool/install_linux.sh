@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Installs the zx archive manager for the current user (no root needed):
+# Installs the zx archive manager for the current user (no root needed;
+# the normal install is the .deb of tool/build_deb.sh):
 #   ~/.local/share/zx/app          the release bundle
 #   ~/.local/bin/zx-gui            a launcher
 #   ~/.local/share/applications/zx.desktop and the icons (hicolor)
@@ -25,7 +26,7 @@ for a in "$@"; do
     --no-build) BUILD=0 ;;
     --no-associations) ASSOC=0 ;;
     --no-context-menu) MENU=0 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "unknown option: $a" >&2; exit 2 ;;
   esac
 done
@@ -75,9 +76,8 @@ case ":$PATH:" in
   *":$BINDIR:"*) ;;
   *) echo "Note: $BINDIR is not on PATH; the desktop entry works anyway." ;;
 esac
-if [ "$MENU" = 1 ] && ! ls /usr/lib/*/nautilus/extensions-4/libnautilus-python.so >/dev/null 2>&1; then
-  echo "Note: for the top level \"Extract to <name>/\" item in Nautilus install"
-  echo "      python3-nautilus (sudo apt install python3-nautilus), then run nautilus -q."
-  echo "      Until then the entry is under Scripts in the right-click menu."
+if [ "$MENU" = 1 ]; then
+  echo "Note: in Nautilus the entry is under Scripts in the right-click menu."
+  echo "      The zx package (tool/build_deb.sh) adds a top level \"Extract to <name>/\" item."
 fi
 echo "Done. Start zx from the applications menu or with zx-gui."

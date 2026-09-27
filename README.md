@@ -330,13 +330,41 @@ background isolates: the window never freezes).
 
 ### Installing on Linux
 
+The normal install is the Debian package (Ubuntu, Debian and their
+derivatives, amd64):
+
+```sh
+tool/build_deb.sh                        # writes dist/zx_<version>_amd64.deb
+sudo apt install ./dist/zx_0.3.0_amd64.deb
+nautilus -q                              # once, so Nautilus loads the extension
+```
+
+| What | Where |
+|---|---|
+| The release bundle | `/opt/zx` (`zx_app`) |
+| Launcher, command line tool | `/usr/bin/zx-gui`, `/usr/bin/zx` |
+| Desktop entry with the archive MIME types | `/usr/share/applications/zx.desktop` |
+| Icon (SVG and PNG sizes) | `/usr/share/icons/hicolor/*/apps/zx.*` |
+| Nautilus: top level `Extract to "name/"` item on archives | `/usr/lib/x86_64-linux-gnu/nautilus/extensions-4/libzx-nautilus.so` |
+| Documentation, license | `/usr/share/doc/zx` |
+
+The package needs nothing beyond the libraries of a GTK desktop: the
+Nautilus item is a native extension (C, `native/nautilus/`), not a
+nautilus-python script, so no other package has to be installed. The
+package does not change anyone's default applications: each user turns
+that on in Settings. The Nautilus item is on unless a user switches it
+off in Settings (then `~/.config/zx/context-menu-disabled` exists and the
+extension shows nothing; no restart needed). `sudo apt remove zx`
+removes it all; the per user files (settings, `mimeapps.list` lines,
+Thunar action) stay until switched off in Settings before removing.
+
+Without root, a per user install:
+
 ```sh
 tool/install_linux.sh            # build, install, associate, add the menu
 tool/install_linux.sh --no-associations --no-context-menu
 tool/uninstall_linux.sh [--purge]
 ```
-
-Everything is per user, nothing needs root:
 
 | What | Where |
 |---|---|
@@ -346,12 +374,17 @@ Everything is per user, nothing needs root:
 | Icon (SVG and PNG sizes) | `~/.local/share/icons/hicolor/*/apps/zx.*` |
 | Default application (when associated) | `~/.config/mimeapps.list` (the previous defaults are restored when switched off) |
 | Nautilus: "Extract to folder (zx)" under Scripts | `~/.local/share/nautilus/scripts/` |
-| Nautilus: top level "Extract to name/" item | `~/.local/share/nautilus-python/extensions/zx_extract.py` (needs `sudo apt install python3-nautilus`, then `nautilus -q`) |
 | Thunar custom action (merged, other actions kept) | `~/.config/Thunar/uca.xml` |
 
+A per user install can not add a top level Nautilus item (Nautilus
+loads extensions only from the system folder), so there it is under
+Scripts in the right-click menu.
+
 The two switches of Settings (associate archive types, "Extract to
-folder" in the file manager) install and remove the same files as the
-script: both call the same code, also reachable as
+folder" in the file manager) install and remove the per user files: the
+Thunar action and, for a per user install, the Nautilus script; with the
+package the menu switch turns its Nautilus extension on and off. The
+switches and the script call the same code, also reachable as
 `zx_app --install-integration [--associations] [--context-menu]`,
 `zx_app --remove-integration [...]` and `zx_app --integration-status`.
 `zx_app --extract-to-folder a.zip b.tar.gz` extracts each archive into a
@@ -411,8 +444,11 @@ flutter test integration_test -d linux
 - `lib/src/cli`, `bin/zx.dart`: the command line (`zx`).
 - `lib/src/api.dart`: the isolate based public API; `lib/src/pool.dart`
   and `lib/src/parallel.dart`: worker isolates and the parallel xz encoder.
-- `app/`: the desktop archive manager (Flutter), `tool/install_linux.sh`
-  and `tool/uninstall_linux.sh`.
+- `app/`: the desktop archive manager (Flutter), `tool/build_deb.sh` (the
+  Debian package), `tool/install_linux.sh` and `tool/uninstall_linux.sh`
+  (per user install).
+- `native/nautilus/`: the Nautilus extension of the package (C, with a
+  test harness: `make -C native/nautilus test`).
 - `docs/architecture.md`: how the port is organised and the rules a change
   must keep.
 - `docs/performance.md`: measured numbers and how to measure.

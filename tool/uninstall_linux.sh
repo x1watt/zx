@@ -24,6 +24,7 @@ else
   echo "No installed app at $DEST: removing the known files directly"
   rm -f "$DATA/applications/zx.desktop" \
         "$DATA/nautilus/scripts/Extract to folder (zx)" \
+        "$CONFIG/zx/context-menu-disabled" \
         "$DATA/nautilus-python/extensions/zx_extract.py"
 fi
 rm -f "$HOME/.local/bin/zx-gui"

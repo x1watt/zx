@@ -1,6 +1,7 @@
 // The Linux desktop integration against a temporary home: desktop entry,
 // defaults in mimeapps.list (and giving the old ones back), the Nautilus
-// script and extension, the Thunar action merged into existing actions.
+// script, the switch file of the native Nautilus extension, the Thunar
+// action merged into existing actions; per user and from the package.
 
 import 'dart:io';
 
@@ -46,8 +47,27 @@ void main() {
       },
       systemConfigDirs: [p.join(tmp.path, 'etc', 'xdg')],
       iconSource: icons.path,
+      nautilusExtensionDirs: [p.join(tmp.path, 'extensions-4')],
     );
   });
+
+  /// The integration of the app installed by the package.
+  LinuxIntegration packaged() => LinuxIntegration(
+    testPaths(tmp.path),
+    '/opt/zx/zx_app',
+    runner: (exe, args) async {
+      commands.add('$exe ${args.join(' ')}');
+      return ProcessResult(0, 0, '', '');
+    },
+    systemConfigDirs: [p.join(tmp.path, 'etc', 'xdg')],
+    nautilusExtensionDirs: [p.join(tmp.path, 'extensions-4')],
+  );
+
+  void installNativeExtension() {
+    Directory(p.join(tmp.path, 'extensions-4')).createSync();
+    File(p.join(tmp.path, 'extensions-4', kNautilusExtensionName))
+        .writeAsBytesSync([0]);
+  }
 
   tearDown(() => tmp.deleteSync(recursive: true));
 
@@ -110,42 +130,69 @@ text/plain=org.gnome.TextEditor.desktop
     expect((await li.status()).associations, isFalse);
   });
 
-  test('context menu: Nautilus script, extension and Thunar action', () async {
-    await li.setContextMenu(true);
-    final script = File(li.nautilusScript);
-    expect(script.existsSync(), isTrue);
-    expect(
-      script.readAsStringSync(),
-      contains("exec '/opt/zx app/zx_app' --extract-to-folder \"\$@\""),
-    );
-    expect(script.statSync().mode & 0x40, isNonZero, reason: 'executable');
-    final ext = File(li.nautilusExtension).readAsStringSync();
-    expect(ext, contains('ZX = "/opt/zx app/zx_app"'));
-    expect(ext, contains('Nautilus.MenuProvider'));
-    final uca = File(li.thunarActions).readAsStringSync();
-    expect(uca, contains('Open Terminal Here'), reason: 'system actions kept');
-    expect(uca, contains('<unique-id>zx-extract-to-folder</unique-id>'));
-    expect(
-      uca,
-      contains(
-        "<command>'/opt/zx app/zx_app' --extract-to-folder %F</command>",
-      ),
-    );
-    expect((await li.status()).contextMenu, isTrue);
+  test(
+    'context menu: Nautilus script, switch file and Thunar action',
+    () async {
+      expect(li.packaged, isFalse);
+      final legacy = File(
+        p.join(
+          li.paths.dataHome,
+          'nautilus-python',
+          'extensions',
+          'zx_extract.py',
+        ),
+      )..createSync(recursive: true);
+      await li.setContextMenu(true);
+      expect(legacy.existsSync(), isFalse, reason: 'old python extension');
+      final script = File(li.nautilusScript);
+      expect(script.existsSync(), isTrue);
+      expect(
+        script.readAsStringSync(),
+        contains("exec '/opt/zx app/zx_app' --extract-to-folder \"\$@\""),
+      );
+      expect(script.statSync().mode & 0x40, isNonZero, reason: 'executable');
+      expect(File(li.contextMenuDisabledFile).existsSync(), isFalse);
+      final uca = File(li.thunarActions).readAsStringSync();
+      expect(
+        uca,
+        contains('Open Terminal Here'),
+        reason: 'system actions kept',
+      );
+      expect(uca, contains('<unique-id>zx-extract-to-folder</unique-id>'));
+      expect(
+        uca,
+        contains(
+          "<command>'/opt/zx app/zx_app' --extract-to-folder %F</command>",
+        ),
+      );
+      var st = await li.status();
+      expect(st.contextMenu, isTrue);
+      expect(
+        st.notes.single,
+        contains('Scripts'),
+        reason: 'no native extension',
+      );
+      installNativeExtension();
+      expect((await li.status()).notes, isEmpty);
 
-    // installing again does not duplicate the action
-    await li.setContextMenu(true);
-    final again = File(li.thunarActions).readAsStringSync();
-    expect('zx-extract-to-folder'.allMatches(again).length, 1);
+      // installing again does not duplicate the action
+      await li.setContextMenu(true);
+      final again = File(li.thunarActions).readAsStringSync();
+      expect('zx-extract-to-folder'.allMatches(again).length, 1);
 
-    await li.setContextMenu(false);
-    expect(File(li.nautilusScript).existsSync(), isFalse);
-    expect(File(li.nautilusExtension).existsSync(), isFalse);
-    final after = File(li.thunarActions).readAsStringSync();
-    expect(after, contains('Open Terminal Here'));
-    expect(after, isNot(contains('zx-extract-to-folder')));
-    expect((await li.status()).contextMenu, isFalse);
-  });
+      await li.setContextMenu(false);
+      expect(File(li.nautilusScript).existsSync(), isFalse);
+      expect(
+        File(li.contextMenuDisabledFile).existsSync(),
+        isTrue,
+        reason: 'switches the native extension off',
+      );
+      final after = File(li.thunarActions).readAsStringSync();
+      expect(after, contains('Open Terminal Here'));
+      expect(after, isNot(contains('zx-extract-to-folder')));
+      expect((await li.status()).contextMenu, isFalse);
+    },
+  );
 
   test('an existing uca.xml keeps its actions and gets a backup', () async {
     final f = File(li.thunarActions)..parent.createSync(recursive: true);
@@ -170,7 +217,61 @@ text/plain=org.gnome.TextEditor.desktop
       File(p.join(li.iconsDir, 'scalable', 'apps', 'zx.svg')).existsSync(),
       isFalse,
     );
+    expect(File(li.contextMenuDisabledFile).existsSync(), isFalse);
     final s = await li.status();
     expect(s.associations || s.contextMenu || s.registered, isFalse);
   });
+
+  test('from the package: no desktop entry per user, the switch file drives '
+      'the native extension', () async {
+    final pk = packaged();
+    expect(pk.packaged, isTrue);
+    installNativeExtension();
+    // a script left from a per user install
+    File(pk.nautilusScript)
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync('#!/bin/sh\n');
+
+    var st = await pk.status();
+    expect(st.registered, isTrue, reason: 'the system desktop entry');
+    expect(st.contextMenu, isTrue, reason: 'the extension is on by default');
+    expect(st.notes, isEmpty);
+
+    await pk.register();
+    await pk.setAssociations(true);
+    expect(File(pk.desktopFile).existsSync(), isFalse);
+    expect(
+      File(pk.mimeappsFile).readAsStringSync(),
+      contains('application/zip=zx.desktop'),
+    );
+
+    await pk.setContextMenu(false);
+    expect(File(pk.contextMenuDisabledFile).existsSync(), isTrue);
+    expect(File(pk.nautilusScript).existsSync(), isFalse);
+    expect((await pk.status()).contextMenu, isFalse);
+
+    await pk.setContextMenu(true);
+    expect(File(pk.contextMenuDisabledFile).existsSync(), isFalse);
+    expect(File(pk.nautilusScript).existsSync(), isFalse, reason: 'no script');
+    expect(
+      File(pk.thunarActions).readAsStringSync(),
+      contains("<command>/opt/zx/zx_app --extract-to-folder %F</command>"),
+    );
+    st = await pk.status();
+    expect(st.contextMenu, isTrue);
+
+    await pk.removeAll();
+    expect(File(pk.contextMenuDisabledFile).existsSync(), isTrue);
+    expect((await pk.status()).contextMenu, isFalse);
+  });
+
+  test(
+    'from the package without Nautilus: the Thunar action decides',
+    () async {
+      final pk = packaged();
+      expect((await pk.status()).contextMenu, isFalse);
+      await pk.setContextMenu(true);
+      expect((await pk.status()).contextMenu, isTrue);
+    },
+  );
 }
