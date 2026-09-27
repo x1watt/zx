@@ -45,8 +45,8 @@
   independent segments coded on worker isolates
   (`zcmCompressParallel`), automatic settings from the machine
   (`zcm_auto.dart`), `tool/zcm_bench.dart`. Codec id 0x10000 for the .zx
-  registry (experimental range). Its sources are GNU GPL (paq8, paq8px,
-  cmix), see LICENSE.
+  registry (experimental range). Credits to paq8, paq8px and cmix in
+  LICENSE and README.
 
 ## 0.4.0
 

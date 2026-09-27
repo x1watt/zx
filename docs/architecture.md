@@ -489,7 +489,14 @@ license allows that, and the notice of each one goes into LICENSE:
 | `paq8px` (github.com/hxim/paq8px, cloned in `ref/paq8px`), lpaq1 and paq8l (Matt Mahoney), `cmix` v21 (`ref/cmix`, Byron Knoll, with fxcm by kaitz) | GNU GPL (paq8px, lpaq1, paq8l: GPL v2 or later; cmix: GPL v3). The owner decided that zcm may use their models, parameters and code; see the note in section 15 | the zcm codec (`lib/src/codec/zcm`, section 15) |
 | Public format documents: PKWARE APPNOTE, RFC 1951/1952, POSIX ustar/pax, WinZip AES (AE-1/AE-2), RAR5 technote, ARJ technote, Devicetree Specification (devicetree.org), the U-Boot legacy image header layout and its os/arch/type/comp codes (format facts, checked black box with mkimage), the lzop file layout, the UEFI Specification (GPT), Microsoft's FAT specification (fatgen103), the Linux kernel's Documentation/filesystems/ext4, the SquashFS format write-up of dr-emann (dr-emann.github.io/squashfs), the cramfs README and documentation (Linux fs/cramfs, Documentation/filesystems/cramfs), the JFFS2 paper (David Woodhouse, "JFFS: The Journalling Flash File System", 2001) | documents | everything written from a specification |
 
-Never read or copy the LGPL parts of 7-Zip (its CPP handlers and coders for
+Source policy: the early releases avoided the sources below. Since
+2026-09-27 the owner has decided that zx may draw from any source
+(paq8px, cmix, zpaq and others), as new Dart code under the project
+license, with the original authors credited in each file, the README and
+LICENSE. The list below is kept as a record of how the earlier formats
+were written.
+
+Earlier rule: never read or copy the LGPL parts of 7-Zip (its CPP handlers and coders for
 zip, gzip, bzip2, tar, rar, arj, lzh, deflate), the unRAR source (its
 license forbids using it to recreate the RAR compressor), The Unarchiver
 (XADMaster, LGPL), unarr (LGPL), ports of any of them (junrar,
@@ -742,7 +749,9 @@ around one predictor, and the file headers name their sources.
   exp, tanh, logistic, sqrt), `zcm_predictor.dart` (the level table and
   the memory split), `zcm_auto.dart` (settings from the machine),
   `zcm_parallel.dart` (independent segments on worker isolates; the only
-  asynchronous file, rule 4).
+  asynchronous file, rule 4). `ZcmCompressor(threads: N)` codes
+  independent segments on the synchronous pool of `lib/src/sync_pool.dart`
+  with the same output.
 - **Determinism.** A stream must decode on every machine, so the model
   computes the same bits everywhere: integers for every paq style part
   (states, StateMaps, APMs, fixed point mixer weights; 32-bit wraparound
@@ -762,12 +771,18 @@ around one predictor, and the file headers name their sources.
 - **Hot loops** follow rule 3: typed lists, the tables of a component in
   locals, inputs written straight into the mixer's `Int32List`, no
   closures on the bit path, the mixer dot products unrolled by four.
-- **License.** paq8px, lpaq1, paq8l and cmix are GNU GPL. zcm uses their
-  state table, parameters and designs (with credit in each file, in the
-  README and in LICENSE); a distribution that includes `lib/src/codec/zcm`
-  should be reviewed against the GPL. Nothing else in the package imports
-  zcm yet; the .zx container is meant to register it (id 0x10000) with
-  `registerZxCodec` in `lib/src/format/zx/zx_codecs.dart`.
+- **Credits.** zcm uses the state table, parameters and designs of
+  paq8px, lpaq1, paq8l and cmix, credited in each file, in the README and
+  in LICENSE. It is new Dart code distributed as part of zx under the
+  project license, by the owner's decision (section 10). The .zx registry
+  (`lib/src/format/zx/zx_codecs.dart`, `_registerExperimentalCodecs`)
+  registers it as codec 0x10000.
+- **In .zx.** `-m0=zcm[:params]` (params as `zcmOptionsFromString`:
+  `level=N` or a level name, `mem=`, `lstm[=C/L/H]`, `seg=`,
+  `nodetect`; the archive level is the default zcm level). Each .zx block
+  is one zcm stream with its own model; the container codes blocks in
+  parallel, so memory is about threads times the zcm budget (capped per
+  block by 64 bytes per input byte plus 8 MiB).
 
 ## 16. The .zx format (zx extension)
 

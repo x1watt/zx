@@ -98,6 +98,71 @@ different matches on large inputs, so 7-Zip's output at levels 5 to 9
 with more than one thread is equally valid but not always identical to
 the single thread output. On the small inputs of the tests it is.
 
+### zcm (context mixing, experimental)
+
+`tool/zcm_bench.dart` compiled AOT (`dart compile exe`), one run per case,
+in memory (no isolate), on the benchmark corpus: `text.md` (96,530 bytes
+of English prose), `source.dart` (200,000 bytes of Dart), `x86.bin`
+(142,312 bytes, an x86-64 ELF executable) and `kernel.bin` (262,144 bytes
+of an ARM zImage, mostly already compressed). The machine was shared with
+other work (load average 1.3 to 3), so speeds vary by about 15%. KB/s is
+input KB per second of wall time; decoding runs at the same speed as
+encoding (the same model runs). Sizes in bytes; every round trip was
+checked.
+
+| Level | text.md | source.dart | x86.bin | kernel.bin | total | enc KB/s |
+|---|---|---|---|---|---|---|
+| 1 (fast nibble model) | 30,302 | 38,338 | 52,726 | 250,950 | 372,316 | 609 |
+| 2 (lean orders 2-6) | 27,881 | 34,175 | 48,684 | 249,305 | 360,045 | 254 |
+| 3 (+ words, x86 contexts) | 26,248 | 31,469 | 45,572 | 249,281 | 352,570 | 122 |
+| 4 (+ orders 5, 8, sparse, x86 parser) | 26,313 | 31,054 | 39,516 | 248,068 | 344,951 | 51 |
+| 5 (+ indirect, 16 word contexts) | 26,110 | 30,186 | 39,269 | 247,942 | 343,507 | 39 |
+| 6 (+ orders 7, 12, record, char groups, full x86) | 25,791 | 29,582 | 38,848 | 247,638 | 341,859 | 22 |
+| 7 (+ byte histories, paq8px indirect, 6 mixer sets) | 25,817 | 29,473 | 38,740 | 247,574 | 341,604 | 14 |
+| 8 (+ orders 16, 24, DMC) | 25,860 | 29,527 | 38,543 | 247,517 | 341,447 | 12 |
+| 9 (+ PPMd var.H order 16) | 25,784 | 29,457 | 38,399 | 247,532 | 341,172 | 11 |
+| 9 + LSTM 64x1, horizon 20 | 25,773 | | 38,306 | | | 3 to 5 |
+| xz -9e | 33,440 | 43,268 | 54,520 | 250,012 | 381,240 | |
+| 7z PPMd | 29,552 | 40,201 | 56,148 | 258,556 | 384,457 | |
+| zpaq -m5 | 27,780 | 33,862 | 49,191 | 249,504 | 360,337 | |
+| paq8px v216 -5 | 23,494 | 25,686 | 35,029 | 246,744 | 330,953 | 4 to 7.5 |
+| paq8px v216 -8 | 23,481 | 25,611 | 34,961 | 246,748 | 330,801 | 3.5 to 7 |
+
+paq8px was built from `ref/paq8px` with `clang++ -O3 -march=native` and
+run under `systemd-run --user --scope -p MemoryMax=3G` (its -5 uses about
+0.6 to 0.9 GB, -8 about 1.8 to 2.3 GB here; -9 and up need 4 to 29 GB).
+cmix v21 needs about 30 GB and was not run on this 16 GB machine.
+
+Findings:
+
+- Level 1 reaches about 0.6 MB/s (the target was 1 MB/s): per bit it is
+  one table read and update per order, a 7 input mixer and one APM; the
+  rest is Dart's cost per operation (bounds checks, no SIMD). Level 2 is
+  near zpaq -m5, level 3 better than zpaq -m5 on every file.
+- Level 9 is 10% larger than paq8px -8 on text.md and x86.bin and 15%
+  on source.dart (3% on the whole corpus, where kernel.bin dominates), at
+  1.5 to 3 times its speed; levels 4 and 5 are within 11 to 21% of it at
+  10 times its speed. paq8px has many more models (a
+  text model with stemming, XML, nest, chart, sparse match and more
+  word contexts) that zcm does not have yet.
+- Above level 6 the extra models pay little on these small files (100
+  to 260 KB): they need more data to learn. The time goes to the mixer
+  (about half: 4 to 10 weight sets of 100 to 300 inputs, 32-bit integer
+  weights) and to the context maps (about 40%, mostly memory latency).
+- The x86 parser (paq8px ExeModel) is the largest single gain: x86.bin
+  45,572 at level 3 (byte contexts only) against 39,516 at level 4.
+- The LSTM is slow and gains little on inputs this small (its benefit in
+  cmix shows on inputs of tens of MB); it is off unless asked for.
+- Memory: the budget of each level (`zcmDefaultMemoryMiB`: 32 MiB at
+  level 1 up to 3 GiB at level 9) is capped at 64 bytes per input byte
+  plus 8 MiB, so these files used 13 to 24 MiB of tables. Level 1 on a
+  1.5 MB file with `-m 256` peaked at 84 MB resident.
+- Independent segments (the four files as one 700 KB input, segments of
+  192 KiB): level 3 grows from 352,372 to 356,886 bytes (1.3%) and runs
+  at 308 KB/s on 4 isolates instead of 120 KB/s; level 6 grows from
+  339,642 to 345,032 (1.6%) at 49 KB/s instead of 22 KB/s. Larger
+  segments lose less.
+
 ## 2. Rules for keeping it fast
 
 - The hot loops follow rule 3 of `docs/architecture.md`: typed lists,
@@ -182,4 +247,7 @@ ZX=/tmp/zxbench tool/benchmark.sh <data dir> [runs] [filter]
 at the same time) in a temporary folder and prints wall time, CPU, MB/s,
 peak RSS and output size, for this port and for `/usr/bin/7z` (`SZ=` to
 use another). `tool/lzma_bench.dart` and `tool/ppmd_bench.dart` measure
-the codecs alone, in memory.
+the codecs alone, in memory. `tool/zcm_bench.dart` measures the zcm levels
+(`-l 1,3,6`, `-m MiB`, `-seg BYTES`, `-par THREADS`,
+`-lstm cells,layers,horizon`, `-nodec`); run memory-heavy levels inside
+a cgroup (`systemd-run --user --scope -p MemoryMax=3G`).

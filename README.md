@@ -67,8 +67,8 @@ and the RAR 1.5 and 2.0 ciphers the format descriptions of rar-research,
 with black box tests against RAR 1.55, WinRAR 2.90 and unrar). No code from the GNU LGPL
 licensed parts of 7-Zip, from unRAR or from the GPL ARJ was read or used,
 which is why this package can be BSD licensed (with one exception: the
-experimental zcm codecs in `lib/src/codec/zcm` draw on paq8, paq8px and
-cmix, which are GNU GPL, at the owner's decision; see LICENSE); each notice is in
+experimental zcm codecs in `lib/src/codec/zcm` are new Dart code that
+draws on paq8, paq8px and cmix, credited above); each notice is in
 `LICENSE`. 7-Zip is a registered trademark of Igor Pavlov; this
 package is not affiliated with or endorsed by him.
 
@@ -348,7 +348,12 @@ reading any data.
   Deflate, zpaq (context mixing, one zpaq block per zx block) and store,
   after the filters BCJ, ARM, ARMT, ARM64, PPC, SPARC, IA64, RISCV and
   Delta; zstd, LZ4 and LZO1X are read. Experimental codec families
-  register in their own id range (`registerZxCodec`).
+  register in their own id range (`registerZxCodec`): **zcm** (id
+  0x10000), context mixing in nine levels from about 0.6 MB/s (level 1)
+  to paq8px style models (levels 6 to 8, 12 to 22 KB/s) and level 9 with
+  PPMd and an optional LSTM (`-m0=zcm:level=3`, `-m0=zcm:cmix:mem=4g`;
+  `lib/src/codec/zcm`, `docs/performance.md`). An archive that uses it
+  can only be read by the zx version that wrote it or a later one.
 - **Blocks** of 16 MiB (`-mbs=4k..64m`), solid by default (`-ms=off`: a
   file per block), coded in parallel by worker isolates (`-mmt`; by
   default as many as half the processors and about 1 GiB of memory
@@ -382,6 +387,7 @@ reading any data.
 ```sh
 zx a -m0=PPMd8:o=8:mem=256m notes.zx notes/
 zx a -mf=ARM64 -m0=LZMA2:d=64m firmware.zx build/
+zx a -m0=zcm:level=6 -mmt2 texts.zx texts/
 zx a -v4g -v25g -mvdir=/mnt/disk1:100g -mvdir=/mnt/disk2:full big.zx data/
 zx l -mvsearch=/mnt/disk2 /mnt/disk1/big.zx.001
 zx l -mtimeline=docs/plan.txt backup.zx
@@ -609,7 +615,9 @@ flutter test integration_test -d linux
 
 - `lib/src/codec`: LZMA, LZMA2, PPMd, filters, BCJ2 (ports of the SDK's C
   files and their C++ coder wrappers); Deflate and Deflate64 (zlib),
-  BZip2, PPMd var.I, the LHA and ARJ codecs, the RAR codecs.
+  BZip2, PPMd var.I, the LHA and ARJ codecs, the RAR codecs;
+  `codec/zcm`: the zcm context mixing codecs (after paq8, paq8px and
+  cmix), with `tool/zcm_bench.dart`.
 - `lib/src/crypto`: AES, SHA-256, 7zAES, SHA-1, ZipCrypto, WinZip AES,
   the RAR 3.x and RAR5 key derivations and BLAKE2sp.
 - `lib/src/format`: the 7z, xz, lzma and split handlers; gzip, bzip2, tar,

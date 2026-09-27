@@ -385,9 +385,10 @@ decision:
   version 3 (the LSTM and the byte models of zcm follow it).
   PPMd var.H by Dmitry Shkarin (public domain, through the LZMA SDK).
 
-Because paq8, paq8px and cmix are licensed under the GNU GPL, a
-distribution that includes lib/src/codec/zcm may be subject to the terms
-of the GPL; the rest of this package does not depend on it.
+zcm is a new implementation in Dart, substantially changed from these
+programs, and is distributed as part of zx under the license above. The
+authors of the programs it learned from are credited here and in each
+file.
 
 -------------------------------------------------------------------------------
 TLSH (lib/src/util/tlsh.dart) is written from the TLSH paper and the

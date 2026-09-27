@@ -21,6 +21,7 @@ import '../../codec/lzma/lzma_coder.dart';
 import '../../codec/lzo/lzo1x.dart';
 import '../../codec/ppmd/ppmd_coder.dart';
 import '../../codec/ppmd8/ppmd8_coder.dart';
+import '../../codec/zcm/zcm.dart';
 import '../../codec/zstd/zstd.dart';
 import '../../common/method_props.dart';
 import '../../io/streams.dart';
@@ -209,7 +210,20 @@ List<ZxCodecInfo> zxCodecs() {
 ///
 /// A writer that uses an experimental codec sets min_reader_version to
 /// its own version and warns (zx_writer.dart).
-void _registerExperimentalCodecs() {}
+void _registerExperimentalCodecs() {
+  // zcm, the context mixing codecs (lib/src/codec/zcm): params as
+  // zcmOptionsFromString reads them ("level=3", "cmix:mem=2g", "6:lstm"),
+  // the archive level (-mx) is the default zcm level.
+  registerZxCodec(ZxCodecInfo.fromCoders(
+      id: zcmCodecId,
+      name: 'zcm',
+      introducedIn: (0, 5, 0),
+      compressor: (cfg, size) => ZcmCompressor(
+          zcmOptionsFromString(cfg.params, level: cfg.level.clamp(1, 9)),
+          inputSize: size),
+      decoder: zcmDecoder,
+      describe: zcmDescribe));
+}
 
 // ---------------------------------------------------------------------------
 // helpers
