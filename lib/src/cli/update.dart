@@ -571,6 +571,19 @@ void _compress(
     }
     final ms = MultiOutStream(
         '${resolvePath(archivePath.getFinalVolPath())}.', options.volumesSizes);
+    if (_isRarFormat(codecs, formatIndex)) {
+      // not in 7-Zip: RAR volumes get rar's names
+      var total = 0;
+      for (final up in updatePairs2) {
+        if (up.newData && up.dirIndex >= 0) {
+          total += dirItems.items[up.dirIndex].size;
+        }
+      }
+      final base = resolvePath(archivePath.getPathWithoutExt());
+      final digits = _rarVolumeDigits(total, options.volumesSizes.first);
+      ms.volumeName = (i) => rarVolumePath(base, i, digits);
+      ms.singleVolumeName = resolvePath(archivePath.getFinalPath());
+    }
     volStreamSpec = ms;
     multiStreams.add(ms);
     outStream = ms;
@@ -672,6 +685,26 @@ void _compress(
     }
   }
 }
+
+// Not in 7-Zip: the Rar and Rar5 formats write RAR5 volumes named
+// name.part1.rar, name.part2.rar... (rar_volumes.dart reads them).
+bool _isRarFormat(Codecs codecs, int formatIndex) {
+  if (formatIndex < 0) return false;
+  final n = codecs.formats[formatIndex].name;
+  return n == 'Rar' || n == 'Rar5';
+}
+
+// The digits of the volume numbers, as rar chooses them: enough for the
+// number of volumes that the input size would fill.
+int _rarVolumeDigits(int total, int volSize) {
+  final n = volSize <= 0 ? 1 : (total + volSize - 1) ~/ volSize;
+  final d = '$n'.length;
+  return d < 1 ? 1 : d;
+}
+
+/// The path of RAR volume [index] (from 0): [base].partN.rar.
+String rarVolumePath(String base, int index, int digits) =>
+    '$base.part${'${index + 1}'.padLeft(digits, '0')}.rar';
 
 /// CTailOutStream: an output with positions shifted by [offset].
 class _TailOutStream implements SeekableOutStream {
@@ -815,6 +848,9 @@ void updateArchive(
   var arcPath = options.archivePath.getFinalPath();
   if (options.volumesSizes.isNotEmpty) {
     arcPath = '${options.archivePath.getFinalVolPath()}.001';
+    if (_isRarFormat(codecs, options.methodMode.type.formatIndex)) {
+      arcPath = rarVolumePath(options.archivePath.getPathWithoutExt(), 0, 1);
+    }
   }
 
   if (chainOuter >= 0) {

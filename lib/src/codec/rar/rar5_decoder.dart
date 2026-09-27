@@ -1,8 +1,13 @@
-// The RAR5 decompressor (compression algorithm version 0, methods 1 to 5):
-// port of the decoding part of libarchive's
+// The RAR5 decompressor (compression algorithm versions 0 and 1, methods 1
+// to 5): port of the decoding part of libarchive's
 // archive_read_support_format_rar5.c (Grzegorz Antoniak, BSD 2-clause, see
 // LICENSE): the block headers, the Huffman tables, the LZ decoding with the
 // distance cache and the DELTA, E8, E8E9 and ARM filters.
+//
+// Version 1 (RAR 7.0, dictionaries above 4 GB) is not in libarchive; it
+// follows nwaples/rardecode (decode50.go, BSD 2-clause, see LICENSE): the
+// distance table has 80 slots instead of 64 (offsetSize7, tableSize7), so
+// that a distance can have up to 38 extra bits, and nothing else changes.
 //
 // The C reader works on libarchive's read-ahead buffers and hands out
 // window slices; here the packed data is an [InStream] and the output an
@@ -21,6 +26,10 @@ const int _huffDC = 64;
 const int _huffLDC = 16;
 const int _huffRC = 44;
 const int _huffTableSize = _huffNC + _huffDC + _huffRC + _huffLDC;
+
+/// The distance table of compression algorithm version 1 (offsetSize7).
+const int _huffDC7 = 80;
+const int _huffTableSize7 = _huffNC + _huffDC7 + _huffRC + _huffLDC;
 
 /// FILTER_TYPE
 abstract final class Rar5FilterType {
@@ -137,22 +146,35 @@ final class Rar5Decoder {
   OutStream? _out;
   Uint8List _filtered = Uint8List(0);
 
-  /// The window size that decoding needs: the dictionary size, reduced
-  /// for a single file that is smaller than it.
-  static int windowSizeFor(int dictSize, int unpSize, bool solid) {
-    if (solid) return dictSize;
-    var w = 1 << 18;
-    while (w < dictSize && w < unpSize * 2) {
+  /// The window size that decoding needs: a power of two that holds the
+  /// dictionary ([dictSize], which is not a power of two for some version 1
+  /// sizes), reduced when the data to decode ([dataSize]: the file, or all
+  /// the files of a solid stream) is smaller than it.
+  static int windowSizeFor(int dictSize, int dataSize) {
+    var w = 1 << 17;
+    while (w < dictSize && w < dataSize * 2) {
       w <<= 1;
     }
-    return w < dictSize ? w : dictSize;
+    return w;
   }
+
+  /// The number of distance slots: 64, or 80 for algorithm version 1.
+  int _numDC = _huffDC;
 
   /// Decodes one file of [unpSize] bytes from [src] (its packed data) into
   /// [out] (null to only advance the solid state). [solid] continues the
   /// state of the previous file. [winSize] is a power of two.
+  /// [algoVersion] is the compression algorithm version of the file header
+  /// (0 or 1).
   void decodeFile(
-      InStream src, OutStream? out, int unpSize, int winSize, bool solid) {
+      InStream src, OutStream? out, int unpSize, int winSize, bool solid,
+      [int algoVersion = 0]) {
+    // decoder50.init: the table layout of the version
+    final numDC = algoVersion == 1 ? _huffDC7 : _huffDC;
+    if (numDC != _numDC) {
+      _numDC = numDC;
+      _tablesRead = false;
+    }
     if (!solid || _win.isEmpty) {
       if (_win.length != winSize) {
         _win = Uint8List(winSize);
@@ -294,7 +316,10 @@ final class Rar5Decoder {
   // parse_tables
   void _parseTables() {
     final bitLength = Uint8List(_huffBC);
-    final table = Uint8List(_huffTableSize);
+    final numDC = _numDC;
+    final tableSize =
+        numDC == _huffDC7 ? _huffTableSize7 : _huffTableSize;
+    final table = Uint8List(tableSize);
     final p = _blk;
     var nibbleMask = 0xF0;
     var nibbleShift = 4;
@@ -326,7 +351,7 @@ final class Rar5Decoder {
     if (!_bd.create(bitLength, 0, _huffBC)) {
       throw _dataError('bad Huffman tables');
     }
-    for (i = 0; i < _huffTableSize;) {
+    for (i = 0; i < tableSize;) {
       _checkIn();
       final num = _decodeNumber(_bd);
       if (num < 16) {
@@ -341,7 +366,7 @@ final class Rar5Decoder {
           _skip(7);
         }
         if (i == 0) throw _dataError('bad Huffman tables');
-        while (n-- > 0 && i < _huffTableSize) {
+        while (n-- > 0 && i < tableSize) {
           table[i] = table[i - 1];
           i++;
         }
@@ -354,7 +379,7 @@ final class Rar5Decoder {
           n = (_bits16() >> 9) + 11;
           _skip(7);
         }
-        while (n-- > 0 && i < _huffTableSize) {
+        while (n-- > 0 && i < tableSize) {
           table[i++] = 0;
         }
       }
@@ -362,8 +387,8 @@ final class Rar5Decoder {
     var idx = 0;
     if (!_ld.create(table, idx, _huffNC)) throw _dataError('bad tables');
     idx += _huffNC;
-    if (!_dd.create(table, idx, _huffDC)) throw _dataError('bad tables');
-    idx += _huffDC;
+    if (!_dd.create(table, idx, numDC)) throw _dataError('bad tables');
+    idx += numDC;
     if (!_ldd.create(table, idx, _huffLDC)) throw _dataError('bad tables');
     idx += _huffLDC;
     if (!_rd.create(table, idx, _huffRC)) throw _dataError('bad tables');
@@ -464,9 +489,18 @@ final class Rar5Decoder {
         if (dbits > 0) {
           if (dbits >= 4) {
             if (dbits > 4) {
-              final add = _bits32();
-              _skip(dbits - 4);
-              dist += (add >> (36 - dbits)) << 4;
+              final n = dbits - 4;
+              if (n <= 32) {
+                final add = _bits32();
+                _skip(n);
+                dist += (add >> (32 - n)) << 4;
+              } else {
+                // version 1: up to 34 bits (decodeOffset)
+                final hi = _bits32();
+                _skip(32);
+                final lo = _getBits(n - 32);
+                dist += ((hi << (n - 32)) | lo) << 4;
+              }
             }
             dist += _decodeNumber(_ldd);
           } else {

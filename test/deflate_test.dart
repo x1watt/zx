@@ -247,6 +247,43 @@ void main() {
     expect(() => inflateBytes(z), throwsA(isA<SevenZipException>()));
   });
 
+  test('Deflate64 compression: round trips, the 64 KiB window', () {
+    // repeats 40000 bytes apart: out of reach of Deflate, not of Deflate64
+    final far = Uint8List.fromList(
+        [...gen(40000, 21), ...gen(40000, 21), ...gen(40000, 21)]);
+    final inputs = [
+      far,
+      Uint8List(100000),
+      gen(3, 1),
+      Uint8List(0),
+      gen(70000, 22),
+    ];
+    for (final d in inputs) {
+      for (final level in [0, 1, 6, 9]) {
+        final z = deflateBytes(d, level: level, deflate64: true);
+        expect(inflate64Bytes(z), d, reason: 'level $level');
+        // the streaming compressor
+        final out = MemoryOutStream();
+        final n = Deflate64Compressor(level: level)
+            .encode(MemoryInStream(d), out);
+        expect(n, d.length);
+        expect(inflate64Bytes(out.toBytes()), d);
+      }
+    }
+    final z64 = deflateBytes(far, level: 6, deflate64: true);
+    final z32 = deflateBytes(far, level: 6);
+    expect(z64.length, lessThan(z32.length ~/ 2));
+    // distance codes 30 and 31 are used: plain inflate rejects the stream
+    expect(() => inflateBytes(z64), throwsA(isA<SevenZipException>()));
+    // matches are at most 257 bytes: zeros never need code 285 (16 bits)
+    final zz = deflateBytes(Uint8List(100000), level: 9, deflate64: true);
+    expect(zz.length, lessThan(600));
+    final p = Deflate64Compressor.fromCoderProps(
+        [CoderProp(CoderPropId.level, const PropVariant.ui4(9))]);
+    expect(p.level, 9);
+    expect(p.props, isEmpty);
+  });
+
   test('registerDeflateCodecs', () {
     final reg = <int, DecoderFactory>{};
     registerDeflateCodecs(reg);

@@ -152,9 +152,11 @@ class Codecs {
           updateEnabled: true),
       ArcInfoEx('Split', _exts('001'), 0, const [],
           createInArchive: SplitArc.new),
-      ArcInfoEx('lzma', _exts('lzma'),
+      ArcInfoEx('lzma', _exts('lzma tlz', '* .tar'),
           ArcInfoFlags.startOpen | ArcInfoFlags.keepName, const [],
-          isArcFunc: _isArcLzma, createInArchive: () => LzmaArc(false)),
+          isArcFunc: _isArcLzma,
+          createInArchive: () => LzmaArc(false),
+          updateEnabled: true),
       ArcInfoEx('lzma86', _exts('lzma86'), ArcInfoFlags.keepName, const [],
           isArcFunc: _isArcLzma86, createInArchive: () => LzmaArc(true)),
       ArcInfoEx(
@@ -360,7 +362,7 @@ const List<CodecInfoEntry> kCodecs = [
   CodecInfoEntry(1, true, true, true, 0x6F00181, 'AES256CBC'),
   // the codecs of the other formats, with the ids of DOC/Methods.txt
   CodecInfoEntry(1, true, true, false, 0x40108, 'Deflate'),
-  CodecInfoEntry(1, false, true, false, 0x40109, 'Deflate64'),
+  CodecInfoEntry(1, true, true, false, 0x40109, 'Deflate64'),
   CodecInfoEntry(1, true, true, false, 0x40202, 'BZip2'),
   CodecInfoEntry(1, false, true, false, 0x40101, 'Shrink'),
   CodecInfoEntry(1, false, true, false, 0x40106, 'Implode'),

@@ -210,6 +210,21 @@ void main() {
                 ? null
                 : () => _tool(sevenZ, ['t', 'm_$m.zip'], tmp));
       }
+      // Deflate64: unzip and the system 7z both decode it
+      await roundTrip(
+          'm_d64.zip',
+          ['-mm=Deflate64'],
+          sevenZ != null
+              ? () => _tool(sevenZ, ['t', 'm_d64.zip'], tmp)
+              : unzip == null
+                  ? null
+                  : () => _tool(unzip, ['-t', 'm_d64.zip'], tmp));
+      if (unzip != null && sevenZ != null) {
+        final u = _tool(unzip, ['-t', 'm_d64.zip'], tmp);
+        expect(u.exitCode, 0, reason: '${u.stdout}');
+      }
+      var l = await _zx(tmp, ['l', '-slt', 'm_d64.zip']);
+      expect(l.out, contains('Method = Deflate64'));
       await roundTrip('cu.zip', ['-mcu', '-mx9'], null);
       await roundTrip(
           'zc.zip',
@@ -299,6 +314,49 @@ void main() {
         expect(w.listSync(), isEmpty);
       });
     }
+
+    for (final name in ['c.tar.lzma', 'c.tlz']) {
+      test('$name: create, tar --lzma -tf, xz -t, update, delete', () async {
+        ProcessResult Function()? check;
+        if (tar != null && xz != null) {
+          check = () => _tool(tar, ['--lzma', '-tf', name], tmp);
+        }
+        await roundTrip(name, ['-mx1', '-md=1m'], check);
+        final l = await _zx(tmp, ['l', name]);
+        expect(l.out, contains('Type = tar'));
+        expect(l.out, contains('Type = lzma'));
+        if (xz != null) {
+          final t = _tool(xz, ['--format=lzma', '-t', name], tmp);
+          expect(t.exitCode, 0, reason: '${t.stderr}');
+        }
+        await updateDelete(name, check);
+      });
+    }
+
+    test('a single file as .lzma, and -so', () async {
+      var r = await _zx(tmp, ['a', 'e.lzma', 'extra.txt', '-mx9', '-mlc=0']);
+      expect(r.code, 0, reason: r.err + r.out);
+      if (xz != null) {
+        final d = _tool(xz, ['--format=lzma', '-dc', 'e.lzma'], tmp);
+        expect(d.exitCode, 0, reason: '${d.stderr}');
+        expect(d.stdout, 'extra file\n');
+      }
+      r = await _zx(tmp, ['e', 'e.lzma', '-so']);
+      expect(r.out, 'extra file\n');
+      // to stdout the size is unknown: the stream ends with the end marker
+      final out = BytesBuilder();
+      final code = await runSevenZipCli(
+          ['a', '-tlzma', '-so', 'x', 'extra.txt'],
+          stdout: out.add, stderr: (_) {}, workingDirectory: tmp.path);
+      expect(code, 0);
+      final b = out.takeBytes();
+      expect(b.sublist(5, 13), List.filled(8, 0xFF));
+      File('${tmp.path}/so.lzma').writeAsBytesSync(b);
+      r = await _zx(tmp, ['t', 'so.lzma']);
+      expect(r.out, contains('Everything is Ok'));
+      r = await _zx(tmp, ['a', 'bad.lzma', 'extra.txt', '-mm=PPMd']);
+      expect(r.code, isNot(0));
+    });
 
     test('extract archives made by tar', () async {
       if (tar == null) return markTestSkipped('tar not found');
@@ -458,6 +516,61 @@ void main() {
         await extractToolArchive('tool$m.arj');
       }
     });
+
+    test('garbled: create with -p, arj t -g, wrong passwords', () async {
+      final have = _have(_arj);
+      for (final m in ['0', '1', '4']) {
+        await roundTrip('g$m.arj', ['-mm=$m', '-psecret'],
+            have ? () => _tool(_arj, ['t', '-gsecret', 'g$m.arj'], tmp) : null);
+        var r = await _zx(tmp, ['t', 'g$m.arj', '-pwrong']);
+        expect(r.code, isNot(0));
+        expect(r.err, contains('Wrong password?'));
+        if (have) {
+          final t = _tool(_arj, ['t', '-gwrong', 'g$m.arj'], tmp);
+          expect(t.exitCode, 3); // CRC error
+        }
+      }
+      await updateDelete('g1.arj',
+          have ? () => _tool(_arj, ['t', '-gsecret', 'g1.arj'], tmp) : null,
+          switches: ['-psecret']);
+    });
+
+    test('garbled and multi-volume archives made by arj', () async {
+      if (!_have(_arj)) return markTestSkipped('arj not found');
+      var r = _tool(_arj,
+          ['a', '-r', '-m1', '-y', '-gp\u00e4ss', 'toolg.arj', 'src'], tmp);
+      expect(r.exitCode, 0, reason: '${r.stdout}');
+      final out = Directory('${tmp.path}/tool_g');
+      var z =
+          await _zx(tmp, ['x', 'toolg.arj', '-pp\u00e4ss', '-o${out.path}']);
+      expect(z.code, 0, reason: z.err + z.out);
+      _expectSameTree(src, Directory('${out.path}/src'));
+      // x.arj, x.a01, x.a02...: the parts of split files are joined
+      r = _tool(
+          _arj, ['a', '-r', '-m0', '-v10k', '-y', 'toolv.arj', 'src'], tmp);
+      expect(r.exitCode, 0, reason: '${r.stdout}');
+      expect(File('${tmp.path}/toolv.a02').existsSync(), isTrue);
+      await extractToolArchive('toolv.arj');
+      z = await _zx(tmp, ['l', 'toolv.arj']);
+      expect(z.out, contains('Volumes: '));
+    });
+
+    test('symbolic links: -snl, arj x, read back', () async {
+      if (Platform.isWindows) return markTestSkipped('POSIX links');
+      Link('${src.path}/lnk').createSync('a.txt');
+      var r = await _zx(tmp, ['a', 'l.arj', 'src', '-snl']);
+      expect(r.code, 0, reason: r.err + r.out);
+      final out = Directory('${tmp.path}/out_l');
+      r = await _zx(tmp, ['x', 'l.arj', '-snl', '-o${out.path}']);
+      expect(r.code, 0, reason: r.err + r.out);
+      expect(Link('${out.path}/src/lnk').targetSync(), 'a.txt');
+      if (_have(_arj)) {
+        final x = Directory('${tmp.path}/arj_l')..createSync();
+        final t = _tool(_arj, ['x', '-y', '../l.arj'], x);
+        expect(t.exitCode, 0, reason: '${t.stdout}');
+        expect(Link('${x.path}/src/lnk').targetSync(), 'a.txt');
+      }
+    });
   });
 
   group('rar', () {
@@ -467,6 +580,35 @@ void main() {
           : () => _tool(unrar, ['t', '-idq', 'r.rar'], tmp);
       await roundTrip('r.rar', [], check);
       await updateDelete('r.rar', check);
+    });
+
+    test('-v writes name.partN.rar volumes, -mrr a recovery record', () async {
+      var r = await _zx(tmp, ['a', 'v.rar', 'src', '-mx0', '-v8k', '-mrr=5']);
+      expect(r.code, 0, reason: r.err + r.out);
+      for (final n in ['v.part1.rar', 'v.part2.rar', 'v.part3.rar']) {
+        expect(File('${tmp.path}/$n').lengthSync(), 8192, reason: n);
+      }
+      expect(File('${tmp.path}/v.rar').existsSync(), isFalse);
+      if (unrar != null) {
+        final c = _tool(unrar, ['t', '-idq', 'v.part1.rar'], tmp);
+        expect(c.exitCode, 0, reason: '${c.stdout}${c.stderr}');
+      }
+      if (_have(_rar)) {
+        final c = _tool(_rar, ['t', 'v.part1.rar'], tmp);
+        expect(c.exitCode, 0, reason: '${c.stdout}');
+        expect('${c.stdout}', contains('recovery record'));
+      }
+      r = await _zx(tmp, ['t', 'v.part1.rar']);
+      expect(r.out, contains('Everything is Ok'), reason: r.err + r.out);
+      final out = Directory('${tmp.path}/out_v');
+      r = await _zx(tmp, ['x', 'v.part1.rar', '-o${out.path}']);
+      expect(r.code, 0, reason: r.err + r.out);
+      _expectSameTree(src, Directory('${out.path}/src'));
+      // a set of one volume is named like the archive
+      r = await _zx(tmp, ['a', 'one.rar', 'src', '-v1m']);
+      expect(r.code, 0, reason: r.err + r.out);
+      expect(File('${tmp.path}/one.rar').existsSync(), isTrue);
+      expect(File('${tmp.path}/one.part1.rar').existsSync(), isFalse);
     });
 
     test('extract an archive made by rar', () async {
@@ -489,7 +631,7 @@ void main() {
       '  Lzh      lzh',
       '  Rar5     rar',
       ' ED     40108 Deflate',
-      '  D     40109 Deflate64',
+      ' ED     40109 Deflate64',
       ' ED     40202 BZip2',
       ' ED     40162 PPMdZip',
       ' EDF  6F10101 ZipCrypto',

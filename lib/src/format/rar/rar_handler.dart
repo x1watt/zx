@@ -4,18 +4,24 @@
 //
 // The headers are read as libarchive's RAR and RAR5 readers read them
 // (BSD 2-clause, see LICENSE), completed from the RAR5 technote; the item
-// properties follow what 7-Zip shows for rar archives. The 7-Zip rar
-// handlers (LGPL) and the unRAR source were not used
-// (docs/architecture.md, section 10).
+// properties follow what 7-Zip shows for rar archives. RAR 3.x encrypted
+// data is decrypted as rardecode does (reader.go, archive15.go; BSD
+// 2-clause, see LICENSE); the RAR 1.5 and 2.0 ciphers and the RAR 1.5
+// method are independent implementations (rar_legacy_cipher.dart,
+// rar15_decoder.dart). The 7-Zip rar handlers (LGPL) and the unRAR
+// source were not used (docs/architecture.md, section 10).
 
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../../codec/rar/rar15_decoder.dart';
+import '../../codec/rar/rar2_decoder.dart';
 import '../../codec/rar/rar3_decoder.dart';
 import '../../codec/rar/rar5_decoder.dart';
 import '../../common/method_props.dart';
 import '../../crypto/blake2sp.dart';
 import '../../crypto/rar5_kdf.dart';
+import '../../crypto/rar_legacy_cipher.dart';
 import '../../io/streams.dart';
 import '../../util/crc.dart';
 import '../archive_types.dart';
@@ -30,9 +36,11 @@ import 'rar_item.dart';
 const int _kTimePrec100ns = 16 + 7;
 const int _kTimePrec1ns = 16 + 9;
 
-/// The largest RAR5 window the decoder allocates (1 GiB, the largest
-/// dictionary of RAR 5 and 6).
-const int _maxWindow = 1 << 30;
+/// The largest RAR5 window the decoder allocates (4 GiB, the largest
+/// dictionary of RAR 5 and 6, and the largest one rar 7 extracts without
+/// -md). The window is reduced to the size of the data, so larger RAR 7
+/// dictionaries work when the data is smaller.
+const int _maxWindow = 1 << 32;
 
 /// A RAR or RAR5 archive handler.
 class RarHandler {
@@ -48,6 +56,8 @@ class RarHandler {
   RarArchiveData? _a;
   Rar5Decoder? _dec5;
   Rar3Decoder? _dec3;
+  Rar2Decoder? _dec2;
+  Rar15Decoder? _dec15;
 
   // the index of the last item whose data went through the decoder, for
   // solid streams
@@ -88,6 +98,8 @@ class RarHandler {
     _a = null;
     _dec5 = null;
     _dec3 = null;
+    _dec2 = null;
+    _dec15 = null;
     _lastDecoded = -1;
   }
 
@@ -218,7 +230,7 @@ class RarHandler {
     if (a.solid) t.add('Solid');
     if (a.newNumbering && !rar5 && a.isVolume) t.add('NewVolName');
     if (a.recovery) t.add('Recovery');
-    if (a.encryptedHeaders) t.add('Encrypted');
+    if (a.encryptedHeaders) t.add(rar5 ? 'Encrypted' : 'BlockEncryption');
     if (a.firstVolume) t.add('FirstVolume');
     return t.join(' ');
   }
@@ -435,7 +447,7 @@ class RarHandler {
       if (!requested.contains(index)) {
         // decoded only for the solid state
         try {
-          if (it.encrypted && it.isRar5) password ??= _dataPassword(cb);
+          if (it.encrypted) password ??= _dataPassword(cb);
           _decode(it, index, null, password);
         } on SevenZipException {
           _lastDecoded = -1;
@@ -452,7 +464,7 @@ class RarHandler {
       var opRes = OperationResult.ok;
       if (!it.isDir) {
         try {
-          if (it.encrypted && it.isRar5) password ??= _dataPassword(cb);
+          if (it.encrypted) password ??= _dataPassword(cb);
           final base = completed;
           opRes = _extractItem(
               it, index, out, password, (n) => cb.setCompleted(base + n));
@@ -601,8 +613,13 @@ class RarHandler {
     var src = _packedStream(it);
     if (it.encrypted) {
       if (!it.isRar5) {
-        throw const SevenZipException('RAR 3.x encryption is not supported',
-            SevenZipError.unsupportedMethod);
+        if (it.algoVersion < 29) {
+          // RAR 1.5 and 2.0 had their own ciphers, not AES
+          return RarLegacyDecryptInStream(
+              src, rarLegacyPasswordBytes(password!), it.algoVersion);
+        }
+        final keys = _a!.rar3KeysFor(password!, it.salt);
+        return RarAesDecryptInStream(src, keys.key, keys.iv);
       }
       final keys = _fileKeys(it, password!);
       src = RarAesDecryptInStream(src, keys.key, it.crypt!.iv);
@@ -643,9 +660,10 @@ class RarHandler {
       return;
     }
     if (it.isRar5) {
-      if (it.algoVersion != 0) {
-        throw const SevenZipException(
-            'RAR5: compression algorithm version 1 (RAR 7) is not supported',
+      if (it.algoVersion > 1) {
+        throw SevenZipException(
+            'RAR5: compression algorithm version ${it.algoVersion} is not '
+            'supported',
             SevenZipError.unsupportedMethod);
       }
       if (it.method > 5) {
@@ -653,14 +671,21 @@ class RarHandler {
             'RAR5: unsupported method', SevenZipError.unsupportedMethod);
       }
       final dec = _dec5 ??= Rar5Decoder();
+      final solid = _a!.solid || it.solid;
       final win = Rar5Decoder.windowSizeFor(
-          _solidDict(it), it.size, _a!.solid || it.solid);
+          _solidDict(it), solid ? _solidSize() : it.size);
       if (win > _maxWindow) {
         throw SevenZipException(
             'RAR5: the dictionary of ${win >> 20} MiB is too large',
             SevenZipError.unsupportedMethod);
       }
-      dec.decodeFile(src, out, it.size, win, it.solid);
+      dec.decodeFile(src, out, it.size, win, it.solid, it.algoVersion);
+    } else if (it.algoVersion == 15) {
+      final dec = _dec15 ??= Rar15Decoder();
+      dec.decodeFile(src, out, it.size, it.solid);
+    } else if (it.algoVersion == 20 || it.algoVersion == 26) {
+      final dec = _dec2 ??= Rar2Decoder();
+      dec.decodeFile(src, out, it.size, it.dictSize, it.solid);
     } else {
       final dec = _dec3 ??= Rar3Decoder();
       dec.decodeFile(src, out, it.size, it.algoVersion, it.dictSize, it.solid);
@@ -675,6 +700,17 @@ class RarHandler {
       if (_isCompressed(x) && x.dictSize > d) d = x.dictSize;
     }
     return d;
+  }
+
+  // the unpacked size of all the compressed files (the solid stream)
+  int _solidSize() {
+    var n = 0;
+    for (final x in items) {
+      if (!_isCompressed(x)) continue;
+      if (x.sizeUnknown) return 1 << 62;
+      n += x.size;
+    }
+    return n;
   }
 
   /// Decodes item [index] into memory (for the update of solid archives).

@@ -62,47 +62,99 @@ class DeflateCompressor implements Compressor {
   Uint8List get props => Uint8List(0);
 
   @override
-  int encode(InStream input, OutStream output, {ProgressCallback? progress}) {
-    final s = DeflateState(
-        level: level, memLevel: memLevel, strategy: strategy);
-    final inBuf = Uint8List(deflateChunk);
-    final outBuf = Uint8List(deflateChunk);
-    var total = 0;
-    var nextProgress = _progressStep;
-    int flush;
+  int encode(InStream input, OutStream output, {ProgressCallback? progress}) =>
+      _deflateStream(
+          DeflateState(level: level, memLevel: memLevel, strategy: strategy),
+          input,
+          output,
+          progress);
+}
+
+/// Raw Deflate64 compressor (PKWARE method 9): zlib's deflate with the
+/// Deflate64 changes of [DeflateState.deflate64] (64 KiB window, length
+/// code 285 with 16 extra bits, distance codes 30 and 31), driven like
+/// [DeflateCompressor].
+class Deflate64Compressor implements Compressor {
+  /// zlib compression level, 0 (stored) to 9.
+  final int level;
+
+  /// zlib strategy ([ZStrategy]).
+  final int strategy;
+
+  /// zlib memLevel, 1 to 9 (8 is the zlib default).
+  final int memLevel;
+
+  Deflate64Compressor(
+      {int level = 6,
+      this.strategy = ZStrategy.defaultStrategy,
+      this.memLevel = zDefMemLevel})
+      : level = level < 0 ? 6 : (level > 9 ? 9 : level);
+
+  /// From 7-Zip coder properties, as [DeflateCompressor.fromCoderProps].
+  factory Deflate64Compressor.fromCoderProps(List<CoderProp> props) =>
+      Deflate64Compressor(level: DeflateCompressor.fromCoderProps(props).level);
+
+  /// Deflate64 has no coder properties.
+  @override
+  Uint8List get props => Uint8List(0);
+
+  @override
+  int encode(InStream input, OutStream output, {ProgressCallback? progress}) =>
+      _deflateStream(
+          DeflateState(
+              level: level,
+              memLevel: memLevel,
+              strategy: strategy,
+              deflate64: true),
+          input,
+          output,
+          progress);
+}
+
+// the zpipe.c loop: [input] in chunks with Z_NO_FLUSH, then Z_FINISH
+int _deflateStream(DeflateState s, InStream input, OutStream output,
+    ProgressCallback? progress) {
+  final inBuf = Uint8List(deflateChunk);
+  final outBuf = Uint8List(deflateChunk);
+  var total = 0;
+  var nextProgress = _progressStep;
+  int flush;
+  do {
+    final n = readFully(input, inBuf, 0, deflateChunk);
+    total += n;
+    flush = n < deflateChunk ? ZFlush.finish : ZFlush.noFlush;
+    s.nextIn = inBuf;
+    s.nextInPos = 0;
+    s.availIn = n;
+    // run deflate() on input until output buffer not full, finish
+    // compression if all of source has been read in
     do {
-      final n = readFully(input, inBuf, 0, deflateChunk);
-      total += n;
-      flush = n < deflateChunk ? ZFlush.finish : ZFlush.noFlush;
-      s.nextIn = inBuf;
-      s.nextInPos = 0;
-      s.availIn = n;
-      // run deflate() on input until output buffer not full, finish
-      // compression if all of source has been read in
-      do {
-        s.nextOut = outBuf;
-        s.nextOutPos = 0;
-        s.availOut = deflateChunk;
-        s.deflate(flush);
-        final have = deflateChunk - s.availOut;
-        if (have != 0) output.write(outBuf, 0, have);
-      } while (s.availOut == 0);
-      if (progress != null && total >= nextProgress) {
-        nextProgress = total + _progressStep;
-        progress(total, s.totalOut);
-      }
-    } while (flush != ZFlush.finish);
-    s.deflateEnd();
-    output.flush();
-    return total;
-  }
+      s.nextOut = outBuf;
+      s.nextOutPos = 0;
+      s.availOut = deflateChunk;
+      s.deflate(flush);
+      final have = deflateChunk - s.availOut;
+      if (have != 0) output.write(outBuf, 0, have);
+    } while (s.availOut == 0);
+    if (progress != null && total >= nextProgress) {
+      nextProgress = total + _progressStep;
+      progress(total, s.totalOut);
+    }
+  } while (flush != ZFlush.finish);
+  s.deflateEnd();
+  output.flush();
+  return total;
 }
 
 /// Compresses [data] to raw deflate in one call (deflate() with the whole
-/// input and a deflateBound() output buffer, Z_FINISH).
+/// input and a deflateBound() output buffer, Z_FINISH). With [deflate64]
+/// the output is Deflate64.
 Uint8List deflateBytes(Uint8List data,
-    {int level = 6, int strategy = ZStrategy.defaultStrategy}) {
-  final s = DeflateState(level: level, strategy: strategy);
+    {int level = 6,
+    int strategy = ZStrategy.defaultStrategy,
+    bool deflate64 = false}) {
+  final s =
+      DeflateState(level: level, strategy: strategy, deflate64: deflate64);
   final out = Uint8List(s.deflateBound(data.length));
   s.nextIn = data;
   s.nextInPos = 0;

@@ -7,6 +7,27 @@
 // Every header is: 0x60 0xEA, the basic header size (0 at the end of the
 // archive, at most 2600), the basic header, its CRC-32, then extended
 // headers (size, data, CRC-32) up to a zero size.
+//
+// Two things the technote does not describe were found by black box
+// experiments with ARJ32 3.10 (archives of chosen inputs, compared field by
+// field; no ARJ source was read):
+//
+// - Garbling (-g<password>, GARBLED_FLAG): the packed data of each file (of
+//   each volume part) is XORed with the key stream
+//   (password[i % length] + password modifier) & 0xFF, i counting from 0 at
+//   the first data byte. The password is the bytes given on the command
+//   line, whole and case kept; the password modifier is byte 7 of the local
+//   header (ARJ writes the low byte of the archive creation time there, in
+//   every archive). The main header gets GARBLED_FLAG and 1 in byte 28
+//   (the encryption version; 2 is the 40 bit GOST cipher of -hg!, which
+//   needs ARJCRYPT and is not supported). No check value is stored: a wrong
+//   password shows as a CRC (or data) error.
+// - UNIX special files (-a1: file type 6, host UNIX): the mode has 0x4000
+//   in its type bits (0x1000 is a regular file, 0x2000 a directory) and an
+//   extended header 'U', 0, then one byte (type << 5 | length), where
+//   length 31 means that a 16-bit length follows, then the data. Types seen:
+//   0 a FIFO (no data), 1 a hard link (the archived path of the file it
+//   links to), 2 a symbolic link (the target).
 
 import 'dart:convert';
 import 'dart:typed_data';
@@ -21,6 +42,24 @@ const int kArjHeaderId1 = 0xEA;
 
 /// The largest basic header.
 const int kArjMaxHeaderSize = 2600;
+
+/// The encryption version of garbled archives in the main header (byte 28):
+/// the XOR garbling; 2 and above are the ARJCRYPT ciphers.
+const int kArjOldGarble = 1;
+
+/// The type bits of the UNIX file mode ARJ stores.
+abstract final class ArjUnixMode {
+  static const regular = 0x1000;
+  static const directory = 0x2000;
+  static const special = 0x4000;
+}
+
+/// The types of UNIX special files ('U' extended header).
+abstract final class ArjUnixSpecial {
+  static const fifo = 0;
+  static const hardLink = 1;
+  static const symLink = 2;
+}
 
 /// Host OS numbers.
 abstract final class ArjHostOs {
@@ -176,6 +215,9 @@ class ArjMainHeader extends ArjHeaderBase {
   int mTimeRaw = 0;
   int archiveSize = 0;
 
+  /// Byte 28: the encryption version of garbled files ([kArjOldGarble]).
+  int encryptionVersion = 0;
+
   /// Parses the basic header of the main header; false when too short.
   bool parse(Uint8List b) {
     if (b.length < 30 || b[0] < 30 || b[0] > b.length) return false;
@@ -189,6 +231,7 @@ class ArjMainHeader extends ArjHeaderBase {
     cTimeRaw = getUint32LE(b, 8);
     mTimeRaw = getUint32LE(b, 12);
     archiveSize = getUint32LE(b, 16);
+    encryptionVersion = firstHdrSize > 28 ? b[28] : 0;
     final (n, p) = _cString(b, firstHdrSize);
     nameBytes = Uint8List.fromList(n);
     commentBytes = Uint8List.fromList(_cString(b, p).$1);
@@ -218,12 +261,47 @@ class ArjItem extends ArjHeaderBase {
   List<Uint8List> ext = const [];
   bool truncated = false;
 
+  /// The volume that holds this header and its data (0 is the first).
+  int volume = 0;
+
+  /// The next parts of a file split over volumes (joined by the handler).
+  List<ArjItem> nextParts = const [];
+
   int get endPos => dataPos + packSize;
 
   bool get isDir => fileType == ArjFileType.directory;
   bool get isEncrypted => (flags & ArjFlags.garbled) != 0;
   bool get splitAfter => (flags & ArjFlags.volume) != 0;
   bool get splitBefore => (flags & ArjFlags.extFile) != 0;
+
+  /// The last part of the file (this item when it is not split).
+  ArjItem get lastPart => nextParts.isEmpty ? this : nextParts.last;
+
+  /// The UNIX special file of a type 6 item: its type ([ArjUnixSpecial])
+  /// and data, or null.
+  (int, Uint8List)? get unixSpecial {
+    if (fileType != ArjFileType.unixSpecial) return null;
+    for (final e in ext) {
+      if (e.length < 3 || e[0] != 0x55) continue; // 'U'
+      final type = e[2] >> 5;
+      var len = e[2] & 0x1F;
+      var off = 3;
+      if (len == 0x1F) {
+        if (e.length < 5) return null;
+        len = e[3] | (e[4] << 8);
+        off = 5;
+      }
+      if (off + len > e.length) return null;
+      return (type, Uint8List.sublistView(e, off, off + len));
+    }
+    return null;
+  }
+
+  /// The target of a symbolic link item, or null.
+  Uint8List? get symLinkTarget {
+    final u = unixSpecial;
+    return u != null && u.$1 == ArjUnixSpecial.symLink ? u.$2 : null;
+  }
 
   /// Parses a local basic header; false when too short.
   bool parse(Uint8List b) {
@@ -265,16 +343,44 @@ void _p16(Uint8List b, int o, int v) {
   b[o + 1] = (v >> 8) & 0xFF;
 }
 
-/// A complete header: id, size, [basic], its CRC-32 and no extended
-/// headers.
-Uint8List frameArjHeader(Uint8List basic) {
-  final h = Uint8List(4 + basic.length + 4 + 2);
+/// A complete header: id, size, [basic], its CRC-32 and the extended
+/// headers [ext] (each with its size and CRC-32), then the zero size.
+Uint8List frameArjHeader(Uint8List basic, [List<Uint8List> ext = const []]) {
+  var extSize = 0;
+  for (final e in ext) {
+    extSize += 2 + e.length + 4;
+  }
+  final h = Uint8List(4 + basic.length + 4 + extSize + 2);
   h[0] = kArjHeaderId0;
   h[1] = kArjHeaderId1;
   _p16(h, 2, basic.length);
   h.setRange(4, 4 + basic.length, basic);
   setUint32LE(h, 4 + basic.length, Crc32.of(basic));
+  var p = 4 + basic.length + 4;
+  for (final e in ext) {
+    _p16(h, p, e.length);
+    h.setRange(p + 2, p + 2 + e.length, e);
+    setUint32LE(h, p + 2 + e.length, Crc32.of(e));
+    p += 2 + e.length + 4;
+  }
   return h;
+}
+
+/// The 'U' extended header of a UNIX special file of [type]
+/// ([ArjUnixSpecial]) with [data].
+Uint8List arjUnixSpecialExt(int type, List<int> data) {
+  final long = data.length >= 0x1F;
+  final e = Uint8List(3 + (long ? 2 : 0) + data.length);
+  e[0] = 0x55; // 'U'
+  e[1] = 0;
+  e[2] = (type << 5) | (long ? 0x1F : data.length);
+  var off = 3;
+  if (long) {
+    _p16(e, 3, data.length);
+    off = 5;
+  }
+  e.setRange(off, off + data.length, data);
+  return e;
 }
 
 /// The end of archive header.
@@ -294,19 +400,22 @@ Uint8List _withStrings(Uint8List fixed, List<int> name, List<int> comment) {
 }
 
 /// The main header ARJ 3.x writes in its MS-DOS compatible mode: version
-/// 11, host [hostOs], PATHSYM, file type 2.
+/// 11, host [hostOs], PATHSYM, file type 2; with [garbled], GARBLED_FLAG
+/// and the encryption version of the XOR garbling.
 Uint8List buildArjMainHeader(
     {required int cTime,
     required int mTime,
     List<int> name = const [],
     List<int> comment = const [],
-    int hostOs = ArjHostOs.msdos}) {
+    int hostOs = ArjHostOs.msdos,
+    bool garbled = false}) {
   final f = Uint8List(34);
   f[0] = 34; // first_hdr_size
   f[1] = 11; // archiver version
   f[2] = 1; // minimum version to extract
   f[3] = hostOs;
-  f[4] = ArjFlags.pathSym;
+  f[4] = ArjFlags.pathSym | (garbled ? ArjFlags.garbled : 0);
+  f[28] = garbled ? kArjOldGarble : 0; // encryption version
   f[5] = 0; // security version
   f[6] = ArjFileType.comment;
   setUint32LE(f, 8, cTime);
@@ -330,6 +439,13 @@ class ArjOutItem {
   int fileMode = 0x20;
   int fileType = ArjFileType.binary;
   List<int> comment = const [];
+
+  /// GARBLED_FLAG and the password modifier (byte 7).
+  bool garbled = false;
+  int passwordModifier = 0;
+
+  /// Extended headers (the 'U' header of a UNIX special file).
+  List<Uint8List> ext = const [];
   ArjOutItem(this.path, {this.isDir = false});
 }
 
@@ -341,10 +457,10 @@ Uint8List buildArjLocalHeader(ArjOutItem it) {
   f[1] = 11;
   f[2] = it.isDir ? 3 : 1;
   f[3] = it.hostOs;
-  f[4] = ArjFlags.pathSym;
+  f[4] = ArjFlags.pathSym | (it.garbled ? ArjFlags.garbled : 0);
   f[5] = it.isDir ? 0 : it.method;
   f[6] = it.isDir ? ArjFileType.directory : it.fileType;
-  f[7] = 0;
+  f[7] = it.garbled ? it.passwordModifier & 0xFF : 0;
   setUint32LE(f, 8, it.mTime);
   setUint32LE(f, 12, it.packSize);
   setUint32LE(f, 16, it.size);
@@ -356,5 +472,68 @@ Uint8List buildArjLocalHeader(ArjOutItem it) {
   setUint32LE(f, 34, it.aTime);
   setUint32LE(f, 38, it.cTime);
   setUint32LE(f, 42, 0);
-  return frameArjHeader(_withStrings(f, name, it.comment));
+  return frameArjHeader(_withStrings(f, name, it.comment), it.ext);
+}
+
+/// The XOR garbling of ARJ (see the top of this file): [apply] garbles or
+/// ungarbles the next bytes of one file's packed data.
+class ArjGarble {
+  final Uint8List _key;
+  int _pos = 0;
+
+  /// [password] as bytes; [modifier] is the password modifier of the item.
+  ArjGarble(List<int> password, int modifier)
+      : _key = Uint8List.fromList(
+            [for (final c in password) (c + modifier) & 0xFF]) {
+    if (_key.isEmpty) throw const SevenZipException('arj: empty password');
+  }
+
+  /// XORs [buf] from [off] to [end] with the key stream.
+  void apply(Uint8List buf, int off, int end) {
+    final key = _key;
+    final n = key.length;
+    var k = _pos;
+    for (var i = off; i < end; i++) {
+      buf[i] ^= key[k];
+      if (++k == n) k = 0;
+    }
+    _pos = k;
+  }
+}
+
+/// Ungarbles what is read from [_base].
+class ArjGarbleInStream implements InStream {
+  final InStream _base;
+  final ArjGarble _g;
+  ArjGarbleInStream(this._base, this._g);
+
+  @override
+  int read(Uint8List buf, int off, int len) {
+    final n = _base.read(buf, off, len);
+    if (n > 0) _g.apply(buf, off, off + n);
+    return n;
+  }
+}
+
+/// Garbles what is written to [_base] (the caller's buffer is not changed).
+class ArjGarbleOutStream implements OutStream {
+  final OutStream _base;
+  final ArjGarble _g;
+  final Uint8List _buf = Uint8List(1 << 16);
+  ArjGarbleOutStream(this._base, this._g);
+
+  @override
+  void write(Uint8List buf, int off, int len) {
+    while (len > 0) {
+      final n = len < _buf.length ? len : _buf.length;
+      _buf.setRange(0, n, buf, off);
+      _g.apply(_buf, 0, n);
+      _base.write(_buf, 0, n);
+      off += n;
+      len -= n;
+    }
+  }
+
+  @override
+  void flush() => _base.flush();
 }

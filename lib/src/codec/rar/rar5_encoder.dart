@@ -149,7 +149,13 @@ final class Rar5Encoder {
   final Uint32List _codeLDC = Uint32List(_huffLDC);
   final Uint32List _codeRC = Uint32List(_huffRC);
 
-  Rar5Encoder(this.method, this.dictSize) : _lv = Rar5EncoderLevel.of(method);
+  /// The compression algorithm version of the stream: 0, or 1 (RAR 7.0),
+  /// whose tables have 80 distance slots. The distances of this encoder
+  /// are below 4 GB, so a version 1 stream only differs by 16 unused slots.
+  final int algoVersion;
+
+  Rar5Encoder(this.method, this.dictSize, {this.algoVersion = 0})
+      : _lv = Rar5EncoderLevel.of(method);
 
   /// Starts a new stream (a non solid file, or the first file of a solid
   /// stream) read from [src].
@@ -584,11 +590,13 @@ final class Rar5Encoder {
 
   // the table section of a block (parse_tables inverse)
   void _writeTables(_BitWriter bw) {
-    final all = Uint8List(_huffNC + _huffDC + _huffLDC + _huffRC);
+    // version 1: 16 more distance slots, never used here
+    final dc = algoVersion == 1 ? _huffDC + 16 : _huffDC;
+    final all = Uint8List(_huffNC + dc + _huffLDC + _huffRC);
     all.setRange(0, _huffNC, _lenNC);
     all.setRange(_huffNC, _huffNC + _huffDC, _lenDC);
-    all.setRange(_huffNC + _huffDC, _huffNC + _huffDC + _huffLDC, _lenLDC);
-    all.setRange(_huffNC + _huffDC + _huffLDC, all.length, _lenRC);
+    all.setRange(_huffNC + dc, _huffNC + dc + _huffLDC, _lenLDC);
+    all.setRange(_huffNC + dc + _huffLDC, all.length, _lenRC);
 
     // run length coding of the lengths: (symbol, extra bits count, value)
     final sym = <int>[];

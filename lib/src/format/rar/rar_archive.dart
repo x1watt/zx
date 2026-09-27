@@ -3,6 +3,7 @@
 
 import 'dart:typed_data';
 
+import '../../crypto/rar3_kdf.dart';
 import '../../crypto/rar5_kdf.dart';
 import '../../io/streams.dart';
 import 'rar_item.dart';
@@ -73,6 +74,19 @@ final class RarArchiveData {
     k.write(':$kdfCount:$password');
     return keyCache.putIfAbsent(
         k.toString(), () => Rar5Keys.derive(password, salt, kdfCount));
+  }
+
+  /// RAR 3.x keys by salt (hex of salt + password).
+  final Map<String, Rar3Keys> rar3KeyCache = {};
+
+  Rar3Keys rar3KeysFor(String password, Uint8List? salt) {
+    final k = StringBuffer();
+    for (final b in salt ?? const <int>[]) {
+      k.write(b.toRadixString(16).padLeft(2, '0'));
+    }
+    k.write(':$password');
+    return rar3KeyCache.putIfAbsent(
+        k.toString(), () => Rar3Keys.derive(password, salt));
   }
 }
 

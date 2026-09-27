@@ -16,7 +16,10 @@ class ArjArc extends InArchive {
   int open(SeekableInStream stream, int maxCheckStartPosition,
       ArchiveOpenCallback? callback) {
     callback?.setTotal(null, stream.length);
-    return h.open(stream) ? HRes.sOk : HRes.sFalse;
+    return h.open(stream,
+            name: callback?.volumeName, openVolume: callback?.getVolumeStream)
+        ? HRes.sOk
+        : HRes.sFalse;
   }
 
   @override

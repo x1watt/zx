@@ -314,7 +314,9 @@ void main() {
           _Up.add('link', symLink: 'a.txt', mTime: kTime, posix: 0xA1FF),
         ];
 
-    for (final m in ['Copy', 'Deflate', 'BZip2', 'LZMA', 'PPMd', 'xz']) {
+    for (final m in [
+      'Copy', 'Deflate', 'Deflate64', 'BZip2', 'LZMA', 'PPMd', 'xz' //
+    ]) {
       test('method $m', () {
         final z = _writeZip(ups(), props: [prop('m', m)]);
         final h = openBytes(z);
@@ -399,8 +401,6 @@ void main() {
 
     test('invalid switches', () {
       final h = ZipHandler();
-      expect(() => h.setProperties([prop('m', 'Deflate64')]),
-          throwsA(isA<InvalidArgException>()));
       expect(() => h.setProperties([prop('m', 'Nope')]),
           throwsA(isA<InvalidArgException>()));
       expect(() => h.setProperties([prop('em', 'Blowfish')]),
@@ -716,7 +716,10 @@ void _checkTools(Uint8List z, String? pw, String what, {bool jar = true}) {
       ]);
       expect(r.exitCode, 0, reason: 'unzip $what: ${r.stdout}${r.stderr}');
     }
-    if (python != null && pw == null && !['PPMd', 'xz'].contains(m)) {
+    // Python's zipfile has no Deflate64
+    if (python != null &&
+        pw == null &&
+        !['PPMd', 'xz', 'Deflate64'].contains(m)) {
       final r = run(python!, ['-m', 'zipfile', '-t', p]);
       expect(r.exitCode, 0, reason: 'python $what: ${r.stdout}${r.stderr}');
     }

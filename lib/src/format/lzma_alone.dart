@@ -2,10 +2,12 @@
 // CPP/7zip/Archive/LzmaHandler.cpp (open, list, extract and test, several
 // concatenated streams, the lzma86 variant with its BCJ filter byte), of
 // the stream decoder parts of CPP/7zip/Compress/LzmaDecoder.cpp that the
-// handler uses (CodeResume, ReadFromInputStream) and, for creating files
-// (the handler has no IOutArchive), of the encode path of
-// CPP/7zip/Bundles/LzmaCon/LzmaAlone.cpp and C/Lzma86Enc.c of the LZMA SDK
-// 26.01.
+// handler uses (CodeResume, ReadFromInputStream) and, for creating files,
+// of the encode path of CPP/7zip/Bundles/LzmaCon/LzmaAlone.cpp and
+// C/Lzma86Enc.c of the LZMA SDK 26.01. The handler of the SDK has no
+// IOutArchive; the port adds UpdateItems for "lzma" (one stream, the LZMA
+// method properties of -m), which the command line tool uses for x.lzma and
+// x.tar.lzma.
 //
 // .lzma header (13 bytes): the 5 LZMA properties (lc/lp/pb byte and the
 // dictionary size) and the unpacked size (8 bytes, little endian, all ones
@@ -23,6 +25,7 @@ import '../codec/lzma/lzma_enc.dart';
 import '../common/method_props.dart';
 import '../io/streams.dart';
 import 'archive_types.dart';
+import 'handler_out.dart';
 
 // CheckDicSize
 bool _checkDicSize(Uint8List p, int off) {
@@ -650,6 +653,145 @@ class LzmaAloneHandler {
       }
     }
     extractCallback.setOperationResult(opResult);
+  }
+
+  // -------------------------------------------------------------------------
+  // IOutArchive. LzmaHandler.cpp has none (7-Zip can not create .lzma
+  // files with "a"); the port adds one for "lzma" so that x.lzma and
+  // x.tar.lzma can be created by the command line tool. The stream is the
+  // one `lzma e` writes: the 5 property bytes, the size and the LZMA data.
+
+  final MultiMethodProps _methodProps = MultiMethodProps();
+
+  /// GetFileTimeType: the format stores no time.
+  int getFileTimeType() => FileTimeType.notDefined;
+
+  /// ISetProperties::SetProperties: x (level), mt, and the LZMA coder
+  /// properties (d, fb, mc, mf, lc, lp, pb, a, eos...), as the LZMA method
+  /// of a 7z archive takes them. -m0=LZMA is accepted; other methods are
+  /// not.
+  void setProperties(List<MapEntry<String, PropVariant>> properties) {
+    if (lzma86) {
+      throw const SevenZipException(
+          'lzma86: update is not supported', SevenZipError.unsupported);
+    }
+    _methodProps.init();
+    for (final p in properties) {
+      _methodProps.setProperty(p.key, p.value);
+    }
+    final methods = _methodProps.methods;
+    methods.removeRange(0, _methodProps.getNumEmptyMethods());
+    if (methods.length > 1) invalidArg('lzma supports one method');
+    if (methods.length == 1) {
+      final m = methods[0];
+      if (m.methodName.isEmpty) {
+        m.methodName = 'LZMA';
+      } else if (m.methodName.toLowerCase() != 'lzma') {
+        invalidArg('lzma supports only the LZMA method');
+      }
+    }
+    // the properties are checked now, as the encoder would
+    _createEncoder(null);
+  }
+
+  // the encoder of the -m settings, for [size] bytes of input (null:
+  // unknown)
+  LzmaCompressor _createEncoder(int? size) {
+    final methods = _methodProps.methods;
+    final m = methods.isNotEmpty ? methods[0].copy() : OneMethodInfo();
+    _methodProps.setGlobalLevelTo(m);
+    final props = m.toCoderProperties(dataSizeReduce: size);
+    final c = LzmaCompressor.fromCoderProps(
+        props.where((e) => e.id != CoderPropId.numThreads));
+    if (size != null) c.expectedDataSize = size;
+    return c;
+  }
+
+  /// IOutArchive::UpdateItems: one item, compressed as one stream. When
+  /// [outStream] can be seeked the header gets the size of the data
+  /// (written after the stream, as the size of a stream from the update
+  /// callback is only an estimate), else the size is unknown and the
+  /// stream ends with the end marker, as `lzma e -eos`.
+  void updateItems(
+      OutStream outStream, int numItems, ArchiveUpdateCallback updateCallback) {
+    if (lzma86) {
+      throw const SevenZipException(
+          'lzma86: update is not supported', SevenZipError.unsupported);
+    }
+    if (numItems != 1) {
+      throw const SevenZipException(
+          'lzma: only one file can be compressed', SevenZipError.unsupported);
+    }
+    final info = updateCallback.getUpdateItemInfo(0);
+    if (info.newProps) {
+      final prop = updateCallback.getProperty(0, Kpid.isDir);
+      if (prop != null && (prop is! bool || prop != false)) {
+        throw const SevenZipException(
+            'lzma: directories are not supported', SevenZipError.unsupported);
+      }
+    }
+
+    if (info.newData) {
+      int? dataSize;
+      final prop = updateCallback.getProperty(0, Kpid.size);
+      if (prop is int) dataSize = prop;
+      final fileInStream = updateCallback.getStream(0);
+      if (fileInStream == null) return; // S_FALSE
+      if (fileInStream is StreamGetSize) {
+        final size = (fileInStream as StreamGetSize).streamSize;
+        if (size != null) dataSize = size;
+      }
+      if (dataSize != null) updateCallback.setTotal(dataSize);
+      final encoder = _createEncoder(dataSize);
+      final seekOut = outStream is SeekableOutStream ? outStream : null;
+      var eos = seekOut == null;
+      for (final p in _methodProps.methods.isEmpty
+          ? const <CoderProp>[]
+          : _methodProps.methods[0].props) {
+        if (p.id == CoderPropId.endMarker &&
+            p.value.vt == VarType.bool_ &&
+            p.value.boolValue) {
+          eos = true;
+        }
+      }
+      encoder.encProps.writeEndMark = eos;
+      final start = seekOut?.position ?? 0;
+      final header = Uint8List(13);
+      header.setRange(0, 5, encoder.props);
+      setUint64LE(header, 5, -1);
+      outStream.write(header, 0, 13);
+      final processed = encoder.encode(fileInStream, outStream,
+          progress: (inSize, outSize) => updateCallback.setCompleted(inSize));
+      if (!eos) {
+        // the size in the header
+        final end = seekOut!.position;
+        setUint64LE(header, 5, processed);
+        seekOut.position = start;
+        seekOut.write(header, 0, 13);
+        seekOut.position = end;
+      }
+      outStream.flush();
+      updateCallback.setOperationResult(0); // NUpdate::NOperationResult::kOK
+      return;
+    }
+
+    if (info.indexInArchive != 0) {
+      throw const SevenZipException(
+          'lzma: E_INVALIDARG', SevenZipError.unsupported);
+    }
+    if (updateCallback is ArchiveUpdateCallbackFile) {
+      (updateCallback as ArchiveUpdateCallbackFile).reportOperation(
+          EventIndexType.inArcIndex, 0, UpdateNotifyOp.replicate);
+    }
+    final stream = _stream;
+    if (stream == null) {
+      throw const SevenZipException(
+          'lzma: E_NOTIMPL (no archive stream)', SevenZipError.unsupported);
+    }
+    updateCallback.setTotal(stream.length);
+    stream.position = 0;
+    copyStream(stream, outStream);
+    outStream.flush();
   }
 }
 

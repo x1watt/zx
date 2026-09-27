@@ -20,10 +20,17 @@ final Int32List _extraLbits = Int32List.fromList(const [
   5, 5, 5, 5, 0
 ]);
 
-// extra_dbits: extra bits for each distance code
+// extra_lbits of Deflate64: code 285 has 16 extra bits (base 3)
+final Int32List _extraLbits64 = Int32List.fromList(const [
+  0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, //
+  5, 5, 5, 5, 16
+]);
+
+// extra_dbits: extra bits for each distance code, with the two codes of
+// Deflate64 (30 and 31, 14 extra bits, distances 32769 to 65536) at the end
 final Int32List _extraDbits = Int32List.fromList(const [
   0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, //
-  11, 11, 12, 12, 13, 13
+  11, 11, 12, 12, 13, 13, 14, 14
 ]);
 
 // extra_blbits: extra bits for each bit length code
@@ -37,20 +44,23 @@ const List<int> _blOrder = [
   16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 //
 ];
 
-const int _distCodeLen = 512; // DIST_CODE_LEN
+// DIST_CODE_LEN, with the distances of Deflate64 (256 + 65536 / 128)
+const int _distCodeLen = 768;
 
 /// The static tables of trees.c (static_ltree, static_dtree, _dist_code,
-/// _length_code, base_length, base_dist), built by tr_static_init.
+/// _length_code, base_length, base_dist), built by tr_static_init. The
+/// distance tables include the codes 30 and 31 of Deflate64; zlib's
+/// Deflate never uses them (its distances are at most 32 KiB).
 class _StaticTables {
   final Uint16List ltreeFc = Uint16List(_lCodes + 2); // static_ltree
   final Uint16List ltreeDl = Uint16List(_lCodes + 2);
-  final Uint16List dtreeFc = Uint16List(_dCodes); // static_dtree
-  final Uint16List dtreeDl = Uint16List(_dCodes);
+  final Uint16List dtreeFc = Uint16List(_dCodes64); // static_dtree
+  final Uint16List dtreeDl = Uint16List(_dCodes64);
   final Uint8List distCode = Uint8List(_distCodeLen); // _dist_code
   final Uint8List lengthCode =
       Uint8List(zMaxMatch - zMinMatch + 1); // _length_code
   final Int32List baseLength = Int32List(_lengthCodes); // base_length
-  final Int32List baseDist = Int32List(_dCodes); // base_dist
+  final Int32List baseDist = Int32List(_dCodes64); // base_dist
 
   // tr_static_init
   _StaticTables() {
@@ -70,7 +80,7 @@ class _StaticTables {
     // length_code[255] to use the best encoding:
     lengthCode[length - 1] = code;
 
-    // Initialize the mapping dist (0..32K) . dist code (0..29)
+    // Initialize the mapping dist (0..64K) . dist code (0..31)
     var dist = 0;
     for (code = 0; code < 16; code++) {
       baseDist[code] = dist;
@@ -79,7 +89,7 @@ class _StaticTables {
       }
     }
     dist >>= 7; // from now on, all distances are divided by 128
-    for (; code < _dCodes; code++) {
+    for (; code < _dCodes64; code++) {
       baseDist[code] = dist << 7;
       for (var n = 0; n < (1 << (_extraDbits[code] - 7)); n++) {
         distCode[256 + dist++] = code;
@@ -109,7 +119,7 @@ class _StaticTables {
     _genCodes(ltreeFc, ltreeDl, _lCodes + 1, blCount);
 
     // The static distance tree is trivial:
-    for (n = 0; n < _dCodes; n++) {
+    for (n = 0; n < _dCodes64; n++) {
       dtreeDl[n] = 5;
       dtreeFc[n] = _biReverse(n, 5);
     }
@@ -139,6 +149,14 @@ final _StaticTreeDesc _staticLDesc = _StaticTreeDesc(_tables.ltreeFc,
 // static_d_desc
 final _StaticTreeDesc _staticDDesc = _StaticTreeDesc(
     _tables.dtreeFc, _tables.dtreeDl, _extraDbits, 0, _dCodes, _maxBits);
+
+// static_l_desc of Deflate64
+final _StaticTreeDesc _staticLDesc64 = _StaticTreeDesc(_tables.ltreeFc,
+    _tables.ltreeDl, _extraLbits64, _literals + 1, _lCodes, _maxBits);
+
+// static_d_desc of Deflate64
+final _StaticTreeDesc _staticDDesc64 = _StaticTreeDesc(
+    _tables.dtreeFc, _tables.dtreeDl, _extraDbits, 0, _dCodes64, _maxBits);
 
 // static_bl_desc
 final _StaticTreeDesc _staticBlDesc =
@@ -238,7 +256,7 @@ extension _Trees on DeflateState {
   void _initBlock() {
     // Initialize the trees.
     dynLtreeFc.fillRange(0, _lCodes, 0);
-    dynDtreeFc.fillRange(0, _dCodes, 0);
+    dynDtreeFc.fillRange(0, _dDesc.statDesc.elems, 0);
     blTreeFc.fillRange(0, _blCodes, 0);
 
     dynLtreeFc[_endBlock] = 1;
@@ -635,7 +653,7 @@ extension _Trees on DeflateState {
     final distCode = _distCode;
     final baseLength = _tables.baseLength;
     final baseDist = _tables.baseDist;
-    final extraL = _extraLbits;
+    final extraL = _lDesc.statDesc.extraBits; // Deflate64: code 285 differs
     final extraD = _extraDbits;
     int value, len;
 

@@ -8,7 +8,10 @@ import 'package:zx/src/codec/rar/rar5_encoder.dart';
 import 'package:zx/src/common/method_props.dart';
 import 'package:zx/src/crypto/blake2sp.dart';
 import 'package:zx/src/crypto/rar5_kdf.dart';
+import 'package:zx/src/crypto/rar_legacy_cipher.dart';
 import 'package:zx/src/format/archive_types.dart';
+import 'package:zx/src/format/split.dart';
+import 'package:zx/src/format/rar/rar5_recovery.dart';
 import 'package:zx/src/format/rar/rar_handler.dart';
 import 'package:zx/src/format/rar/rar_volumes.dart';
 import 'package:zx/src/io/streams.dart';
@@ -281,7 +284,7 @@ void main() {
               MemoryInStream(Uint8List.fromList(packed.toBytes())),
               out,
               data.length,
-              Rar5Decoder.windowSizeFor(1 << 20, data.length, false),
+              Rar5Decoder.windowSizeFor(1 << 20, data.length),
               false);
           expect(out.toBytes(), data);
         }
@@ -598,15 +601,245 @@ void main() {
       expect(c.getProperty(0, Kpid.unpackVer), 29);
     });
 
-    test('RAR 3.x encryption is reported as unsupported', () {
-      final h = openRar(
-          uudecode('$_laTests/test_read_format_rar_encryption_data.rar.uu'),
+    test('RAR 3.x encryption: data and headers', () {
+      Map<String, String> texts(String name, String pw) {
+        final h =
+            openRar(uudecode('$_laTests/$name.uu'), password: pw, rar5: false);
+        final cb = _Collect(pw);
+        h.extract(null, false, cb);
+        return {
+          for (var i = 0; i < h.numberOfItems; i++)
+            h.getProperty(i, Kpid.path) as String:
+                cb.results[i] == OperationResult.ok
+                    ? utf8.decode(cb.data(i))
+                    : 'error ${cb.results[i]}'
+        };
+      }
+
+      String from(String n) => 'This is from $n';
+      // d.txt has the password "password2"
+      final plain = texts('test_read_format_rar4_encrypted.rar', 'password');
+      expect(plain['a.txt'], from('a.txt'));
+      expect(plain['b.txt'], from('b.txt'));
+      expect(plain['c.txt'], from('c.txt'));
+      expect(plain['d.txt'], startsWith('error'));
+      for (final name in [
+        'test_read_format_rar4_encrypted_filenames.rar',
+        'test_read_format_rar4_solid_encrypted.rar',
+        'test_read_format_rar4_solid_encrypted_filenames.rar',
+      ]) {
+        expect(
+            texts(name, 'password'),
+            {
+              for (final n in ['a.txt', 'b.txt', 'c.txt', 'd.txt']) n: from(n)
+            },
+            reason: name);
+      }
+      for (final name in [
+        'test_read_format_rar_encryption_data.rar',
+        'test_read_format_rar_encryption_header.rar',
+        'test_read_format_rar_encryption_partially.rar',
+      ]) {
+        final t = texts(name, '12345678');
+        expect(t.keys, ['foo.txt', 'bar.txt'], reason: name);
+        expect(t.values.every((v) => !v.startsWith('error')), isTrue,
+            reason: '$name $t');
+      }
+      final hp = openRar(
+          uudecode(
+              '$_laTests/test_read_format_rar4_encrypted_filenames.rar.uu'),
+          password: 'password',
           rar5: false);
-      final cb = _Check();
-      h.extract(null, true, cb);
-      expect(cb.results[0], OperationResult.unsupportedMethod);
+      expect(hp.getArchiveProperty(Kpid.characts), 'BlockEncryption');
+    });
+
+    test('RAR 3.x encrypted headers with a wrong password', () {
+      final h = RarHandler(rar5: false);
+      expect(
+          () => h.open(
+              MemoryInStream(uudecode(
+                  '$_laTests/test_read_format_rar_encryption_header.rar.uu')),
+              getPassword: () => 'wrong'),
+          throwsA(isA<SevenZipException>()
+              .having((e) => e.kind, 'kind', SevenZipError.wrongPassword)));
     });
   }, skip: haveLaTests ? false : 'no libarchive test files in ref/');
+
+  group('RAR 1.5, 2.0 and 3.x archives (test/data/rar_legacy)', () {
+    // made by tool/rar_legacy_fixtures.sh: RAR 1.55 for DOS (unpack
+    // version 15, RAR 1.5 cipher), RAR 2.90 (unpack version 20, with audio
+    // blocks, RAR 2.0 cipher) and rar 3.93 (AES, -p and -hp)
+    const dir = 'test/data/rar_legacy';
+    const unicodePw = 'p\u00E4ss\u20AC';
+
+    // the files of [path] as unrar extracts them
+    Map<String, Uint8List> unrarAll(String path, String pw) {
+      final tmp = Directory.systemTemp.createTempSync('zx_unrar');
+      try {
+        final r = Process.runSync(
+            'unrar', ['x', '-inul', '-y', '-p$pw', path, '${tmp.path}/']);
+        expect(r.exitCode, 0, reason: '${r.stdout}${r.stderr}');
+        return {
+          for (final f in tmp.listSync(recursive: true).whereType<File>())
+            f.path.substring(tmp.path.length + 1): f.readAsBytesSync()
+        };
+      } finally {
+        tmp.deleteSync(recursive: true);
+      }
+    }
+
+    void check(String name, {String pw = 'password', int? items}) {
+      final path = '$dir/$name';
+      final h = openFile(path, password: pw, rar5: false);
+      if (items != null) expect(h.numberOfItems, items);
+      final got = extractAll(h, pw);
+      if (haveUnrar) expect(got, unrarAll(path, pw), reason: name);
+    }
+
+    test('RAR 2.0 LZ and audio blocks, solid', () {
+      check('rar20_lz.rar', items: 2);
+      check('rar20_audio_solid.rar', items: 3);
+      check('rar20_audio4.rar', items: 1);
+      final h = openFile('$dir/rar20_lz.rar', rar5: false);
+      expect(h.getProperty(0, Kpid.unpackVer), 20);
+      // the old style archive comment, compressed with the RAR 2.0 method
+      final c = openFile('$dir/rar20_comment.rar', rar5: false);
+      expect(c.getArchiveProperty(Kpid.comment),
+          startsWith('An archive comment of RAR 2.90, long enough'));
+      check('rar20_comment.rar', items: 1);
+    });
+
+    // the sources of tool/rar_legacy_fixtures.sh that need no floating
+    // point rounding (the other ones are compared with unrar only)
+    Map<String, Uint8List> sources() {
+      var st = 7;
+      int next() {
+        st = (st * 1103515245 + 12345) & 0x7fffffff;
+        return (st >> 16) & 0xff;
+      }
+
+      for (var i = 0; i < 12000 + 20000; i++) {
+        next(); // st16.pcm and ch4.pcm
+      }
+      const words = [
+        'alpha', 'beta', 'gamma', 'archive', 'volume', ' ', '\n', //
+        'solid', 'window', 'filter',
+      ];
+      final t = BytesBuilder();
+      while (t.length < 30000) {
+        t.add(utf8.encode(words[next() % words.length]));
+      }
+      final rand = Uint8List(5000);
+      for (var i = 0; i < rand.length; i++) {
+        rand[i] = next();
+      }
+      return {'text.txt': t.toBytes(), 'rand.bin': rand};
+    }
+
+    // the items of [name] against the sources (names of DOS are upper case)
+    void checkSources(String name, {String pw = 'password'}) {
+      final src = sources();
+      final got =
+          extractAll(openFile('$dir/$name', password: pw, rar5: false), pw);
+      var n = 0;
+      got.forEach((k, v) {
+        final s = src[k.toLowerCase()];
+        if (s == null) return;
+        expect(v, s, reason: '$name: $k');
+        n++;
+      });
+      expect(n, greaterThan(0), reason: name);
+    }
+
+    test('RAR 1.5 method (unpack version 15), solid, comment', () {
+      check('rar15_lz.rar', items: 2);
+      check('rar15_solid.rar', items: 4);
+      check('rar15_comment.rar', items: 1);
+      checkSources('rar15_lz.rar');
+      checkSources('rar15_solid.rar');
+      final h = openFile('$dir/rar15_solid.rar', rar5: false);
+      expect(h.getProperty(0, Kpid.unpackVer), 15);
+      expect(h.getArchiveProperty(Kpid.solid), isTrue);
+      // the last file of the solid stream alone: the files before it are
+      // decoded for the state
+      final cb = _Collect();
+      h.extract([3], false, cb);
+      expect(cb.results[3], OperationResult.ok);
+      expect(cb.data(3), sources()['text.txt']);
+      // the old style archive comment, compressed with the RAR 1.5 method
+      final c = openFile('$dir/rar15_comment.rar', rar5: false);
+      expect(c.getArchiveProperty(Kpid.comment),
+          startsWith('An archive comment of RAR 1.55, long enough'));
+    });
+
+    test('RAR 1.5 and RAR 2.0 ciphers', () {
+      check('rar15_crypt.rar', items: 2);
+      check('rar15_crypt_stored.rar', items: 1);
+      check('rar20_crypt.rar', items: 1);
+      check('rar20_crypt_stored.rar', items: 1);
+      check('rar20_crypt_solid.rar', pw: 'a longer password', items: 3);
+      checkSources('rar15_crypt.rar');
+      checkSources('rar20_crypt.rar');
+      checkSources('rar20_crypt_solid.rar', pw: 'a longer password');
+      for (final name in ['rar15_crypt.rar', 'rar20_crypt.rar']) {
+        final h = openFile('$dir/$name', rar5: false);
+        expect(h.getProperty(0, Kpid.encrypted), isTrue);
+        final cb = _Collect('wrong');
+        h.extract(null, true, cb);
+        expect(cb.results[0], isNot(OperationResult.ok), reason: name);
+      }
+    });
+
+    test('RAR 1.5 and RAR 2.0 ciphers: encrypt and decrypt', () {
+      final pw = Uint8List.fromList(utf8.encode('seventeen chars!!'));
+      final data = gen(64, 3);
+      final b = Uint8List.fromList(data);
+      final e = Rar20Cipher(pw);
+      for (var i = 0; i < 64; i += 16) {
+        e.encryptBlock(b, i);
+      }
+      expect(b, isNot(data));
+      final d = Rar20Cipher(pw);
+      for (var i = 0; i < 64; i += 16) {
+        d.decryptBlock(b, i);
+      }
+      expect(b, data);
+      Rar15Cipher(pw).crypt(b, 0, 64);
+      expect(b, isNot(data));
+      Rar15Cipher(pw).crypt(b, 0, 64);
+      expect(b, data);
+      // the OEM code page of the DOS and console versions
+      expect(rarLegacyPasswordBytes('p\u00E4ss'), [0x70, 0x84, 0x73, 0x73]);
+    });
+
+    test('RAR 3.x AES: data, stored data, unicode password', () {
+      check('rar3_p.rar', items: 2);
+      check('rar3_p_stored.rar', items: 1);
+      check('rar3_p_unicode.rar', pw: unicodePw, items: 1);
+      // a wrong password gives bad data (RAR 3.x has no password check)
+      final h = openFile('$dir/rar3_p.rar', rar5: false);
+      final cb = _Collect('wrong');
+      h.extract(null, true, cb);
+      expect(cb.results[0], isNot(OperationResult.ok));
+      expect(h.getProperty(0, Kpid.encrypted), isTrue);
+    });
+
+    test('RAR 3.x AES: encrypted headers, solid, volumes', () {
+      check('rar3_hp_solid.rar', items: 3);
+      check('rar3_hp_vol.part1.rar', items: 2);
+      final h = openFile('$dir/rar3_hp_vol.part1.rar',
+          password: 'password', rar5: false);
+      expect(h.getArchiveProperty(Kpid.numVolumes), 2);
+      expect(
+          () => openFile('$dir/rar3_hp_solid.rar',
+              password: 'wrong', rar5: false),
+          throwsA(isA<SevenZipException>()
+              .having((e) => e.kind, 'kind', SevenZipError.wrongPassword)));
+    });
+  },
+      skip: Directory('test/data/rar_legacy').existsSync()
+          ? false
+          : 'no test/data/rar_legacy');
 
   test('an output that can not seek', () {
     final data = text(30000, 31);
@@ -637,4 +870,265 @@ void main() {
     expect(cb.results[0], OperationResult.crcError);
     expect(Crc32.of(data), isNot(Crc32.of(cb.data(0))));
   });
+
+  group('RAR 7 streams (compression algorithm version 1)', () {
+    test('encoder and decoder round trip with 80 distance slots', () {
+      for (final data in [text(80000, 41), audio(10000), gen(5000, 42)]) {
+        final enc = Rar5Encoder(3, 1 << 20, algoVersion: 1);
+        enc.start(MemoryInStream(data),
+            expectedSize: data.length, fileSizes: [data.length]);
+        final packed = MemoryOutStream();
+        enc.encodeFile(data.length, packed);
+        final out = MemoryOutStream();
+        Rar5Decoder().decodeFile(
+            MemoryInStream(Uint8List.fromList(packed.toBytes())),
+            out,
+            data.length,
+            Rar5Decoder.windowSizeFor(1 << 20, data.length),
+            false,
+            1);
+        expect(out.toBytes(), data);
+      }
+    });
+
+    test('a dictionary above 4 GB with a fraction needs a small window', () {
+      // 128 KB << 17 = 16 GB, plus 5/32 of it
+      final data = text(50000, 43);
+      final b = _writeRar([_Up.add('a.txt', data: data)], opts: 'x=5,algo=1');
+      final ci = 1 | (3 << 7) | (17 << 10) | (5 << 15);
+      final patched = _patchCompInfo(b, ci);
+      final h = openRar(patched);
+      expect(h.items[0].algoVersion, 1);
+      expect(h.items[0].dictSize, (16 << 30) + (16 << 30) ~/ 32 * 5);
+      expect(extractAll(h)['a.txt'], data);
+      expect(Rar5Decoder.windowSizeFor(h.items[0].dictSize, data.length),
+          lessThanOrEqualTo(1 << 17));
+    });
+
+    test('unrar and rar accept our version 1 archives', () {
+      final tmp = Directory.systemTemp.createTempSync('zx_rar7_');
+      try {
+        final data = text(60000, 44);
+        for (final opts in ['x=5,algo=1', 'x=9,s=on,algo=1', 'x=1,algo=1']) {
+          final b = _writeRar([
+            _Up.add('a.txt', data: data),
+            _Up.add('b.bin', data: audio(3000)),
+          ], opts: opts);
+          final path = '${tmp.path}/v1.rar';
+          File(path).writeAsBytesSync(b);
+          final l = Process.runSync(File(_rarPath).absolute.path, ['lt', path]);
+          expect('${l.stdout}', contains('v70'), reason: opts);
+          for (final t in [File(_rarPath).absolute.path, 'unrar']) {
+            final r = Process.runSync(t, ['t', path]);
+            expect(r.exitCode, 0, reason: '$t $opts ${r.stdout}');
+          }
+        }
+      } finally {
+        tmp.deleteSync(recursive: true);
+      }
+    }, skip: haveRar && haveUnrar ? false : 'no rar or unrar');
+  });
+
+  group('RAR5 volumes', () {
+    late Directory tmp;
+    setUp(() => tmp = Directory.systemTemp.createTempSync('zx_rarv_'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    final files = <_Up>[
+      _Up.add('d', isDir: true, posix: 0x41ED),
+      _Up.add('d/a.txt', data: text(30000, 51), posix: 0x81A4),
+      _Up.add('d/r.bin', data: gen(25000, 52), posix: 0x81A4),
+      _Up.add('d/e', data: Uint8List(0), posix: 0x81A4),
+      _Up.add('d/s.txt', data: text(300, 53), posix: 0x81A4),
+    ];
+
+    // writes the volumes of [opts] into tmp as v.partN.rar, returns the
+    // paths
+    List<String> writeVolumes(String opts, List<int> sizes,
+        {String? password}) {
+      final ms = MultiOutStream('${tmp.path}/v.', sizes)
+        ..volumeName = ((i) => '${tmp.path}/v.part${i + 1}.rar')
+        ..singleVolumeName = '${tmp.path}/v.rar';
+      final h = RarHandler(rar5: true)..setProperties(props(opts));
+      h.updateItems(ms, files.length, _UpdateCb(files, password));
+      final n = ms.finalFlushAndCloseFiles();
+      return n == 1
+          ? ['${tmp.path}/v.rar']
+          : [for (var i = 0; i < n; i++) '${tmp.path}/v.part${i + 1}.rar'];
+    }
+
+    for (final c in [
+      ('x=0', null),
+      ('x=5', null),
+      ('x=5,s=on,crc=blake2', null),
+      ('x=3', 'pw'),
+      ('x=5,he=on,s=on', 'pw'),
+      ('x=3,rr=10', null),
+      ('x=5,he=on,rr=5', 'pw'),
+    ]) {
+      test('write and read back (${c.$1}${c.$2 != null ? ', password' : ''})',
+          () {
+        final paths = writeVolumes(c.$1, [9000], password: c.$2);
+        expect(paths.length, greaterThan(2));
+        for (var i = 0; i < paths.length - 1; i++) {
+          expect(File(paths[i]).lengthSync(), 9000);
+        }
+        final h = openFile(paths.first, password: c.$2);
+        final got = extractAll(h, c.$2);
+        for (final f in files) {
+          if (f.data != null) expect(got[f.name], f.data, reason: f.name);
+        }
+        final pw = c.$2 == null ? '-p-' : '-p${c.$2}';
+        if (haveUnrar) {
+          final r = Process.runSync('unrar', ['t', pw, paths.first]);
+          expect(r.stdout, contains('All OK'), reason: '${r.stdout}');
+        }
+        if (haveRar) {
+          final r = Process.runSync(
+              File(_rarPath).absolute.path, ['t', pw, paths.first]);
+          expect(r.exitCode, 0, reason: '${r.stdout}');
+          if (c.$1.contains('rr=')) {
+            expect('${r.stdout}', contains('recovery record'));
+          }
+        }
+      });
+    }
+
+    test('a set that fits in one volume is a plain archive', () {
+      final paths = writeVolumes('x=5', [1 << 20]);
+      expect(paths, ['${tmp.path}/v.rar']);
+      final h = openFile(paths.first);
+      expect(h.archive!.isVolume, isFalse);
+      expect(extractAll(h)['d/a.txt'], files[1].data);
+    });
+
+    test('a volume too small for a header fails', () {
+      expect(
+          () => writeVolumes('x=0', [40]), throwsA(isA<SevenZipException>()));
+    });
+  });
+
+  group('RAR5 recovery record', () {
+    final data = gen(60000, 61);
+
+    test('the record repairs damaged chunks, and fails beyond its size', () {
+      final b = _writeRar([
+        _Up.add('r.bin', data: data),
+        _Up.add('t.txt', data: text(9000, 62))
+      ], opts: 'x=0,rr=5');
+      expect(openRar(b).archive!.recovery, isTrue);
+      // G = 60 chunks of 1 KiB, 3 recovery blocks
+      final damaged = Uint8List.fromList(b);
+      for (final at in [100, 5000, 30000]) {
+        for (var i = 0; i < 50; i++) {
+          damaged[at + i] ^= 0x5A;
+        }
+      }
+      final r = rar5Repair(damaged);
+      expect(r.repaired, 3);
+      expect(damaged, b);
+      for (final at in [100, 5000, 30000, 50000]) {
+        damaged[at] ^= 1;
+      }
+      expect(rar5Repair(damaged).unrecoverable, 4);
+    });
+
+    test('rar tests and repairs with our record, we repair with rar\'s', () {
+      final tmp = Directory.systemTemp.createTempSync('zx_rarrr_');
+      try {
+        final rarExe = File(_rarPath).absolute.path;
+        final b = _writeRar([_Up.add('r.bin', data: data)], opts: 'x=3,rr=10');
+        File('${tmp.path}/o.rar').writeAsBytesSync(b);
+        var r =
+            Process.runSync(rarExe, ['t', 'o.rar'], workingDirectory: tmp.path);
+        expect('${r.stdout}', contains('recovery record'));
+        expect(r.exitCode, 0, reason: '${r.stdout}');
+        final damaged = Uint8List.fromList(b);
+        for (var i = 3000; i < 3600; i++) {
+          damaged[i] ^= 0x33;
+        }
+        File('${tmp.path}/d.rar').writeAsBytesSync(damaged);
+        r = Process.runSync(rarExe, ['r', '-y', 'd.rar'],
+            workingDirectory: tmp.path);
+        expect(File('${tmp.path}/fixed.d.rar').readAsBytesSync(), b,
+            reason: '${r.stdout}');
+        // an archive made by rar -rr, repaired here
+        File('${tmp.path}/r.bin').writeAsBytesSync(data);
+        r = Process.runSync(
+            rarExe, ['a', '-idq', '-m0', '-rr5%', 'm.rar', 'r.bin'],
+            workingDirectory: tmp.path);
+        expect(r.exitCode, 0);
+        final m = File('${tmp.path}/m.rar').readAsBytesSync();
+        final md = Uint8List.fromList(m);
+        for (var i = 20000; i < 20300; i++) {
+          md[i] ^= 0x99;
+        }
+        expect(rar5Repair(md).repaired, 1);
+        expect(md, m);
+      } finally {
+        tmp.deleteSync(recursive: true);
+      }
+    }, skip: haveRar ? false : 'no rar tool');
+  });
+}
+
+// rewrites the compression information of the first file header of a
+// RAR5 archive made by _writeRar (a test of dictionary sizes rar only
+// writes for gigabytes of data)
+Uint8List _patchCompInfo(Uint8List b, int ci) {
+  (int, int) vint(int p) {
+    var v = 0, s = 0;
+    for (;;) {
+      final c = b[p++];
+      v |= (c & 0x7F) << s;
+      s += 7;
+      if (c < 0x80) return (v, p);
+    }
+  }
+
+  Uint8List enc(int v) {
+    final o = BytesBuilder();
+    while (v >= 0x80) {
+      o.addByte((v & 0x7F) | 0x80);
+      v >>= 7;
+    }
+    o.addByte(v);
+    return o.toBytes();
+  }
+
+  // the main header, then the file header
+  var p = 8;
+  var (size, q) = vint(p + 4);
+  p = q + size;
+  final hStart = p;
+  (size, q) = vint(p + 4);
+  final bodyStart = q, bodyEnd = q + size;
+  var r = bodyStart;
+  int flags, ff;
+  (_, r) = vint(r); // type
+  (flags, r) = vint(r);
+  if ((flags & 1) != 0) (_, r) = vint(r);
+  if ((flags & 2) != 0) (_, r) = vint(r);
+  (ff, r) = vint(r);
+  (_, r) = vint(r); // unpacked size
+  (_, r) = vint(r); // attributes
+  if ((ff & 2) != 0) r += 4;
+  if ((ff & 4) != 0) r += 4;
+  final ciStart = r;
+  (_, r) = vint(r);
+  final body = BytesBuilder()
+    ..add(b.sublist(bodyStart, ciStart))
+    ..add(enc(ci))
+    ..add(b.sublist(r, bodyEnd));
+  final nb = body.toBytes();
+  final sizeBytes = enc(nb.length);
+  final hb = Uint8List(4 + sizeBytes.length + nb.length);
+  hb.setRange(4, 4 + sizeBytes.length, sizeBytes);
+  hb.setRange(4 + sizeBytes.length, hb.length, nb);
+  setUint32LE(hb, 0, Crc32.of(hb, 4, hb.length));
+  return Uint8List.fromList([
+    ...b.sublist(0, hStart),
+    ...hb,
+    ...b.sublist(bodyEnd, b.length),
+  ]);
 }

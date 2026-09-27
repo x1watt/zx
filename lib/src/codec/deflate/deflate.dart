@@ -16,6 +16,7 @@ import 'dart:typed_data';
 
 import 'zutil.dart';
 
+part 'deflate64.dart';
 part 'trees.dart';
 
 // deflate.h
@@ -23,6 +24,7 @@ const int _lengthCodes = 29; // LENGTH_CODES
 const int _literals = 256; // LITERALS
 const int _lCodes = _literals + 1 + _lengthCodes; // L_CODES
 const int _dCodes = 30; // D_CODES
+const int _dCodes64 = 32; // D_CODES of Deflate64 (distance codes 30, 31)
 const int _blCodes = 19; // BL_CODES
 const int _heapSize = 2 * _lCodes + 1; // HEAP_SIZE
 const int _maxBits = 15; // MAX_BITS
@@ -34,6 +36,9 @@ const int _finishState = 666; // FINISH_STATE
 
 const int _minLookahead = zMaxMatch + zMinMatch + 1; // MIN_LOOKAHEAD
 const int _winInit = zMaxMatch; // WIN_INIT
+
+// the longest match of the Deflate64 mode
+const int _maxMatch64 = zMaxMatch - 1;
 
 // deflate.c
 const int _nil = 0; // NIL
@@ -133,6 +138,15 @@ class DeflateState {
   /// Heads of the hash chains or NIL.
   late Uint16List head;
 
+  /// [prev] and [head] of Deflate64, whose positions need 17 bits (see
+  /// deflate64.dart); empty otherwise.
+  late Uint32List prev32;
+  late Uint32List head32;
+
+  /// Deflate64 (PKWARE method 9): 64 KiB window, length code 285 with 16
+  /// extra bits (lengths 3 to 65538, base 3) and distance codes 30 and 31.
+  bool deflate64 = false;
+
   int insH = 0; // hash index of string to be inserted
   int hashSize = 0; // number of elements in hash table
   int hashBits = 0; // log2(hash_size)
@@ -177,8 +191,8 @@ class DeflateState {
   // two unions as two parallel Uint16List, fc and dl.
   final Uint16List dynLtreeFc = Uint16List(_heapSize); // literal and length
   final Uint16List dynLtreeDl = Uint16List(_heapSize);
-  final Uint16List dynDtreeFc = Uint16List(2 * _dCodes + 1); // distance
-  final Uint16List dynDtreeDl = Uint16List(2 * _dCodes + 1);
+  final Uint16List dynDtreeFc = Uint16List(2 * _dCodes64 + 1); // distance
+  final Uint16List dynDtreeDl = Uint16List(2 * _dCodes64 + 1);
   final Uint16List blTreeFc = Uint16List(2 * _blCodes + 1); // bit lengths
   final Uint16List blTreeDl = Uint16List(2 * _blCodes + 1);
 
@@ -224,16 +238,26 @@ class DeflateState {
   /// method Z_DEFLATED, followed by deflateReset. [level] is 0..9 or -1
   /// (Z_DEFAULT_COMPRESSION, 6), [windowBits] 9..15, [memLevel] 1..9.
   /// Throws [ArgumentError] where zlib returns Z_STREAM_ERROR.
+  ///
+  /// With [deflate64] the output is Deflate64 and the window is 64 KiB
+  /// ([windowBits] 16, the default then). The other differences are the
+  /// ones of the format: distances above 32 KiB use codes 30 and 31, and
+  /// code 285 has 16 extra bits (lengths 3 to 65538). Matches are cut to
+  /// 257 bytes (the longest 7-Zip's Deflate64 encoder writes), so that a
+  /// length is never sent with those 16 bits; the rest of the encoder is
+  /// zlib's.
   DeflateState(
       {int level = zDefaultCompression,
-      int windowBits = zMaxWbits,
+      int? windowBits,
       int memLevel = zDefMemLevel,
-      int strategy = ZStrategy.defaultStrategy}) {
+      int strategy = ZStrategy.defaultStrategy,
+      this.deflate64 = false}) {
+    windowBits ??= deflate64 ? 16 : zMaxWbits;
     if (level == zDefaultCompression) level = 6;
     if (memLevel < 1 ||
         memLevel > zMaxMemLevel ||
         windowBits < 8 ||
-        windowBits > 15 ||
+        windowBits > (deflate64 ? 16 : 15) ||
         level < 0 ||
         level > 9 ||
         strategy < 0 ||
@@ -253,8 +277,17 @@ class DeflateState {
     hashShift = (hashBits + zMinMatch - 1) ~/ zMinMatch;
 
     window = Uint8List(wSize * 2);
-    prev = Uint16List(wSize);
-    head = Uint16List(hashSize);
+    if (deflate64) {
+      prev = Uint16List(0);
+      head = Uint16List(0);
+      prev32 = Uint32List(wSize);
+      head32 = Uint32List(hashSize);
+    } else {
+      prev = Uint16List(wSize);
+      head = Uint16List(hashSize);
+      prev32 = Uint32List(0);
+      head32 = Uint32List(0);
+    }
 
     highWater = 0; // nothing written to s.window yet
 
@@ -270,8 +303,10 @@ class DeflateState {
     this.level = level;
     this.strategy = strategy;
 
-    _lDesc = _TreeDesc(dynLtreeFc, dynLtreeDl, _staticLDesc);
-    _dDesc = _TreeDesc(dynDtreeFc, dynDtreeDl, _staticDDesc);
+    _lDesc = _TreeDesc(
+        dynLtreeFc, dynLtreeDl, deflate64 ? _staticLDesc64 : _staticLDesc);
+    _dDesc = _TreeDesc(
+        dynDtreeFc, dynDtreeDl, deflate64 ? _staticDDesc64 : _staticDDesc);
     _blDesc = _TreeDesc(blTreeFc, blTreeDl, _staticBlDesc);
 
     deflateReset();
@@ -281,7 +316,11 @@ class DeflateState {
 
   // CLEAR_HASH
   void _clearHash() {
-    head.fillRange(0, hashSize, _nil);
+    if (deflate64) {
+      head32.fillRange(0, hashSize, _nil);
+    } else {
+      head.fillRange(0, hashSize, _nil);
+    }
   }
 
   // slide_hash
@@ -335,7 +374,11 @@ class DeflateState {
         strstart -= wsize; // we now have strstart >= MAX_DIST
         blockStart -= wsize;
         if (insert > strstart) insert = strstart;
-        _slideHash();
+        if (deflate64) {
+          _slideHash64();
+        } else {
+          _slideHash();
+        }
         more += wsize;
       }
       if (availIn == 0) break;
@@ -351,8 +394,13 @@ class DeflateState {
         h = ((h << hashShift) ^ win[str + 1]) & hashMask;
         while (insert != 0) {
           h = ((h << hashShift) ^ win[str + zMinMatch - 1]) & hashMask;
-          prev[str & wMask] = head[h];
-          head[h] = str;
+          if (deflate64) {
+            prev32[str & wMask] = head32[h];
+            head32[h] = str;
+          } else {
+            prev[str & wMask] = head[h];
+            head[h] = str;
+          }
           str++;
           insert--;
           if (lookahead + insert < zMinMatch) break;
@@ -546,9 +594,9 @@ class DeflateState {
       } else if (strategy == ZStrategy.rle) {
         bstate = _deflateRle(flush);
       } else if (_configurationTable[level].func == _funcFast) {
-        bstate = _deflateFast(flush);
+        bstate = deflate64 ? _deflateFast64(flush) : _deflateFast(flush);
       } else {
-        bstate = _deflateSlow(flush);
+        bstate = deflate64 ? _deflateSlow64(flush) : _deflateSlow(flush);
       }
 
       if (bstate == _finishStarted || bstate == _finishDone) {
@@ -1142,6 +1190,9 @@ class DeflateState {
               prevByte == win[++scan] &&
               scan < strend) {}
           matchLength = zMaxMatch - (strend - scan);
+          if (matchLength > _maxMatch64 && deflate64) {
+            matchLength = _maxMatch64;
+          }
           if (matchLength > lookahead) matchLength = lookahead;
         }
       }

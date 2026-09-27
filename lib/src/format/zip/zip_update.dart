@@ -131,14 +131,14 @@ class ZipWriteOptions {
       case 'xz':
         return ZipMethod.xz;
       case 'deflate64':
-        // no Deflate64 encoder in this package
-        invalidArg('Deflate64 compression is not supported');
+        return ZipMethod.deflate64;
     }
     // a numeric method id
     final (v, n) = convertStringToUInt32(name, 0);
     if (n == name.length && n > 0) {
       if (v == ZipMethod.store ||
           v == ZipMethod.deflate ||
+          v == ZipMethod.deflate64 ||
           v == ZipMethod.bzip2 ||
           v == ZipMethod.lzma ||
           v == ZipMethod.ppmd ||
@@ -725,6 +725,8 @@ class ZipUpdater {
         return CopyCompressor();
       case ZipMethod.deflate:
         return DeflateCompressor.fromCoderProps(props);
+      case ZipMethod.deflate64:
+        return Deflate64Compressor.fromCoderProps(props);
       case ZipMethod.bzip2:
         return Bzip2Compressor.fromCoderProps(props);
       case ZipMethod.lzma:

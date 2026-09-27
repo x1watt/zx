@@ -331,6 +331,30 @@ class LzmaArc extends InArchive {
 
   @override
   InStream? getSeqStream(int index) => index == 0 ? h.getSeqStream() : null;
+
+  // IOutArchive: "lzma" only (the port's UpdateItems, see lzma_alone.dart)
+
+  @override
+  bool get supportsUpdate => !lzma86;
+
+  @override
+  int getFileTimeType() => h.getFileTimeType();
+
+  @override
+  void setProperties(List<MapEntry<String, PropVariant>> props) =>
+      h.setProperties(props);
+
+  @override
+  void updateItems(
+      OutStream out, int numItems, ArchiveUpdateCallback callback) {
+    // the C++ handlers release the file stream when UpdateItems returns
+    final cb = _ReleasingUpdateCallback(callback);
+    try {
+      h.updateItems(out, numItems, cb);
+    } finally {
+      cb.releaseAll();
+    }
+  }
 }
 
 /// The Split handler.

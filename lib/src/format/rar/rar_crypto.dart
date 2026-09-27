@@ -4,6 +4,7 @@
 import 'dart:typed_data';
 
 import '../../crypto/aes.dart';
+import '../../crypto/rar_legacy_cipher.dart';
 import '../../io/streams.dart';
 
 /// Decrypts [base] (whole 16 byte blocks) with AES-256-CBC.
@@ -103,4 +104,46 @@ void rarAesEncrypt(
   aesSetKeyEnc(aes, 4, key, key.length);
   aesCbcInit(aes, iv);
   aesCbcEncode(aes, data, off, len >> 4);
+}
+
+/// Decrypts [base] with the RAR 1.5 stream cipher or the RAR 2.0 block
+/// cipher (the encrypted files of unpack versions 15 to 26).
+final class RarLegacyDecryptInStream implements InStream {
+  final InStream base;
+  final Rar15Cipher? _c15;
+  final Rar20Cipher? _c20;
+  final Uint8List _buf = Uint8List(1 << 16);
+  int _pos = 0;
+  int _len = 0;
+  bool _eof = false;
+
+  /// [unpackVersion] below 20 selects the RAR 1.5 cipher.
+  RarLegacyDecryptInStream(this.base, Uint8List password, int unpackVersion)
+      : _c15 = unpackVersion < 20 ? Rar15Cipher(password) : null,
+        _c20 = unpackVersion < 20 ? null : Rar20Cipher(password);
+
+  @override
+  int read(Uint8List buf, int off, int len) {
+    if (_pos == _len) {
+      if (_eof) return 0;
+      var n = readFully(base, _buf, 0, _buf.length);
+      if (n < _buf.length) _eof = true;
+      final c20 = _c20;
+      if (c20 != null) {
+        n &= ~15;
+        for (var i = 0; i < n; i += 16) {
+          c20.decryptBlock(_buf, i);
+        }
+      } else {
+        _c15!.crypt(_buf, 0, n);
+      }
+      if (n == 0) return 0;
+      _pos = 0;
+      _len = n;
+    }
+    final n = len < _len - _pos ? len : _len - _pos;
+    buf.setRange(off, off + n, _buf, _pos);
+    _pos += n;
+    return n;
+  }
 }

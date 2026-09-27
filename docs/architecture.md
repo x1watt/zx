@@ -73,7 +73,9 @@ Read it together with `docs/performance.md`.
     `bcj2.dart` (Bcj2.c, Bcj2Enc.c, Bcj2Coder.cpp), `filter_coder.dart`.
   - `copy.dart`, `registry.dart`.
   - `deflate/`: zlib 1.3.1 (`deflate.dart`, `trees.dart`, `inflate.dart`,
-    `inftrees.dart`, `zutil.dart`), `infback9.dart` (Deflate64 decoding,
+    `inftrees.dart`, `zutil.dart`; with `deflate64.dart`, the hash chain
+    functions with 32-bit positions, they also write Deflate64, see
+    section 8), `infback9.dart` (Deflate64 decoding,
     zlib's contrib/infback9) and `deflate_coder.dart` (the coder shapes).
   - `bzip2/`: bzip2 1.0.8 (`compress.dart`, `blocksort.dart`,
     `huffman.dart`, `decompress.dart`, `bzip2_tables.dart`) and
@@ -85,15 +87,18 @@ Read it together with `docs/performance.md`.
     `larc_decoders.dart`, `pma_decoders.dart`), ARJ method 4
     (`arj4_decoder.dart`), and `lzh_encoder.dart` (lh5, lh6, lh7 and ARJ
     methods 1 to 3, written from the format).
-  - `rar/`: the RAR 2.9/3.x decoder and its PPMd variant (after
-    libarchive), the RAR5 decoder (after libarchive) and the RAR5 encoder
-    (written from the format), `rar_huffman.dart`.
+  - `rar/`: the RAR 2.0 decoder with its audio blocks (after rardecode),
+    the RAR 2.9/3.x decoder and its PPMd variant (after libarchive), the
+    RAR5 decoder (after libarchive; compression version 1 of RAR 7 after
+    rardecode) and the RAR5 encoder (written from the format),
+    `rar_huffman.dart`.
 - `lib/src/crypto`: `aes.dart` (Aes.c, CBC), `sha256.dart`,
   `seven_zip_aes.dart` (7zAes.cpp: key derivation, properties, coder),
   `sha1.dart` (Sha1.c), `hmac_sha1.dart` (HMAC and PBKDF2, RFC 2104 and
   2898), `zip_crypto.dart` (PKWARE traditional encryption, APPNOTE),
-  `winzip_aes.dart` (WinZip AE-1/AE-2), `rar5_kdf.dart` and `blake2sp.dart`
-  (RAR5 keys and file hashes).
+  `winzip_aes.dart` (WinZip AE-1/AE-2), `rar3_kdf.dart` (RAR 3.x keys,
+  after rardecode), `rar5_kdf.dart` and `blake2sp.dart` (RAR5 keys and file
+  hashes).
 - `lib/src/format`: the archive handlers.
   - `archive_types.dart`: PropID.h and IArchive.h (Kpid, OperationResult,
     the extract and update callbacks).
@@ -105,7 +110,8 @@ Read it together with `docs/performance.md`.
     `SevenZipWriter.update`).
   - `xz/`: Xz.c, XzDec.c, XzEnc.c, XzHandler.cpp; `XzArchive`.
   - `lzma_alone.dart`: the .lzma and .lzma86 handler and `lzma e`
-    (LzmaAlone.cpp, Lzma86Enc.c).
+    (LzmaAlone.cpp, Lzma86Enc.c); the handler also writes .lzma (section
+    8).
   - `split.dart`: split volumes (SplitHandler.cpp, MultiStream.cpp,
     MultiOutStream.cpp).
   - `gzip/`: the gzip handler (RFC 1952: several members, all the header
@@ -120,10 +126,14 @@ Read it together with `docs/performance.md`.
     ZipCrypto and WinZip AES; writing and updating).
   - `lha/`: the LZH handler (after lhasa; level 0, 1, 2 headers; writes
     level 2 headers).
-  - `arj/`: the ARJ handler (ARJ technote; methods 0 to 4 both ways).
+  - `arj/`: the ARJ handler (ARJ technote; methods 0 to 4 both ways;
+    garbled files both ways, multi-volume reading and UNIX links from
+    black box study of arj 3.10, section 8).
   - `rar/`: the RAR handlers ("Rar" for RAR 1.5 to 4.x archives, "Rar5"),
-    reading after libarchive, RAR5 writing (`rar5_out.dart`), volumes and
-    encryption (`rar_crypto.dart`).
+    reading after libarchive, RAR5 writing (`rar5_out.dart`, with volumes),
+    volume names (`rar_volumes.dart`), encryption (`rar_crypto.dart`) and
+    the RAR5 recovery record (`rar5_recovery.dart`, from black box study
+    of rar 7.00, see section 10).
 - `lib/src/cli`, `bin/zx.dart`: the command line tool, 7zr's commands and
   switches (ArchiveCommandLine.cpp, Main.cpp, List, Extract, Update...).
   `load_codecs.dart` registers the formats (7zr's plus gzip, bzip2, tar,
@@ -243,12 +253,64 @@ caller renames the new file over the old one, as 7-Zip does.
 
 - Formats beyond the SDK: gzip, bzip2, tar, zip (jar and the other zip
   extensions), LZH, ARJ, RAR and RAR5 are read and written (RAR: extract
-  RAR 2.9, 3.x and RAR5, create RAR5 only). Not supported: the RAR 1.5 and
-  2.0 methods, RAR 3.x encryption, RAR7 (version 1 compression), writing
-  RAR volumes and recovery records, Deflate64 compression (decoding only),
-  ARJ garbled (password) files, and the other formats of the full 7-Zip
+  RAR 1.5, 2.0, 2.9, 3.x and RAR5 with the RAR 1.5, RAR 2.0, RAR 3.x and
+  RAR5 encryption of data and headers, create RAR5 only). The RAR 1.5
+  method (unpack version 15, `rar15_decoder.dart`) and the RAR 1.5 and 2.0
+  ciphers (`rar_legacy_cipher.dart`) are independent implementations:
+  written from format descriptions (the prose and tables of the
+  rar-research documents, section 10) and black box tests with RAR 1.55
+  for DOS (under DOSBox), WinRAR 2.90 and unrar, not from any decoder's
+  code. RAR 1.5 has no solid flag per file: in a solid archive every
+  compressed file after the first continues the stream. A non ASCII
+  password of these ciphers is taken in code page 437 (what the DOS and
+  console versions used; unrar on Linux uses UTF-8 and fails on such
+  archives), or as UTF-8 when it has other characters. Not supported: the
+  ARJCRYPT
+  ciphers of ARJ (`-hg`, encryption version 2 and up: `unsupportedMethod`),
+  ARJ multi-volume creation, and the other formats of the full 7-Zip
   (cab, iso, wim...). Deflate, Deflate64, BZip2 and ZSTD methods inside
   7z archives are not decoded: those items fail with `unsupportedMethod`.
+- RAR beyond 7-Zip's switches (behavior of the port): RAR 7 archives
+  (compression version 1: dictionaries above 4 GB, fractional sizes, 80
+  distance slots) are extracted; the window is reduced to the size of the
+  data, and at most 4 GiB is allocated. The >4 GB distance path follows
+  rardecode and could not be checked against rar output (rar 7.00 needs
+  far more memory than this machine has to write such an archive); the
+  table layout is checked by unrar and rar on archives written with
+  `-malgo=1`. `-v<size>` with the Rar formats writes RAR5 volumes named
+  as rar names them (`name.part1.rar`, with as many digits as the input
+  size needs; one volume is renamed `name.rar` with the flags of a plain
+  archive), every volume but the last exactly `<size>` (zero padded after
+  its end header, as rar does). `-mrr=<n>[%]` adds a recovery record of
+  n percent (to each volume) that `rar t` checks and `rar r` repairs with;
+  it needs an output that can be read back (a file, not stdout).
+  `rar5Repair` (`rar5_recovery.dart`) repairs an archive or volume in
+  memory with its record (the library has it, the CLI has no repair
+  command, as 7-Zip). Not written: the quick open record and the locator
+  of the main header (both optional), recovery volumes (`.rev`).
+- ARJ beyond the technote (behavior of the port, from black box study of
+  ARJ32 3.10, see `arj_header.dart`): garbled files (`-g<password>`, the
+  XOR garbling) are read and written with `-p`; a wrong password shows
+  as a CRC or data error, as for 7-Zip's weak ciphers. Multi-volume
+  archives (x.arj, x.a01 ... x.a99, x.100 ...) are read when the first
+  volume is opened: the parts of a split file are one item (its CRC is
+  checked for each part); opened from a later volume, a file that starts
+  before it is `unavailable`; they can not be updated. UNIX special files
+  (`arj -a1`) are read: symbolic links as links, hard links as
+  `kpidHardLink`, FIFOs as empty files; `-snl` writes symbolic links as
+  arj does (file type 6, host UNIX).
+- Creating .lzma files (`zx a x.lzma file`, `x.tar.lzma`, `x.tlz`): 7-Zip
+  can not (LzmaHandler.cpp has no IOutArchive). The port's UpdateItems
+  writes the stream of `lzma e` with the properties of the LZMA method of
+  `-m` (`-mx`, `-md`, `-mfb`, `-mlc`, `-mlp`, `-mpb`, `-mmf`, `-meos`...)
+  and the size in the header, written after the data when the output can
+  be seeked; to stdout (`-so`) the size is unknown and the stream ends
+  with the end marker. .lzma86 is read only.
+- Deflate64 compression (zip `-mm=Deflate64`) is zlib's deflate with the
+  64 KiB window, distance codes 30 and 31 and matches of at most 257 bytes
+  (the longest 7-Zip's Deflate64 encoder writes, which keeps code 285 and
+  its 16 extra bits unused). As with Deflate, the output is zlib's, not
+  7-Zip's (a few percent larger than 7-Zip's optimal parsing).
 - Compound archives (`arc_compound.dart`) are behavior of the port, not
   of 7-Zip. 7-Zip opens x.tar.gz as a gzip archive holding x.tar, because
   CArchiveLink::Open goes to the next level only with kpidMainSubfile and
@@ -339,13 +401,26 @@ license allows that, and the notice of each one goes into LICENSE:
 | `zlib-1.3.1` (including `contrib/infback9` for Deflate64) | zlib | Deflate, Deflate64, gzip |
 | `bzip2-1.0.8` | bzip2 (BSD style) | BZip2 |
 | `libarchive` | BSD 2-clause (check each file header) | tar, zip, RAR 2.9 to 4 and RAR5 reading, LHA |
+| `rardecode` (github.com/nwaples/rardecode) | BSD 2-clause | RAR 2.0 decoder (unpack 20 and 26, audio blocks), RAR 3.x AES key derivation and encrypted headers, the CRC range of old comment blocks, RAR5 compression version 1 (RAR 7) |
 | `lhasa` | ISC | LHA decoders |
+| bitplane/rar-research (github.com/bitplane/rar-research), the prose, tables and cipher definitions of its `doc/` files only | format facts, no code taken | the RAR 1.5 method and the RAR 1.5 and 2.0 ciphers, written here as new code and checked black box (RAR 1.55, WinRAR 2.90, unrar) |
 | Public format documents: PKWARE APPNOTE, RFC 1951/1952, POSIX ustar/pax, WinZip AES (AE-1/AE-2), RAR5 technote, ARJ technote | documents | everything written from a specification |
 
 Never read or copy the LGPL parts of 7-Zip (its CPP handlers and coders for
 zip, gzip, bzip2, tar, rar, arj, lzh, deflate), the unRAR source (its
-license forbids using it to recreate the RAR compressor), or the GPL ARJ
-source. Encoders that no permissive source provides (RAR5, ARJ, LHA) are
+license forbids using it to recreate the RAR compressor), The Unarchiver
+(XADMaster, LGPL), unarr (LGPL), ports of any of them (junrar,
+SharpCompress's RAR decoders, omnizip-rar), code of specifications
+written with them as a reference (the rars crate and any code in
+bitplane/rar-research, which name XADMaster and, in their history, the
+unRAR derived Rar decoders of 7-Zip as references; the format facts that
+its documents state in prose and tables were used for the RAR 1.5 method
+and ciphers, at the owner's direction, and nothing was translated), or
+the GPL ARJ source. Encoders that no permissive source provides (RAR5, ARJ, LHA) are
 written here from the format definition, and verified against the
 reference tools in `ref/tools/root/usr/bin` (rar 7.00, arj 3.10, lhasa,
-jlha) and the system unzip, gzip, bzip2, tar and unrar.
+jlha) and the system unzip, gzip, bzip2, tar and unrar. Formats that no
+permissive source or document describes (the RAR5 recovery record) are
+derived by black box study of what the reference tools write and accept:
+archives made by rar are compared field by field and with controlled
+input differences, never by reading or disassembling their code.

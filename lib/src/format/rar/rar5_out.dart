@@ -14,6 +14,19 @@
 // kept items whose data is part of a solid stream are decoded and
 // compressed again.
 //
+// Volumes: when the output is a MultiOutStream (the -v switch), each
+// volume starts with the signature, the encryption header of encrypted
+// headers and a main header with the volume flags and number, and ends
+// with an end of archive header whose flag says that the archive
+// continues. The data of a file that does not fit is split into parts,
+// each with a copy of the file header flagged "split before" or "split
+// after"; the checksum of a part that is not the last one is the CRC32 (or
+// BLAKE2sp) of its packed data, the last part has the checksum of the
+// whole file (technote, "Data CRC32" and the hash record). A volume is
+// padded with zeros after its end header up to the volume size, as rar
+// does, so that every volume but the last has the requested size. A set
+// that ends in one volume gets the flags of a plain archive.
+//
 // The -m properties (SetProperties):
 //   x=0..9     level: 0 store, 1 method 1 (fastest), 2..3 method 2,
 //              4..5 method 3 (default), 6..7 method 4, 8..9 method 5
@@ -24,6 +37,13 @@
 //   he=on|off  encrypt the headers too (with a password, like rar -hp)
 //   crc=crc32|blake2   the file checksum (CRC32 by default)
 //   tm, tc, ta store the modification (default), creation, access times
+//   rr=<n>[%]  add a recovery record of n percent (1 to 1000; "rr" alone
+//              is 3%, as rar -rr), to each volume with -v (see
+//              rar5_recovery.dart); the archive is read back to compute it
+//   algo=0|1   compression algorithm version of the file headers: 0
+//              (default, RAR 5.0 and later) or 1 (the RAR 7.0 format,
+//              extracted by RAR 7.0 and later only; this writer uses the
+//              same dictionaries, up to 1 GB, in both)
 //   mt, memuse accepted and ignored
 
 import 'dart:convert';
@@ -38,7 +58,9 @@ import '../../io/streams.dart';
 import '../../util/crc.dart';
 import '../archive_types.dart';
 import '../handler_out.dart';
+import '../split.dart';
 import 'rar5_in.dart';
+import 'rar5_recovery.dart';
 import 'rar_archive.dart';
 import 'rar_crypto.dart';
 import 'rar_handler.dart';
@@ -55,6 +77,12 @@ final class Rar5WriteOptions {
   bool solid = false;
   bool encryptHeaders = false;
   bool blake2 = false;
+
+  /// The compression algorithm version (0, or 1 for RAR 7.0).
+  int algoVersion = 0;
+
+  /// The size of the recovery record in percent (0: none).
+  int recoveryPercent = 0;
   final HandlerTimeOptions timeOptions = HandlerTimeOptions();
 
   /// The RAR compression method of the level (0 store ... 5 best).
@@ -89,6 +117,8 @@ final class Rar5WriteOptions {
     solid = false;
     encryptHeaders = false;
     blake2 = false;
+    algoVersion = 0;
+    recoveryPercent = 0;
     timeOptions.init();
     for (final p in props) {
       final name = p.key.toLowerCase();
@@ -131,10 +161,39 @@ final class Rar5WriteOptions {
         }
         continue;
       }
+      if (name == 'rr') {
+        recoveryPercent = _percent(value);
+        continue;
+      }
+      if (name == 'algo') {
+        algoVersion = parsePropToUInt32('', value, 0);
+        if (algoVersion > 1) invalidArg('Bad algorithm version');
+        continue;
+      }
       if (timeOptions.parse(name, value)) continue;
       if (name.startsWith('mt') || name.startsWith('memuse')) continue;
       invalidArg('Unsupported property: ${p.key}');
     }
+  }
+
+  static int _percent(PropVariant v) {
+    int n;
+    if (v.vt == VarType.ui4) {
+      n = v.intValue;
+    } else if (v.vt == VarType.bstr) {
+      var t = v.stringValue.trim();
+      if (t.endsWith('%')) t = t.substring(0, t.length - 1);
+      if (t.isEmpty) return 3;
+      final p = int.tryParse(t);
+      if (p == null) invalidArg('Bad recovery record size');
+      n = p;
+    } else if (v.vt == VarType.empty) {
+      return 3;
+    } else {
+      invalidArg('Bad recovery record size');
+    }
+    if (n < 0 || n > 1000) invalidArg('Bad recovery record size');
+    return n;
   }
 
   static bool _isDigits(String s, int from) {
@@ -191,7 +250,8 @@ final class _FileHeader {
   int compInfo = 0;
   int? mTimeUnix; // file flag 0x0002
   int? crc;
-  bool splitFlagsClear = true;
+  bool splitBefore = false;
+  bool splitAfter = false;
   int dataSize = 0;
   bool hasData = false;
 
@@ -204,6 +264,10 @@ final class _FileHeader {
   String? symlink;
   int redirType = RarRedir.none;
   int redirFlags = 0;
+
+  /// Service data record (EXTRA type 7), and the "skip if unknown" flag.
+  Uint8List? subdata;
+  bool skipIfUnknown = false;
 
   /// Extra area kept from an old header (for copied items), with the hash
   /// record replaced by [blake2] when that is set.
@@ -257,6 +321,13 @@ final class _FileHeader {
       r.bytes(nb);
       _record(e, r.take());
     }
+    final sd = subdata;
+    if (sd != null) {
+      final r = _Body();
+      r.vint(Rar5Extra.subdata);
+      r.bytes(sd);
+      _record(e, r.take());
+    }
     return e.take();
   }
 
@@ -300,6 +371,9 @@ final class _FileHeader {
     var flags = 0;
     if (extra.isNotEmpty) flags |= Rar5HeaderFlags.extra;
     if (hasData) flags |= Rar5HeaderFlags.data;
+    if (splitBefore) flags |= Rar5HeaderFlags.splitBefore;
+    if (splitAfter) flags |= Rar5HeaderFlags.splitAfter;
+    if (skipIfUnknown) flags |= Rar5HeaderFlags.skipIfUnknown;
     h.vint(flags);
     if (extra.isNotEmpty) h.vint(extra.length);
     if (hasData) h.vintFixed(dataSize, 8);
@@ -387,6 +461,54 @@ final class _CountOut implements OutStream {
   void flush() => base.flush();
 }
 
+/// The packed data of a file: counts it and, with volumes, splits it
+/// into parts at the end of each volume ([room] gives the bytes left in
+/// the volume, [split] ends the part and starts the next volume). The
+/// checksum of each part is kept for its header.
+final class _PartOut implements OutStream {
+  final OutStream base;
+  final bool blake2;
+  int count = 0;
+  int partCount = 0;
+  Crc32 partCrc = Crc32();
+  Blake2sp? partBlake;
+  int Function()? room;
+  void Function()? split;
+
+  _PartOut(this.base, this.blake2) : partBlake = blake2 ? Blake2sp() : null;
+
+  @override
+  void write(Uint8List buf, int off, int len) {
+    final room = this.room;
+    if (room == null) {
+      base.write(buf, off, len);
+      count += len;
+      return;
+    }
+    while (len > 0) {
+      var n = room();
+      if (n <= 0) {
+        split!();
+        partCount = 0;
+        partCrc = Crc32();
+        partBlake = blake2 ? Blake2sp() : null;
+        continue;
+      }
+      if (n > len) n = len;
+      base.write(buf, off, n);
+      partCrc.update(buf, off, off + n);
+      partBlake?.update(buf, off, n);
+      count += n;
+      partCount += n;
+      off += n;
+      len -= n;
+    }
+  }
+
+  @override
+  void flush() => base.flush();
+}
+
 /// A new item as the update callback describes it.
 final class _NewItem {
   final int index;
@@ -421,7 +543,23 @@ final class Rar5Writer {
 
   Rar5Encoder? _encoder;
 
+  // volumes (null sizes: one archive)
+  List<int>? _volSizes;
+  int _vol = 0;
+  int _volStart = 0; // absolute start of the current volume
+  int _volLimit = 0; // absolute end of the current volume
+  int _endSize = 0; // size of the end of archive header
+  int _tailSize = 0; // what a volume keeps after its files
+  bool _startingVolume = false;
+  int _mainPos = 0;
+  int _mainSize = 0;
+
   Rar5Writer(this._out0, this.opt, this.old, [this.oldHandler]);
+
+  int _volSize(int i) {
+    final v = _volSizes!;
+    return v[i < v.length ? i : v.length - 1];
+  }
 
   Uint8List _random(int n) {
     final b = Uint8List(n);
@@ -467,27 +605,19 @@ final class Rar5Writer {
       _encryptHeaders = opt.encryptHeaders;
     }
 
-    // signature, encryption header, main header
-    _out.write(Uint8List.fromList(rar5Signature), 0, 8);
-    if (_encryptHeaders) {
-      final h = _Body();
-      h.vint(Rar5HeaderType.crypt);
-      h.vint(0);
-      h.vint(0); // version
-      h.vint(1); // password check present
-      h.bytes([rar5WriteKdfCount]);
-      h.bytes(_salt!);
-      h.bytes(_check!);
-      _writeHeader(h.take(), plain: true);
-      _headerKeys = _keys;
+    final out0 = _out0;
+    if (out0 is MultiOutStream && out0.volumeSizes.isNotEmpty) {
+      _volSizes = out0.volumeSizes;
+      _volLimit = _volSize(0);
     }
-    {
-      final h = _Body();
-      h.vint(Rar5HeaderType.main);
-      h.vint(0);
-      h.vint(opt.solid ? 4 : 0);
-      _writeHeader(h.take());
+    if (opt.recoveryPercent > 0 && _out0 is! ReadBackOutStream) {
+      throw const SevenZipException(
+          'RAR5: the recovery record needs an output that can be read back',
+          SevenZipError.unsupported);
     }
+    _writeVolumeStart();
+    _endSize = _headerBytes(_endBody(false)).length;
+    _tailSize = _volSizes != null ? _tailFor(_volSize(0)) : _endSize;
     final comment = old?.comment;
     if (comment != null) _writeComment(comment);
 
@@ -500,6 +630,11 @@ final class Rar5Writer {
       cb.setCompleted(completed);
       final info = infos[i];
       if (!info.newData) {
+        if (_volSizes != null) {
+          throw const SevenZipException(
+              'RAR5: updating multivolume archives is not supported',
+              SevenZipError.unsupported);
+        }
         final it = old!.items[info.indexInArchive];
         if (it.splitBefore || it.splitAfter) {
           throw SevenZipException(
@@ -555,17 +690,123 @@ final class Rar5Writer {
       i = run.last.index + 1;
     }
     // end of archive
-    {
-      final h = _Body();
-      h.vint(Rar5HeaderType.endArc);
-      h.vint(0);
-      h.vint(0);
-      _writeHeader(h.take());
+    if (_volSizes != null && _vol == 0) {
+      // a single volume: the flags of a plain archive
+      _rewriteHeader(_mainPos, _mainSize, _mainBody(volume: false));
     }
+    _writeRecovery();
+    _writeHeader(_endBody(false), end: true);
     _encoder?.free();
     _out.flush();
     cb.setCompleted(completed);
   }
+
+  // the signature, the encryption header and the main header of a volume
+  void _writeVolumeStart() {
+    _startingVolume = true;
+    _out.write(Uint8List.fromList(rar5Signature), 0, 8);
+    _headerKeys = null;
+    if (_encryptHeaders) {
+      final h = _Body();
+      h.vint(Rar5HeaderType.crypt);
+      h.vint(0);
+      h.vint(0); // version
+      h.vint(1); // password check present
+      h.bytes([rar5WriteKdfCount]);
+      h.bytes(_salt!);
+      h.bytes(_check!);
+      _writeHeader(h.take(), plain: true);
+      _headerKeys = _keys;
+    }
+    final (pos, size) = _writeHeader(_mainBody());
+    if (_vol == 0) {
+      _mainPos = pos;
+      _mainSize = size;
+    }
+    _startingVolume = false;
+  }
+
+  Uint8List _mainBody({bool volume = true}) {
+    final h = _Body();
+    h.vint(Rar5HeaderType.main);
+    h.vint(0);
+    var flags = opt.solid ? 4 : 0;
+    if (volume && _volSizes != null) flags |= 1;
+    if (opt.recoveryPercent > 0) flags |= 8;
+    if (_vol > 0) flags |= 2;
+    h.vint(flags);
+    if (_vol > 0) h.vint(_vol);
+    return h.take();
+  }
+
+  static Uint8List _endBody(bool more) {
+    final h = _Body();
+    h.vint(Rar5HeaderType.endArc);
+    h.vint(Rar5HeaderFlags.skipIfUnknown);
+    h.vint(more ? 1 : 0);
+    return h.take();
+  }
+
+  // the room a volume of [volSize] bytes keeps for its recovery record
+  // and end header
+  int _tailFor(int volSize) {
+    final pct = opt.recoveryPercent;
+    if (pct <= 0) return _endSize;
+    final rr = Rar5RecoveryLayout.maxSize(volSize, pct);
+    return _headerBytes(_rrHeader(rr, pct).body()).length + rr + _endSize;
+  }
+
+  _FileHeader _rrHeader(int size, int pct) {
+    final sd = BytesBuilder();
+    writeVint(sd, pct);
+    return _FileHeader()
+      ..type = Rar5HeaderType.service
+      ..name = 'RR'
+      ..hostOS = 1
+      ..unpSize = size
+      ..hasData = true
+      ..dataSize = size
+      ..skipIfUnknown = true
+      ..subdata = sd.takeBytes();
+  }
+
+  // the recovery record of the archive or of the current volume, from
+  // its start to here
+  void _writeRecovery() {
+    final pct = opt.recoveryPercent;
+    if (pct <= 0) return;
+    final rb = _out0 as ReadBackOutStream;
+    final start = _volStart;
+    final l = Rar5RecoveryLayout(_out.count - start, pct);
+    final data = rar5BuildRecovery(l, (pos, buf, off, len) {
+      if (rb.readBack(start + pos, buf, off, len) != len) {
+        throw const SevenZipException(
+            'RAR5: can not read the archive back', SevenZipError.io);
+      }
+    });
+    _writeHeader(_rrHeader(data.length, pct).body(), end: true);
+    _out.write(data, 0, data.length);
+  }
+
+  // ends the current volume and starts the next one
+  void _nextVolume() {
+    _writeRecovery();
+    _writeHeader(_endBody(true), end: true);
+    final pad = _volLimit - _out.count;
+    if (pad < 0) {
+      throw const SevenZipException(
+          'RAR5: volume overflow', SevenZipError.unsupported);
+    }
+    if (pad > 0) _out.write(Uint8List(pad), 0, pad);
+    _vol++;
+    _volStart = _volLimit;
+    _volLimit += _volSize(_vol);
+    _tailSize = _tailFor(_volSize(_vol));
+    _writeVolumeStart();
+  }
+
+  /// The bytes of file data that still fit in the current volume.
+  int _dataRoom() => _volLimit - _tailSize - _out.count;
 
   // a new regular file that can join a solid run, or null
   _NewItem? _peekRegular(ArchiveUpdateCallback cb, int i) {
@@ -618,10 +859,25 @@ final class Rar5Writer {
   }
 
   // writes a header: plain, or as IV + encrypted padded header
-  // (returns the position and the size it took)
-  (int, int) _writeHeader(Uint8List body, {bool plain = false}) {
+  // (returns the position and the size it took). With volumes a header
+  // that does not fit in the current volume, with [minData] bytes of its
+  // data and the end header, goes to the next volume.
+  (int, int) _writeHeader(Uint8List body,
+      {bool plain = false, int minData = 0, bool end = false}) {
+    var bytes = _headerBytes(body, plain: plain);
+    if (_volSizes != null && !end) {
+      final need = bytes.length + minData + _tailSize;
+      if (!_startingVolume && _out.count + need > _volLimit) {
+        _nextVolume();
+        // the encryption keys of the new volume
+        bytes = _headerBytes(body, plain: plain);
+      }
+      if (_out.count + need > _volLimit) {
+        throw const SevenZipException(
+            'RAR5: the volume size is too small', SevenZipError.unsupported);
+      }
+    }
     final pos = _out.count;
-    final bytes = _headerBytes(body, plain: plain);
     _out.write(bytes, 0, bytes.length);
     return (pos, bytes.length);
   }
@@ -783,7 +1039,8 @@ final class Rar5Writer {
         final useMethod = ni.size == 0 ? 0 : method;
         h.compInfo = (useMethod << 7) |
             (_dictBits(useMethod == 0 ? 0x20000 : dict) << 10) |
-            (solidCont && useMethod != 0 ? 0x40 : 0);
+            (solidCont && useMethod != 0 ? 0x40 : 0) |
+            (useMethod != 0 ? opt.algoVersion : 0);
         if (opt.blake2) {
           h.blake2 = Uint8List(32);
         } else {
@@ -791,9 +1048,30 @@ final class Rar5Writer {
         }
         // the header with placeholders, the data, then the header again
         final seekable = _out0 is SeekableOutStream;
-        final (hPos, hSize) = seekable ? _writeHeader(h.body()) : (0, 0);
+        var (hPos, hSize) = seekable
+            ? _writeHeader(h.body(), minData: ni.size > 0 ? 1 : 0)
+            : (0, 0);
         final dataOut = seekable ? _out : MemoryOutStream();
-        final counted = _CountOut(dataOut);
+        final counted = _PartOut(dataOut, opt.blake2);
+        if (_volSizes != null) {
+          counted.room = _dataRoom;
+          counted.split = () {
+            // this part ends here: its header gets the part checksum
+            h.splitAfter = true;
+            h.dataSize = counted.partCount;
+            if (opt.blake2) {
+              h.blake2 = counted.partBlake!.digest();
+            } else {
+              h.crc = counted.partCrc.value;
+            }
+            _rewriteHeader(hPos, hSize, h.body());
+            _nextVolume();
+            h.splitBefore = true;
+            h.splitAfter = false;
+            h.dataSize = 0;
+            (hPos, hSize) = _writeHeader(h.body(), minData: 1);
+          };
+        }
         OutStream sink = counted;
         RarAesEncryptOutStream? encOut;
         if (crypt != null) {
@@ -805,10 +1083,14 @@ final class Rar5Writer {
           copyStream(src, sink, limit: ni.size);
         } else {
           if (!solidCont) {
-            final enc = _encoder ??= Rar5Encoder(method, dict);
-            if (enc.method != method || enc.dictSize != dict) {
+            final algo = opt.algoVersion;
+            final enc =
+                _encoder ??= Rar5Encoder(method, dict, algoVersion: algo);
+            if (enc.method != method ||
+                enc.dictSize != dict ||
+                enc.algoVersion != algo) {
               enc.free();
-              _encoder = Rar5Encoder(method, dict);
+              _encoder = Rar5Encoder(method, dict, algoVersion: algo);
             }
             _encoder!.start(opt.solid ? feed : src,
                 expectedSize: runSize,
@@ -831,7 +1113,7 @@ final class Rar5Writer {
         } else {
           h.crc = crc;
         }
-        h.dataSize = counted.count;
+        h.dataSize = _volSizes != null ? counted.partCount : counted.count;
         if (seekable) {
           _rewriteHeader(hPos, hSize, h.body());
         } else {
@@ -914,7 +1196,9 @@ final class Rar5Writer {
       ..crypt = crypt
       ..hasData = true;
     final useMethod = data.isEmpty ? 0 : method;
-    h.compInfo = (useMethod << 7) | (_dictBits(dict) << 10);
+    h.compInfo = (useMethod << 7) |
+        (_dictBits(dict) << 10) |
+        (useMethod != 0 ? opt.algoVersion : 0);
     final packed = MemoryOutStream();
     OutStream sink = packed;
     RarAesEncryptOutStream? encOut;
@@ -925,7 +1209,7 @@ final class Rar5Writer {
     if (useMethod == 0) {
       sink.write(data, 0, data.length);
     } else {
-      final enc = Rar5Encoder(method, dict);
+      final enc = Rar5Encoder(method, dict, algoVersion: opt.algoVersion);
       enc.start(MemoryInStream(data),
           expectedSize: data.length, fileSizes: [data.length]);
       enc.encodeFile(data.length, sink);

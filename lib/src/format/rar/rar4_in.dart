@@ -4,15 +4,25 @@
 // Kientzle and Andres Mejia, BSD 2-clause, see LICENSE), extended to whole
 // archives: every volume is read up front, split files become one item,
 // solid files are kept (libarchive stops at them), and the archive comment
-// of the CMT sub block is read.
+// of the CMT sub block is read. The encrypted headers of -hp archives
+// (RAR 3.x AES), the CRC range of old style comment blocks and the old
+// main header comment compressed with the RAR 2.0 method follow rardecode
+// (archive15.go, Nicholas Waples, BSD 2-clause, see LICENSE); a comment
+// compressed with the RAR 1.5 method goes to rar15_decoder.dart. RAR 1.5
+// had no solid flag per file: in its solid archives every compressed file
+// after the first continues the stream.
 
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../../codec/rar/rar15_decoder.dart';
+import '../../codec/rar/rar2_decoder.dart';
 import '../../codec/rar/rar3_decoder.dart';
+import '../../crypto/rar3_kdf.dart';
 import '../../io/streams.dart';
 import '../../util/crc.dart';
 import 'rar_archive.dart';
+import 'rar_crypto.dart';
 import 'rar_item.dart';
 import 'rar_volumes.dart';
 
@@ -142,38 +152,94 @@ final class Rar4Reader {
     final s = a.volumes[vi];
     final len = s.length;
     _nextVolume = false;
+    // the headers after the main header of a -hp archive are encrypted
+    // (readBlockHeader of rardecode's archive15.go)
+    var encrypted = false;
     final base = Uint8List(7);
     for (;;) {
-      if (pos + 7 > len) {
-        // RAR files can be written without an end of archive header
-        if (pos < len) a.unexpectedEnd = true;
-        _setPhy(vi, pos < len ? pos : len);
-        return;
-      }
-      s.position = pos;
-      readExactly(s, base, 0, 7);
-      final type = base[2];
-      final flags = base[3] | (base[4] << 8);
-      final size = base[5] | (base[6] << 8);
-      if (type == Rar4HeaderType.mark) {
-        if (size != 7 || !_isMark(base)) {
+      Uint8List h;
+      int size;
+      int hdrLen;
+      if (encrypted) {
+        final Uint8List? eh;
+        try {
+          eh = _readEncryptedHeader(s, pos, len);
+        } on SevenZipException catch (e) {
+          if (e.kind == SevenZipError.wrongPassword) rethrow;
           a.headersError = true;
           _setPhy(vi, pos);
           return;
         }
-        pos += 7;
-        continue;
+        if (eh == null) {
+          if (pos < len) a.unexpectedEnd = true;
+          _setPhy(vi, pos < len ? pos : len);
+          return;
+        }
+        h = eh;
+        size = h.length;
+        hdrLen = _encHeaderLen;
+      } else {
+        if (pos + 7 > len) {
+          // RAR files can be written without an end of archive header
+          if (pos < len) a.unexpectedEnd = true;
+          _setPhy(vi, pos < len ? pos : len);
+          return;
+        }
+        s.position = pos;
+        readExactly(s, base, 0, 7);
+        size = base[5] | (base[6] << 8);
+        if (base[2] == Rar4HeaderType.mark) {
+          if (size != 7 || !_isMark(base)) {
+            a.headersError = true;
+            _setPhy(vi, pos);
+            return;
+          }
+          pos += 7;
+          continue;
+        }
+        if (size < 7 || pos + size > len) {
+          a.headersError = size < 7;
+          a.unexpectedEnd = pos + size > len;
+          _setPhy(vi, pos);
+          return;
+        }
+        h = Uint8List(size);
+        s.position = pos;
+        readExactly(s, h, 0, size);
+        hdrLen = size;
       }
-      if (size < 7 || pos + size > len) {
-        a.headersError = size < 7;
-        a.unexpectedEnd = pos + size > len;
-        _setPhy(vi, pos);
-        return;
+      final type = h[2];
+      final flags = h[3] | (h[4] << 8);
+      // the CRC of an old style comment block, and of a main header with
+      // such a block inside (MHD_COMMENT), covers the first 13 bytes only
+      // (readBlockHeader of rardecode's archive15.go)
+      final crcEnd = (type == Rar4HeaderType.comment ||
+                  (type == Rar4HeaderType.main &&
+                      (flags & Rar4MainFlags.comment) != 0)) &&
+              size > 13
+          ? 13
+          : size;
+      var crcOk = (Crc32.of(h, 2, crcEnd) & 0xFFFF) == (h[0] | (h[1] << 8));
+      if (!crcOk &&
+          type == Rar4HeaderType.file &&
+          (flags & Rar4FileFlags.comment) != 0 &&
+          size >= 32) {
+        // a RAR 2.x file header with an old style comment block inside:
+        // the CRC covers the header up to the end of the name (as the
+        // archives of RAR 2.x show)
+        var end = 32 + (h[26] | (h[27] << 8));
+        if ((flags & Rar4FileFlags.large) != 0) end += 8;
+        crcOk = end <= size &&
+            (Crc32.of(h, 2, end) & 0xFFFF) == (h[0] | (h[1] << 8));
       }
-      final h = Uint8List(size);
-      s.position = pos;
-      readExactly(s, h, 0, size);
-      final crcOk = (Crc32.of(h, 2, size) & 0xFFFF) == (h[0] | (h[1] << 8));
+      if (encrypted && !crcOk) {
+        // no password check in RAR 3.x: a wrong password gives headers
+        // with bad CRCs
+        throw const SevenZipException(
+            'RAR: encrypted header CRC error, wrong password?',
+            SevenZipError.wrongPassword);
+      }
+      if (encrypted) _encHeaderOk = true;
       var addSize = 0;
       if ((flags & _addSizePresent) != 0 &&
           type != Rar4HeaderType.file &&
@@ -186,6 +252,11 @@ final class Rar4Reader {
         addSize = getUint32LE(h, 7);
       }
       switch (type) {
+        case Rar4HeaderType.mark:
+          // only valid unencrypted, at the start (handled above)
+          a.headersError = true;
+          _setPhy(vi, pos);
+          return;
         case Rar4HeaderType.main:
           if (!crcOk) {
             a.headersError = true;
@@ -194,14 +265,10 @@ final class Rar4Reader {
           }
           _parseMain(vi, h, flags);
           if ((flags & Rar4MainFlags.password) != 0) {
-            // the headers are encrypted with RAR 3.x AES, which is not
-            // documented: nothing more can be read
             a.encryptedHeaders = true;
-            a.unsupportedFeature = true;
-            _setPhy(vi, len);
-            return;
+            encrypted = true;
           }
-          pos += size;
+          pos += hdrLen;
         case Rar4HeaderType.file:
         case Rar4HeaderType.newSub:
           if (!crcOk) {
@@ -218,7 +285,7 @@ final class Rar4Reader {
             _setPhy(vi, pos);
             return;
           }
-          final part = RarPart(vi, pos, size, pos + size, dataSize);
+          final part = RarPart(vi, pos, hdrLen, pos + hdrLen, dataSize);
           if (type == Rar4HeaderType.file) {
             a.numBlocks++;
             _addFile(it, part);
@@ -226,7 +293,7 @@ final class Rar4Reader {
             it.parts.add(part);
             _commentItem = it;
           }
-          pos += size + dataSize;
+          pos += hdrLen + dataSize;
           if (pos > len) {
             a.unexpectedEnd = true;
             _setPhy(vi, len);
@@ -244,20 +311,77 @@ final class Rar4Reader {
             // ignored
           }
           _nextVolume = (flags & 0x0001) != 0;
-          _setPhy(vi, pos + size);
+          _setPhy(vi, pos + hdrLen);
           return;
         case Rar4HeaderType.comment:
         case Rar4HeaderType.av:
         case Rar4HeaderType.sub:
         case Rar4HeaderType.protect:
         case Rar4HeaderType.sign:
-          pos += size + addSize;
+          pos += hdrLen + addSize;
         default:
           a.headersError = true;
           _setPhy(vi, pos);
           return;
       }
     }
+  }
+
+  // the size on disk of the last header read by _readEncryptedHeader
+  int _encHeaderLen = 0;
+
+  // an encrypted header had a good CRC (the password is right)
+  bool _encHeaderOk = false;
+
+  // readBlockHeader of rardecode (archive15.go) for encrypted headers: an
+  // 8 byte salt, then the header encrypted with AES-128-CBC and padded to
+  // whole blocks. Returns the decrypted header (without the padding), or
+  // null at the end of the volume.
+  Uint8List? _readEncryptedHeader(SeekableInStream s, int pos, int len) {
+    if (pos + rar3SaltSize + 16 > len) return null;
+    final salt = Uint8List(rar3SaltSize);
+    s.position = pos;
+    readExactly(s, salt, 0, rar3SaltSize);
+    final keys = a.rar3KeysFor(_password(), salt);
+    final first = Uint8List(16);
+    readExactly(s, first, 0, 16);
+    rarAesDecrypt(keys.key, keys.iv, first, 0, 16);
+    final size = first[5] | (first[6] << 8);
+    if (size < 7) {
+      throw const SevenZipException(
+          'RAR: bad encrypted header, wrong password?',
+          SevenZipError.wrongPassword);
+    }
+    final enc = (size + 15) & ~15;
+    if (pos + rar3SaltSize + enc > len) {
+      // a truncated volume, or a size from a wrong key
+      if (!_encHeaderOk) {
+        throw const SevenZipException(
+            'RAR: bad encrypted header, wrong password?',
+            SevenZipError.wrongPassword);
+      }
+      return null;
+    }
+    final buf = Uint8List(enc);
+    s.position = pos + rar3SaltSize;
+    readExactly(s, buf, 0, enc);
+    rarAesDecrypt(keys.key, keys.iv, buf, 0, enc);
+    _encHeaderLen = rar3SaltSize + enc;
+    return Uint8List.sublistView(buf, 0, size);
+  }
+
+  String _password() {
+    if (a.password != null) return a.password!;
+    final g = getPassword;
+    final pw = g == null ? null : g();
+    a.passwordAsked = true;
+    if (pw == null) {
+      throw const SevenZipException(
+          'RAR: the headers are encrypted and no password was given',
+          SevenZipError.wrongPassword);
+    }
+    a.password = pw;
+    return pw;
   }
 
   static bool _isMark(Uint8List b) {
@@ -295,14 +419,36 @@ final class Rar4Reader {
       r.u16(); // flags
       final size = r.u16();
       final unpSize = r.u16();
-      r.byte(); // unpack version
+      final unpVer = r.byte();
       final method = r.byte();
-      r.u16(); // comment crc
-      if (method != 0x30) return;
+      final crc = r.u16();
       final n = size - 13;
-      if (n < 0 || n > unpSize + 16) return;
-      a.comment = _decodeText(r.bytes(n < unpSize ? n : unpSize));
+      if (n < 0) return;
+      if (method == 0x30) {
+        if (n > unpSize + 16) return;
+        a.comment = _decodeText(r.bytes(n < unpSize ? n : unpSize));
+        return;
+      }
+      final out = MemoryOutStream();
+      if (unpVer == 15) {
+        // compressed with the RAR 1.5 method
+        Rar15Decoder()
+            .decodeFile(MemoryInStream(r.bytes(n)), out, unpSize, false);
+      } else if (unpVer == 20 || unpVer == 26) {
+        // compressed with the RAR 2.0 method
+        Rar2Decoder()
+            .decodeFile(MemoryInStream(r.bytes(n)), out, unpSize, 0, false);
+      } else {
+        return;
+      }
+      final b = out.toBytes();
+      if ((Crc32.of(b) & 0xFFFF) != crc) return;
+      a.comment = _decodeText(b);
     } on RarHeaderError {
+      // ignored
+    } on SevenZipException {
+      // ignored
+    } on RangeError {
       // ignored
     }
   }
@@ -441,6 +587,16 @@ final class Rar4Reader {
         last.splitAfter = it.splitAfter;
         if (!it.splitAfter) last.crc = it.crc;
         return;
+      }
+    }
+    if (a.solid && it.algoVersion < 20 && !it.isDir && it.method != 0) {
+      // RAR 1.5 had no solid flag per file: in a solid archive every
+      // compressed file after the first continues the stream
+      for (final x in a.items) {
+        if (!x.isDir && x.method != 0) {
+          it.solid = true;
+          break;
+        }
       }
     }
     it.parts.add(part);

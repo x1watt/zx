@@ -65,6 +65,14 @@ abstract class SeekableOutStream implements OutStream {
   void truncate(int length);
 }
 
+/// An output that can read back the bytes written so far (not in 7-Zip:
+/// the RAR5 recovery record is computed from the archive already written).
+abstract interface class ReadBackOutStream {
+  /// Reads up to [len] bytes at [pos] into [buf] at [off]; returns the
+  /// number of bytes read (less at the end of the data).
+  int readBack(int pos, Uint8List buf, int off, int len);
+}
+
 /// Reads until [len] bytes are stored or the stream ends. Returns the count.
 int readFully(InStream s, Uint8List buf, int off, int len) {
   var done = 0;
@@ -130,7 +138,7 @@ class MemoryInStream implements SeekableInStream {
 }
 
 /// Growable in-memory output.
-class MemoryOutStream implements SeekableOutStream {
+class MemoryOutStream implements SeekableOutStream, ReadBackOutStream {
   Uint8List _buf;
   int _len = 0;
   int _pos = 0;
@@ -181,6 +189,14 @@ class MemoryOutStream implements SeekableOutStream {
 
   /// A view of the bytes written so far (no copy).
   Uint8List toBytes() => Uint8List.sublistView(_buf, 0, _len);
+
+  @override
+  int readBack(int pos, Uint8List buf, int off, int len) {
+    if (pos >= _len) return 0;
+    if (len > _len - pos) len = _len - pos;
+    buf.setRange(off, off + len, _buf, pos);
+    return len;
+  }
 }
 
 /// Discards everything, counting the bytes.
@@ -325,7 +341,7 @@ class FileInStream implements SeekableInStream {
 }
 
 /// Buffered random access file output.
-class FileOutStream implements SeekableOutStream {
+class FileOutStream implements SeekableOutStream, ReadBackOutStream {
   final RandomAccessFile raf;
   final Uint8List _buf;
   int _bufLen = 0;
@@ -394,6 +410,16 @@ class FileOutStream implements SeekableOutStream {
   void close() {
     _drain();
     raf.closeSync();
+  }
+
+  /// The file must be open for reading too (FileMode.write is).
+  @override
+  int readBack(int pos, Uint8List buf, int off, int len) {
+    _drain();
+    raf.setPositionSync(pos);
+    final n = raf.readIntoSync(buf, off, off + len);
+    raf.setPositionSync(_pos);
+    return n;
   }
 }
 

@@ -12,8 +12,9 @@
 // not resize the LZ window; a filter block may continue in PPMd blocks,
 // and PPMd escape code 3 reads a filter like the LZ code 257 does
 // (libarchive rejects both). Not supported, as in libarchive: other RAR VM
-// programs (ITANIUM and custom code) and the RAR 1.5 / 2.0 compression
-// methods (unpack versions 15, 20, 26).
+// programs (ITANIUM and custom code). The RAR 2.0 method (unpack versions
+// 20 and 26) is in rar2_decoder.dart; the RAR 1.5 method (15) is not
+// supported.
 
 import 'dart:typed_data';
 
@@ -308,7 +309,7 @@ final class Rar3Decoder {
     if (unpVer != 29 && unpVer != 36) {
       throw SevenZipException(
           'RAR: the compression method of unpack version $unpVer '
-          '(RAR 1.5 / 2.0) is not supported',
+          'is not supported',
           SevenZipError.unsupportedMethod);
     }
     if (!solid || _win.isEmpty) {

@@ -416,7 +416,8 @@ class _VolStream {
 /// volume is written as `name.tmp` and renamed when it is complete. The
 /// last size repeats. Call [finalFlushAndCloseFiles] at the end, or
 /// [destruct] to delete everything after an error.
-class MultiOutStream implements SeekableOutStream, StreamSetRestriction {
+class MultiOutStream
+    implements SeekableOutStream, StreamSetRestriction, ReadBackOutStream {
   int _streamIndex = 0;
   int _offsetPos = 0;
   int _absPos = 0;
@@ -447,6 +448,19 @@ class MultiOutStream implements SeekableOutStream, StreamSetRestriction {
 
   /// When true (the default), [destruct] deletes the volume files.
   bool needDelete = true;
+
+  /// The path of volume index (from 0) instead of [prefix] and a three
+  /// digit number (not in 7-Zip: RAR volumes are named name.part1.rar...).
+  String Function(int index)? volumeName;
+
+  /// The final path of a set that ends up with a single volume (not in
+  /// 7-Zip: rar names a lone volume name.rar), or null to keep the name of
+  /// volume 1.
+  String? singleVolumeName;
+  bool _single = false;
+
+  /// The sizes of the volumes (the last one repeats).
+  List<int> get volumeSizes => List.unmodifiable(_sizes);
 
   MultiOutStream(this.prefix, List<int> sizes) {
     init(sizes);
@@ -550,6 +564,7 @@ class MultiOutStream implements SeekableOutStream, StreamSetRestriction {
     needDelete = true;
     mTime = null;
     finalVolWasReopen = false;
+    _single = false;
     _streamIndex = 0;
     _offsetPos = 0;
     _absPos = 0;
@@ -599,6 +614,9 @@ class MultiOutStream implements SeekableOutStream, StreamSetRestriction {
 
   // GetFilePath
   String _getFilePath(int index) {
+    if (_single) return singleVolumeName!;
+    final f = volumeName;
+    if (f != null) return f(index);
     var name = '${index + 1}';
     while (name.length < 3) {
       name = '0$name';
@@ -818,6 +836,18 @@ class MultiOutStream implements SeekableOutStream, StreamSetRestriction {
     if (_numListItems != 0 && error == null) {
       error = const SevenZipException('E_FAIL');
     }
+    final single = singleVolumeName;
+    if (error == null && numTotalVolumes == 1 && single != null) {
+      final path = _getFilePath(0);
+      if (path != single && !File(single).existsSync()) {
+        try {
+          File(path).renameSync(single);
+          _single = true;
+        } on Object catch (e) {
+          error = e;
+        }
+      }
+    }
     if (error != null) throw error;
     return numTotalVolumes;
   }
@@ -937,6 +967,37 @@ class MultiOutStream implements SeekableOutStream, StreamSetRestriction {
 
   @override
   void flush() {}
+
+  /// Reads back written bytes (not in 7-Zip: for the RAR5 recovery
+  /// record of each volume).
+  @override
+  int readBack(int pos, Uint8List buf, int off, int len) {
+    var done = 0;
+    while (len > 0) {
+      var i = _streams.length - 1;
+      while (i >= 0 &&
+          !(pos >= _streams[i].start &&
+              pos < _streams[i].start + _streams[i].realSize)) {
+        i--;
+      }
+      if (i < 0) break;
+      final s = _streams[i];
+      if (s.stream == null) _reOpenStream(i);
+      final rel = pos - s.start;
+      var n = s.realSize - rel;
+      if (n > len) n = len;
+      final f = s.stream!;
+      f.setPositionSync(rel);
+      n = f.readIntoSync(buf, off, off + n);
+      s.pos = rel + n;
+      if (n == 0) break;
+      pos += n;
+      off += n;
+      len -= n;
+      done += n;
+    }
+    return done;
+  }
 
   // CMultiOutStream::Seek
   @override

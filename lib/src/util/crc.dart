@@ -104,9 +104,21 @@ class Crc64 {
     _hi = hi;
   }
 
+  /// A CRC whose register starts at zero instead of all ones; read it with
+  /// [register] (no final inversion). The RAR5 recovery record checksums
+  /// its data chunks this way.
+  Crc64.zero() {
+    _initCrc64();
+    _lo = 0;
+    _hi = 0;
+  }
+
   /// The CRC as an unsigned 64-bit value in a Dart int (may be negative when
   /// the top bit is set; compare with [bytes] for storage).
   int get value => ((_hi ^ 0xFFFFFFFF) << 32) | (_lo ^ 0xFFFFFFFF);
+
+  /// The register without the final inversion.
+  int get register => (_hi << 32) | _lo;
 
   /// Little endian 8 bytes, as stored in xz.
   Uint8List get bytes {
