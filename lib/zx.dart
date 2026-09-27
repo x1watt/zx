@@ -58,6 +58,10 @@ export 'src/zx_api.dart'
         ZxVersion,
         ZxFileVersion,
         ZxUpdateResult;
+export 'src/zx_estimate.dart' show ZxCompression, ZxEstimate;
+export 'src/cli/zx_zcm_auto.dart' show ZxAutoSpeed;
+export 'src/codec/zcm/zcm.dart'
+    show ZcmOptions, zcmLevelByName, zcmDefaultMemoryMiB;
 
 // the .zx format (docs/zx-format.md): the synchronous building blocks
 export 'src/format/zx/zx_handler.dart'

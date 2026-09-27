@@ -601,16 +601,17 @@ exec ${_shQuote(executable)} --extract-to-folder "\$@"
   Future<void> _reloadThunar() async {
     final r = await runner('pgrep', ['-x', 'Thunar']);
     final r2 = await runner('pgrep', ['-x', 'thunar']);
-    final running = (r != null && r.exitCode == 0) ||
-        (r2 != null && r2.exitCode == 0);
+    final running =
+        (r != null && r.exitCode == 0) || (r2 != null && r2.exitCode == 0);
     if (!running) return;
     final daemon = await runner('pgrep', ['-f', '^/usr/bin/Thunar --daemon']);
     final wasDaemon = daemon != null && daemon.exitCode == 0;
     await runner('thunar', ['-q']);
     if (wasDaemon) {
       try {
-        await Process.start('Thunar', ['--daemon'],
-            mode: ProcessStartMode.detached);
+        await Process.start('Thunar', [
+          '--daemon',
+        ], mode: ProcessStartMode.detached);
       } on ProcessException {
         // Thunar starts again the next time a window is opened
       }

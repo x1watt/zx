@@ -82,7 +82,10 @@ class ArchiveModel extends ChangeNotifier {
   ArchiveModel get root => parent?.root ?? this;
 
   /// The formats of this level, outermost first (Ubi, UbiFs).
-  List<String> get formats => [for (final a in passed) a.format, _archive.format];
+  List<String> get formats => [
+    for (final a in passed) a.format,
+    _archive.format,
+  ];
 
   /// The items of this archive are images (firmware sections, partitions).
   bool get isContainer => kContainerFormats.contains(_archive.format);
@@ -122,6 +125,7 @@ class ArchiveModel extends ChangeNotifier {
       await a.close();
     }
   }
+
   String get dir => _dir;
   SortColumn get sortColumn => _sortColumn;
   bool get ascending => _ascending;

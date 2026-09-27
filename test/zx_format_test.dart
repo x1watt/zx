@@ -269,7 +269,10 @@ void main() {
     test('blocks split at the block size, extents across blocks', () {
       final big = textBytes(300000, 7);
       final files = {'a': textBytes(10000, 1), 'big': big, 'z': lcgBytes(5, 1)};
-      final h = openMem(makeArchive(files, testOptions(blockSize: 64 << 10)));
+      // without dedup the blocks are filled to the block size (with it a
+      // chunk is never cut by a block boundary)
+      final h = openMem(makeArchive(
+          files, testOptions(blockSize: 64 << 10)..dedup = false));
       final idx = h.reader!.index;
       expect(idx.blocks.length, 5);
       for (final b in idx.blocks) {
@@ -418,7 +421,7 @@ void main() {
       expect(h.openSeq(MemoryInStream(a)), true);
       _expectSame(extractAll(h), files);
       // the same data as the seekable file (blocks are identical)
-      final plain = makeArchive(files, testOptions());
+      final plain = makeArchive(files, testOptions()..dedup = false);
       expect(a.length, greaterThan(plain.length));
     });
 

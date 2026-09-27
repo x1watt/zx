@@ -1,4 +1,5 @@
-// The settings: theme, new archive defaults, confirmations, and the
+// The settings: theme, new archive defaults, the compression of .zx
+// archives (Auto or Manual), confirmations, and the
 // desktop integration toggles (file associations, file manager menu).
 
 import 'package:flutter/material.dart';
@@ -7,6 +8,8 @@ import '../formats.dart';
 import '../integration.dart';
 import '../services.dart';
 import '../dialogs/compression_form.dart';
+import '../dialogs/zx_compression.dart';
+import '../settings.dart';
 import 'format_utils.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -52,6 +55,138 @@ class _SettingsPageState extends State<SettingsPage> {
     }
     await _refresh();
     if (mounted) setState(() => _working = false);
+  }
+
+  List<Widget> _compression(Settings s) {
+    final z = s.zxCompression;
+    final level = zcmLevelOf(z.method);
+    final cs = Theme.of(context).colorScheme;
+    void set(ZxPrefs p) => s.zxCompression = p;
+    return [
+      SwitchListTile(
+        key: const Key('set-zx-dedup'),
+        secondary: const Icon(Icons.copy_all_outlined),
+        title: const Text('Deduplicate identical data'),
+        subtitle: const Text(
+          'Identical files and parts of files are stored once',
+        ),
+        value: z.dedup,
+        onChanged: (v) => set(z.copyWith(dedup: v)),
+      ),
+      ListTile(
+        leading: const Icon(Icons.auto_awesome_outlined),
+        title: const Text('Mode'),
+        subtitle: Text(
+          z.auto
+              ? 'zx chooses the zcm level, memory and threads for this '
+                    'machine and the files, within the time budget'
+              : 'The method and settings below',
+        ),
+        trailing: SegmentedButton<bool>(
+          key: const Key('set-zx-mode'),
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(value: true, label: Text('Auto')),
+            ButtonSegment(value: false, label: Text('Manual')),
+          ],
+          selected: {z.auto},
+          onSelectionChanged: (v) => set(z.copyWith(auto: v.first)),
+        ),
+      ),
+      if (z.auto) ...[
+        ListTile(
+          leading: const Icon(Icons.timer_outlined),
+          title: const Text('Time budget'),
+          trailing: DropdownButton<String>(
+            key: const Key('set-zx-speed'),
+            value: z.speed,
+            onChanged: (v) => set(z.copyWith(speed: v)),
+            items: [
+              for (final sp in ZxPrefs.speeds)
+                DropdownMenuItem(
+                  value: sp,
+                  child: Text(
+                    sp == 'custom' ? 'Custom (minutes)' : speedLabel(sp),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (z.speed == 'custom')
+          ListTile(
+            leading: const SizedBox(width: 24),
+            title: Slider(
+              key: const Key('set-zx-minutes'),
+              min: 1,
+              max: 240,
+              divisions: 239,
+              value: z.minutes.clamp(1, 240).toDouble(),
+              label: '${z.minutes} min',
+              onChanged: (v) => set(z.copyWith(minutes: v.round())),
+            ),
+            trailing: Text('up to ${z.minutes} min'),
+          ),
+      ] else ...[
+        ListTile(
+          leading: const Icon(Icons.compress_outlined),
+          title: const Text('Method'),
+          trailing: DropdownButton<String>(
+            key: const Key('set-zx-method'),
+            value: kZxMethods.contains(z.method) ? z.method : 'zcm:4',
+            onChanged: (v) => set(z.copyWith(method: v)),
+            items: [
+              for (final m in kZxMethods)
+                DropdownMenuItem(value: m, child: Text(zxMethodLabel(m))),
+            ],
+          ),
+        ),
+        if (level != null)
+          ListTile(
+            leading: const Icon(Icons.memory_outlined),
+            title: const Text('Memory per stream'),
+            trailing: DropdownButton<int>(
+              key: const Key('set-zx-memory'),
+              value: kZcmMemoryMiB.contains(z.memoryMiB) ? z.memoryMiB : 0,
+              onChanged: (v) => set(z.copyWith(memoryMiB: v ?? 0)),
+              items: [
+                for (final m in kZcmMemoryMiB)
+                  DropdownMenuItem(
+                    value: m,
+                    child: Text(memoryChoiceLabel(m, level)),
+                  ),
+              ],
+            ),
+          ),
+        ListTile(
+          leading: const Icon(Icons.developer_board_outlined),
+          title: const Text('Threads'),
+          trailing: DropdownButton<int>(
+            key: const Key('set-zx-threads'),
+            value: kThreadChoices.contains(z.threads) ? z.threads : 0,
+            onChanged: (v) => set(z.copyWith(threads: v ?? 0)),
+            items: [
+              for (final n in kThreadChoices)
+                DropdownMenuItem(
+                  value: n,
+                  child: Text(n == 0 ? 'Automatic' : '$n'),
+                ),
+            ],
+          ),
+        ),
+        if (level == 9)
+          SwitchListTile(
+            key: const Key('set-zx-lstm'),
+            secondary: const Icon(Icons.psychology_outlined),
+            title: const Text('LSTM (level 9)'),
+            subtitle: Text(
+              'A little smaller, several times slower',
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+            value: z.lstm,
+            onChanged: (v) => set(z.copyWith(lstm: v)),
+          ),
+      ],
+    ];
   }
 
   @override
@@ -174,6 +309,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                     ),
                   ]),
+                  section('Compression of .zx archives', [..._compression(s)]),
                   section('Behavior', [
                     SwitchListTile(
                       key: const Key('set-confirm-delete'),

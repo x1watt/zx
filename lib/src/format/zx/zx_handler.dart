@@ -24,9 +24,11 @@ import '../../pool.dart' show defaultThreads;
 import '../../sync_pool.dart';
 import '../../util/tlsh.dart';
 import '../archive_types.dart';
+import '../handler_out.dart' show getRamSize, parseSizeString;
 import 'zx_blocks.dart';
 import 'zx_codecs.dart';
 import 'zx_crypto.dart';
+import 'zx_dedup.dart' show zxMinChunkLog2, zxMaxChunkLog2;
 import 'zx_format.dart';
 import 'zx_reader.dart';
 import 'zx_writer.dart';
@@ -97,6 +99,10 @@ class ZxHandlerOptions {
   /// Compact after the update: keep this many generations (null: no).
   int? compactKeep;
   int? threads;
+
+  /// The memory the block workers may use together, when reading and
+  /// writing (-mmemuse; null: [zxDefaultMemoryLimit]).
+  int? memoryLimit;
   bool methodSet = false;
   final List<String> _filters = [];
   final Map<int, String> _methods = {};
@@ -547,12 +553,31 @@ class ZxHandler {
     final errors = <int, SevenZipException>{};
     final tickets = <int, int>{};
     var next = 0;
+    // the memory guard: the decoders in flight together stay under the
+    // limit (one is always allowed); the estimate comes from each block's
+    // chain (the zcm budget and the PPMd size are in its props)
+    final memLimit = options.memoryLimit ?? zxDefaultMemoryLimit();
+    final memOf = <int, int>{};
+    var memInFlight = 0;
+    int estimate(int b) {
+      final ref = r.index.blocks[b];
+      final id = ref.chainId;
+      final chain = id == 0 ? const ZxChain(0, []) : r.index.chains[id];
+      return chain == null ? 0 : zxDecodeMemory(chain, ref.unpackedSize);
+    }
 
-    void submitAhead() {
+    // [force]: the next block is needed now (submitted whatever its size)
+    void submitAhead({bool force = false}) {
       while (next < order.length && pool.inFlight < pool.threads) {
-        final b = order[next++];
+        final b = order[next];
+        final m = b < r.index.blocks.length ? estimate(b) : 0;
+        if (!force && pool.inFlight > 0 && memInFlight + m > memLimit) break;
+        force = false;
+        next++;
         try {
           tickets[b] = pool.submit(zxDecodeBlockJob, r.decodeArg(r.index, b));
+          memOf[b] = m;
+          memInFlight += m;
         } on SevenZipException catch (e) {
           errors[b] = e;
         }
@@ -567,10 +592,11 @@ class ZxHandler {
       if (errors.containsKey(b)) return null;
       var t = tickets.remove(b);
       if (t == null) {
-        submitAhead();
+        submitAhead(force: next < order.length && order[next] == b);
         t = tickets.remove(b);
       }
       if (t == null) return null;
+      memInFlight -= memOf.remove(b) ?? 0;
       try {
         final d = pool.take(t).data;
         cache[b] = _Cache(d, uses[b] ?? 1);
@@ -1057,8 +1083,33 @@ class ZxHandler {
         o.methodSet = true;
         continue;
       }
-      if (name.startsWith('memuse') ||
-          name == 'tm' ||
+      if (name.startsWith('memuse')) {
+        final m = parseSizeString(
+            name.substring(6), v, getRamSize() ?? zxDefaultMemoryLimit());
+        if (m == null || m <= 0) {
+          invalidArg('zx: -mmemuse=SIZE (4g, 512m) or p<percent of the RAM>');
+        }
+        o.memoryLimit = m;
+        w.memoryLimit = m;
+        continue;
+      }
+      if (name == 'dedup') {
+        final s = str().toLowerCase();
+        if (s == '' || s == 'on' || s == '+' || s == 'true') {
+          w.dedup = true;
+        } else if (s == 'off' || s == '-' || s == 'false') {
+          w.dedup = false;
+        } else {
+          w.dedup = true;
+          w.chunkLog2 = _chunkLog2(s);
+        }
+        continue;
+      }
+      if (name == 'chunk' || name == 'dedupchunk') {
+        w.chunkLog2 = _chunkLog2(str());
+        continue;
+      }
+      if (name == 'tm' ||
           name == 'tc' ||
           name == 'ta' ||
           name == 'hc' ||
@@ -1097,6 +1148,21 @@ class ZxHandler {
       w.threads = o.threads!;
       w.threadsExplicit = true;
     }
+    w.codersSet = o.methodSet || o._filters.isNotEmpty;
+  }
+
+  // the average chunk size of -mdedup=SIZE and -mchunk=SIZE: a power of
+  // two from 4k to 4m (other sizes are rounded down)
+  static int _chunkLog2(String s) {
+    final n = zxParseSize(s);
+    if (n == null || n < (1 << zxMinChunkLog2) || n > (1 << zxMaxChunkLog2)) {
+      invalidArg('zx: the dedup chunk size must be 4k to 4m');
+    }
+    var l = 0;
+    while ((2 << l) <= n) {
+      l++;
+    }
+    return l;
   }
 
   // ---- update
@@ -1418,6 +1484,15 @@ class ZxHandler {
 
   // ---- compaction
 
+  // the options of the repacking: the -m settings, with the threads
+  // and the memory limit
+  ZxWriteOptions _compactOptions() {
+    final w = options.write;
+    if (options.threads != null) w.threads = options.threads!;
+    if (options.memoryLimit != null) w.memoryLimit = options.memoryLimit;
+    return w;
+  }
+
   /// Rewrites the archive at [path] (the file opened) keeping the blocks of
   /// the last [keep] generations; returns the bytes freed. A volume set is
   /// written again with the same volume sizes (or [volumeSizes]).
@@ -1434,7 +1509,8 @@ class ZxHandler {
       onFile?.call(tmp);
       final f = FileOutStream.create(tmp);
       try {
-        zxCompact(r, keep, (h) => ZxStreamSink(f), password: pw);
+        zxCompact(r, keep, (h) => ZxStreamSink(f),
+            password: pw, options: _compactOptions());
         f.flush();
       } catch (_) {
         f.close();
@@ -1478,7 +1554,7 @@ class ZxHandler {
       res = zxCompact(r, keep, (h) {
         return vs = ZxVolumeSink(tmpBase, sizes, options.write.volumeDirs, h,
             firstVolume: 0, onFile: onFile);
-      }, password: pw, multi: true);
+      }, password: pw, multi: true, options: _compactOptions());
     } catch (_) {
       vs?.abort();
       rethrow;

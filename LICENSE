@@ -380,9 +380,15 @@ decision:
   paq8px (https://github.com/hxim/paq8px) by Matt Mahoney, Jan Ondrus,
   Marcio Pais, Andrew Epstein, Zoltan Gotthardt and others, GNU GPL
   version 2 or later. The nonstationary state table, its priorities and
-  groups (zcm_state_table.dart) are copied from paq8px StateTable.hpp.
+  groups (zcm_state_table.dart) are copied from paq8px StateTable.hpp;
+  the word, chart, nest, XML, x86, image and audio models, the SSE
+  stages and the APMPost follow paq8px, whose image models come from
+  Marcio Pais's Emma, whose OLS and LMS predictors are by Sebastian
+  Lehmann, and whose audio model follows Florin Ghido's paper on stereo
+  lossless audio prediction.
   cmix (https://github.com/byronknoll/cmix) by Byron Knoll, GNU GPL
-  version 3 (the LSTM and the byte models of zcm follow it).
+  version 3 (the LSTM and the byte models of zcm follow it; the English
+  dictionary transform and its word list english.dic are cmix's).
   PPMd var.H by Dmitry Shkarin (public domain, through the LZMA SDK).
 
 zcm is a new implementation in Dart, substantially changed from these

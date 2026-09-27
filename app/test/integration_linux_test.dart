@@ -94,10 +94,7 @@ void main() {
     );
     // application/x-zx for .zx files
     expect(File(li.zxMimeFile).readAsStringSync(), kZxMimeXml);
-    expect(
-      commands.any((c) => c.startsWith('update-mime-database')),
-      isTrue,
-    );
+    expect(commands.any((c) => c.startsWith('update-mime-database')), isTrue);
     final s = await li.status();
     expect(s.registered, isTrue);
     expect(s.associations, isFalse);

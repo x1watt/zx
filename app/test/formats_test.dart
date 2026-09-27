@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zx/zx.dart';
 import 'package:zx_app/src/dialogs/compression_form.dart';
 import 'package:zx_app/src/formats.dart';
+import 'package:zx_app/src/settings.dart';
 
 void main() {
   test('folderNameFor strips archive extensions', () {
@@ -62,9 +63,19 @@ void main() {
     expect(newFormatById('nothing').id, 'zx');
     final f = newFormatById('zx');
     expect(f.createFormat, 'zx');
-    final o = (CompressionSettings(level: 7)..method = 'PPMd8').toOptions(f);
+    // Manual: the method is the chain, the level applies to it
+    final o = CompressionSettings(
+      level: 7,
+      zx: const ZxPrefs(auto: false, method: 'PPMd8'),
+    ).toOptions(f);
     expect(o.level, 7);
-    expect(o.switches, {'m': 'PPMd8'});
+    expect(o.compression?.chain, 'PPMd8');
+    expect(o.compression?.toSwitches(), {'0': 'PPMd8'});
+    // Auto (the default): zx chooses, no level
+    final a = CompressionSettings(level: 7).toOptions(f);
+    expect(a.level, isNull);
+    expect(a.compression?.auto, isTrue);
+    expect(a.compression?.toSwitches()['0'], 'zcm:auto');
     expect(looksLikeArchive('backup.zx'), isTrue);
     expect(looksLikeArchive('backup.zx.001'), isTrue);
     expect(folderNameFor('backup.zx'), 'backup');

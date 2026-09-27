@@ -17,6 +17,7 @@ import '../format/zx/zx_handler.dart';
 import '../io/streams.dart';
 import 'arc_handlers.dart';
 import 'common.dart';
+import 'zx_zcm_auto.dart';
 
 /// IsArc for .zx: the magic.
 int isArcZx(Uint8List p, int size) {
@@ -99,9 +100,40 @@ class ZxArc extends InArchive {
   @override
   int getFileTimeType() => FileTimeType.windows;
 
+  /// zx extension: the zcm:auto request of the last [setProperties],
+  /// resolved when the input size is known (zx_zcm_auto.dart).
+  ZxZcmRequest? _zcmAuto;
+
+  /// Called with the zcm settings chosen for `-m0=zcm:auto`, before any
+  /// data is written (the console prints them).
+  void Function(ZxZcmPlan plan)? onZcmPlan;
+
+  /// The zcm settings chosen by the last update, or null.
+  ZxZcmPlan? zcmPlan;
+
   @override
-  void setProperties(List<MapEntry<String, PropVariant>> props) =>
-      h.setProperties(props);
+  void setProperties(List<MapEntry<String, PropVariant>> props) {
+    final r = zxPrepareZcmProperties(props);
+    if (r.auto != null) _zcmAuto = r.auto;
+    h.setProperties(r.props);
+  }
+
+  // Chooses the zcm:auto settings for the new data of [cb] and gives
+  // them to the handler.
+  void _resolveZcmAuto(int numItems, ArchiveUpdateCallback cb) {
+    final req = _zcmAuto;
+    if (req == null) return;
+    var total = 0;
+    for (var i = 0; i < numItems; i++) {
+      if (!cb.getUpdateItemInfo(i).newData) continue;
+      final s = cb.getProperty(i, Kpid.size);
+      if (s is int) total += s;
+    }
+    final plan = req.plan(total);
+    zcmPlan = plan;
+    h.setProperties(req.properties(plan));
+    onZcmPlan?.call(plan);
+  }
 
   String? _newPassword(ArchiveUpdateCallback cb) {
     if (cb is CryptoGetTextPassword2) {
@@ -113,6 +145,7 @@ class ZxArc extends InArchive {
   @override
   void updateItems(
       OutStream out, int numItems, ArchiveUpdateCallback callback) {
+    _resolveZcmAuto(numItems, callback);
     h.updateItems(out, numItems, callback, newPassword: _newPassword(callback));
   }
 
@@ -122,6 +155,7 @@ class ZxArc extends InArchive {
   ZxUpdateFileResult updateFile(
       String path, int numItems, ArchiveUpdateCallback callback,
       {List<int> volumeSizes = const [], void Function(String path)? onFile}) {
+    _resolveZcmAuto(numItems, callback);
     final r = h.updateFile(path, numItems, callback,
         volumeSizes: volumeSizes,
         newPassword: _newPassword(callback),

@@ -17,6 +17,7 @@ import 'cli/nest.dart' show NestNodeSpec;
 import 'io/streams.dart';
 import 'format/zx/zx_writer.dart' show ZxVolumeDir;
 import 'util/tlsh.dart' show tlshDistance;
+import 'zx_estimate.dart';
 import 'zx_worker.dart';
 
 /// Progress of a [ZxArchive] operation (bytes done and total, current
@@ -374,6 +375,25 @@ class ZxOptions {
   /// 'AES256', 'rr': '3%', 'tc': 'on'}. An empty value is the bare switch.
   final Map<String, String> switches;
 
+  /// .zx: how the data is compressed: [ZxCompression.auto] (zx chooses
+  /// the zcm level, memory and threads for the machine, the input and a
+  /// time budget) or [ZxCompression.manual] (zcm settings or a coder
+  /// chain). Its switches come after [level] and [method] and before
+  /// [switches]. Ignored by the other formats. [ZxArchive.estimate] tells
+  /// what it would choose and cost.
+  final ZxCompression? compression;
+
+  /// .zx: deduplication (-mdedup, on by default): identical chunks of
+  /// data (about 64 KiB, content defined) and identical files are stored
+  /// once, also against the earlier generations. false turns it off.
+  final bool? dedup;
+
+  /// .zx: the memory the block workers may use together, in bytes
+  /// (-mmemuse), when writing and reading; fewer blocks are coded at once
+  /// when their estimated memory exceeds it. Default: 75% of the
+  /// available memory, and at most the available memory minus 1.5 GiB.
+  final int? memoryLimit;
+
   const ZxOptions({
     this.level,
     this.method,
@@ -385,6 +405,9 @@ class ZxOptions {
     this.volumeDirs = const [],
     this.storeSymlinks = false,
     this.switches = const {},
+    this.compression,
+    this.dedup,
+    this.memoryLimit,
   });
 }
 
@@ -733,6 +756,31 @@ class ZxArchive {
           for (final d in options.volumeDirs)
             Directory(ZxVolumeDir.parse(d).path).absolute.path
         ]);
+  }
+
+  /// What adding [sources] (files and folders with everything below
+  /// them) with [options] would choose and cost, without compressing: the
+  /// settings of [ZxOptions.compression] (for auto: the zcm level,
+  /// memory and threads zx picks), the estimated time, peak memory and a
+  /// range of output sizes, and warnings (more memory than the machine can
+  /// spare, hours of work). Measures this machine's speed on a sample of
+  /// the input (up to 64 KiB, about half a second). Runs in a background
+  /// isolate. [ZxEstimate.compression] pins the estimated zcm settings for
+  /// the update. Estimates the .zx methods (the others as LZMA2).
+  static Future<ZxEstimate> estimate(List<ZxSource> sources,
+      {ZxOptions options = const ZxOptions()}) {
+    final paths = [for (final s in sources) File(s.path).absolute.path];
+    final compression = options.compression;
+    final method = options.method;
+    final level = options.level;
+    final switches = options.switches;
+    final memoryLimit = options.memoryLimit;
+    return Isolate.run(() => zxEstimate(paths,
+        compression: compression,
+        method: method,
+        level: level,
+        switches: switches,
+        memoryLimit: memoryLimit));
   }
 
   // ---- listing ----

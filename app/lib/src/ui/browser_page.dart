@@ -253,32 +253,30 @@ class BrowserPageState extends State<BrowserPage> {
     }
     if (!mounted) return;
     final a = await _guard('Open ${p.basename(full)}', () {
-      return runWithProgress(
-        context,
-        'Opening ${p.basename(full)}',
-        (pr) async {
-          final flat = _s.settings.showInnerFilesystems;
-          var a = await ZxArchive.open(
+      return runWithProgress(context, 'Opening ${p.basename(full)}', (
+        pr,
+      ) async {
+        final flat = _s.settings.showInnerFilesystems;
+        var a = await ZxArchive.open(
+          full,
+          onPassword: _askPassword,
+          cancel: pr.cancel,
+          flatten: flat,
+          version: version,
+        );
+        if (flat && !a.items.any((i) => i.isNested)) {
+          // nothing nested: the plain archive, which may be changed
+          await a.close();
+          a = await ZxArchive.open(
             full,
+            password: a.password,
             onPassword: _askPassword,
             cancel: pr.cancel,
-            flatten: flat,
             version: version,
           );
-          if (flat && !a.items.any((i) => i.isNested)) {
-            // nothing nested: the plain archive, which may be changed
-            await a.close();
-            a = await ZxArchive.open(
-              full,
-              password: a.password,
-              onPassword: _askPassword,
-              cancel: pr.cancel,
-              version: version,
-            );
-          }
-          return a;
-        },
-      );
+        }
+        return a;
+      });
     });
     if (a == null || !mounted) return;
     showArchive(a, allVersions: allVersions, dir: dir);
@@ -359,6 +357,8 @@ class BrowserPageState extends State<BrowserPage> {
       formatId: _s.settings.defaultFormat,
       defaultLevel: _s.settings.defaultLevel,
       picker: _s.picker,
+      zxDefaults: _s.settings.zxCompression,
+      estimator: _s.estimator,
     );
     if (r == null || !mounted) return;
     final a = await _guard('New archive', () {
@@ -729,6 +729,8 @@ class BrowserPageState extends State<BrowserPage> {
       caps: m.archive.capabilities,
       defaultLevel: _s.settings.defaultLevel,
       picker: _s.picker,
+      zxDefaults: _s.settings.zxCompression,
+      estimator: _s.estimator,
     );
     if (r == null || !mounted) return;
     final res = await _guard('Add', () {

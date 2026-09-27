@@ -6,7 +6,7 @@ parent folder). It reads every format of the `zx` command line tool (7z,
 zip and jar, rar 1.5 to 7, tar, tar.gz / tgz, tar.bz2, tar.xz, tar.lzma,
 gz, bz2, xz, lzma, lzh, arj, zpaq, split volumes, cpio, ISO, UDF,
 SquashFS, cramfs, JFFS2, ext, FAT, MBR and GPT disk images, and firmware:
-Reolink pak, uImage, UBI, UBIFS, device trees) and writes 7z, zip,
+Reolink pak, uImage, UBI, UBIFS, device trees) and writes zx, 7z, zip,
 RAR5, tar and the compressed tars, lzh, arj, zpaq, gz, bz2 and xz.
 
 Every archive operation runs in a background isolate of `ZxArchive`; the
@@ -52,19 +52,40 @@ native code of its own besides the runners and uses three small packages:
 - **Add**: the Add button or files dropped on the window add into the
   current folder of the archive, with level, method, password (zip:
   AES-256 or ZipCrypto) and solid where the format has them.
-- **New archive** (Ctrl+N): name, format (7z, zip, tar.gz, tar.bz2, tar.xz,
-  rar, tar, lzh, arj, zpaq with its methods 0 to 5, and gz, bz2, xz for
-  one file), files and folders,
-  settings; a password with encrypted names for 7z and rar.
+- **New archive** (Ctrl+N): name, format (zx, 7z, zip, tar.gz, tar.bz2,
+  tar.xz, rar, tar, lzh, arj, zpaq with its methods 0 to 5, and gz, bz2,
+  xz for one file), files and folders,
+  settings; a password with encrypted names for zx, 7z and rar.
+- **Compression** (new .zx archives and additions to one): **Auto** (the
+  default) lets zx choose the zcm level, its memory and the threads for
+  this machine and the files, within a time budget: Fast, Balanced, Max,
+  or Custom (a number of minutes). The dialog shows what it chose, for
+  example "Chosen: level 6, 1.2 GiB RAM, 2 threads, ~3 minutes", with the
+  expected output size; the estimate (`ZxArchive.estimate`) runs in the
+  background, about half a second after the last change, and the update
+  uses exactly the settings shown. **Manual**: the method (zcm levels 1
+  to 9: fastest, fast, normal, max, ultra, cmix; LZMA2, PPMd8, PPMd,
+  BZip2, Deflate, zpaq, store), the level of the other methods, and for
+  zcm the memory per stream (with the safe maximum of this machine), the
+  LSTM of level 9 and its size, and the threads. Choices that need more
+  memory than the machine can spare, or hours of work ("about 30 hours at
+  ~0.5 KB/s"), are shown as warnings. **Deduplicate identical data** (on
+  by default) stores identical files and parts of files once. zcm is experimental: only this zx
+  version and later read it.
 - **Delete** (Del), **Rename** (F2), **New folder**, **Test**, **Info**
   (archive properties, comment of zip and RAR5 archives, the nesting
   chain, the details of a container such as the MTD table of a pak),
   **Properties** of items (Alt+Enter).
 - Actions a format does not allow (adding to a .xz file, changing a RAR 4
   or a multi-volume archive...) are disabled, with a tooltip that says why.
+- **Progress**: percent, bytes, the speed of the last 20 seconds, the
+  elapsed time and the time left ("about 12 min left"), Cancel.
 - **Settings**: theme (system, light, dark), preview pane, default format
-  and level of new archives, delete confirmation, open the folder after
-  extracting, and the desktop integration.
+  and level of new archives, the compression defaults of .zx (Auto with
+  its time budget, or Manual with the method, memory, threads and LSTM;
+  deduplication),
+  delete confirmation, open the folder after extracting, and the desktop
+  integration.
 
 ## Command line
 
@@ -186,7 +207,8 @@ run`, `flutter test integration_test`) go through
 - `lib/src/archive_model.dart`: folder, history, sort, filter, selection.
 - `lib/src/ui/`: the browser page and its panels, the file list, the
   preview, the settings page, the "Extract to folder" window.
-- `lib/src/dialogs/`: extract, add, new archive, password, overwrite,
+- `lib/src/dialogs/`: extract, add, new archive (with the .zx
+  Compression section of `zx_compression.dart`), password, overwrite,
   progress, properties, errors.
 - `lib/src/integration.dart`: the desktop integration (Linux, Windows).
 - `lib/src/services.dart`: the launcher and the file dialogs, replaced by

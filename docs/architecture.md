@@ -178,7 +178,10 @@ Read it together with `docs/performance.md`.
   handlers through the CLI's `InArchive` adapters with its own extract
   and update callbacks (part files, per item errors, links after every
   file, the update plan of kept, renamed and new items given to
-  `updateItems`, as Update.cpp does).
+  `updateItems`, as Update.cpp does). `zx_estimate.dart` (synchronous)
+  holds `ZxCompression` (`ZxOptions.compression`, turned into the zx
+  switches of section 15) and `zxEstimate`, which `ZxArchive.estimate`
+  runs with `Isolate.run`.
 - `lib/zx.dart`: the exports: the API, and the synchronous building blocks
   (reader, writer, streams, codecs) for callers that run them in their own
   isolates.
@@ -289,9 +292,15 @@ caller renames the new file over the old one, as 7-Zip does.
   folder can be made, the jobs run inline. The async `WorkerPool` would
   need the caller's event loop, which a handler does not have.
 - Default size (`defaultThreads`): half the processors, 1 to 8, and at
-  most 4 on Android and iOS. The .zx writer also keeps the estimated
-  memory of its workers under 1 GiB unless `-mmt` is given
-  (`zxWorkerMemory`).
+  most 4 on Android and iOS. The .zx writer and reader also keep the
+  estimated memory of their block workers under a limit
+  (`zx_memory.dart`: `zxWorkerMemory` from the chain's settings,
+  `zxDecodeMemory` from the props of a block's chain): `-mmemuse` or
+  `ZxOptions.memoryLimit`, by default min(75% of MemAvailable,
+  MemAvailable minus 1.5 GiB) from zcm's probe (`zcmProbeMachine`,
+  `zcmUsableBytes`). The writer lowers its worker count (with a warning
+  when `-mmt` asked for more); the reader starts a decoder only while
+  the ones in flight fit (one always runs).
 
 ## 7. Files on disk
 
@@ -736,41 +745,79 @@ the components follow paq8, lpaq1, paq8px and cmix, rewritten in Dart
 around one predictor, and the file headers name their sources.
 
 - **Files.** `zcm.dart` (options, the stream format, `ZcmCompressor`,
-  `ZcmDecoderStream`, `zcmDecoder`, block detection, the x86 E8/E9
-  transform), `zcm_coder.dart` (the 32-bit carryless binary arithmetic
-  coder of paq8/lpaq), `zcm_tables.dart` and `zcm_state_table.dart`
-  (squash, stretch, ilog, reciprocals, the paq8px nonstationary state
-  table), `zcm_components.dart` (StateMap, APM, the two layer Mixer, the
-  hashed ContextMap with byte history, DirectMap), `zcm_models.dart` (the
-  order-n models, match with two lengths, word/text, sparse, indirect,
-  record, char groups, x86 contexts, DMC, the fast nibble model),
-  `zcm_byte_models.dart` (PPMd var.H of `lib/src/codec/ppmd` and the LSTM
-  as byte predictors), `zcm_lstm.dart`, `zcm_math.dart` (deterministic
-  exp, tanh, logistic, sqrt), `zcm_predictor.dart` (the level table and
-  the memory split), `zcm_auto.dart` (settings from the machine),
-  `zcm_parallel.dart` (independent segments on worker isolates; the only
-  asynchronous file, rule 4). `ZcmCompressor(threads: N)` codes
-  independent segments on the synchronous pool of `lib/src/sync_pool.dart`
-  with the same output.
+  `ZcmDecoderStream`, `zcmDecoder`, the segment coding, the x86 E8/E9
+  transform), `zcm_detect.dart` (the data types: text, x86, binary per
+  64 KiB block, and BMP, PGM, PPM, WAV and AIFF by their headers),
+  `zcm_dict.dart` and `zcm_dict_words.dart` (the English dictionary
+  transform of cmix and its word list), `zcm_coder.dart` (the 32-bit
+  carryless binary arithmetic coder of paq8/lpaq, 16 bit
+  probabilities), `zcm_tables.dart` and `zcm_state_table.dart` (squash,
+  stretch, ilog, reciprocals, the paq8px nonstationary state table),
+  `zcm_components.dart` (StateMap, the lpaq APM and the paq8px APM,
+  APM1 and APMPost, the two layer Mixer, the hashed ContextMap with byte
+  history and skipped contexts, DirectMap), `zcm_models.dart` (the
+  order-n models, match, word/text, sparse, indirect, record, char
+  groups, x86 contexts, DMC), `zcm_words.dart` (the paq8px word and line
+  model, chart, nest and XML models), `zcm_x86.dart` (the paq8px x86
+  parser), `zcm_image.dart` (images: residual histograms, least squares
+  fits, neighborhood contexts), `zcm_audio.dart` (PCM audio: least
+  squares and LMS predictors, residual contexts), `zcm_ols.dart` (the
+  least squares fit), `zcm_byte_models.dart` (PPMd var.H of
+  `lib/src/codec/ppmd` and the LSTM as byte predictors), `zcm_lstm.dart`,
+  `zcm_math.dart` (deterministic exp, tanh, logistic, sqrt),
+  `zcm_fast.dart` (the level 1 predictor, one class),
+  `zcm_predictor.dart` (the level table, the memory split, the mixer
+  selectors and the SSE chains), `zcm_auto.dart` (settings from the
+  machine), `zcm_parallel.dart` (independent segments on worker
+  isolates; the only asynchronous file, rule 4). `ZcmCompressor(threads:
+  N)` codes independent segments on the synchronous pool of
+  `lib/src/sync_pool.dart` with the same output.
+- **Stream version 2.** A chunk is a series of segments, each with its
+  type, length and (images, audio) layout coded in the arithmetic stream,
+  so the decoder does not run the detector. x86 segments go through the
+  E8/E9 transform, 16-bit little endian audio is coded most significant
+  byte first, and a text segment whose words are mostly English goes
+  through the dictionary transform when its inverse gives the text back
+  exactly (the encoder checks it). The final probability has 16 bits.
+  Version 1 streams (zx 0.5) are refused with a message that names the
+  version: their models no longer exist here.
+- **Levels.** 1: `ZcmFastPredictor` (orders 1 to 6 in nibble tables,
+  match, one mixer set, one APM); 2 to 5: orders 2, 3, 4, 6 with bit
+  histories, the word model (5, 10 or 16 contexts), exe contexts (the
+  paq8px x86 parser from 4), sparse contexts from 4, light image and
+  audio models from 3; 6: more orders, indirect, record, char groups,
+  the full x86 parser, the full image and audio models; 7: byte history
+  inputs, the paq8px word model, paq8px's mixer selectors and SSE
+  chains; 8: word contexts on binary data too; 9: PPMd and the chart
+  model, and the optional LSTM (`lstm=small|medium|large` or C/L/H).
 - **Determinism.** A stream must decode on every machine, so the model
   computes the same bits everywhere: integers for every paq style part
   (states, StateMaps, APMs, fixed point mixer weights; 32-bit wraparound
   masked explicitly), doubles with +, -, *, / and the functions of
-  `zcm_math.dart` only for the LSTM and the PPMd distribution (IEEE 754
-  defines those exactly; dart:math exp, log, tanh and pow are never
-  used), tables built with integers, and every parameter of the model
-  (level, memory budget, flags, LSTM size) in the stream header. Golden
-  hashes in `test/zcm_test.dart` pin the output of every level. The code
-  relies on 64-bit ints (the native VM; not for the web).
+  `zcm_math.dart` only for the LSTM, the PPMd distribution and the least
+  squares and LMS predictors of images and audio, always in a fixed
+  order (IEEE 754 defines those exactly, Dart does not fuse multiply and
+  add; dart:math exp, log, tanh and pow are never used), tables built
+  with integers, and every parameter of the model (level, memory budget,
+  flags, LSTM size) in the stream header. Golden hashes in
+  `test/zcm_test.dart` pin the output of every level. The code relies on
+  64-bit ints (the native VM; not for the web).
 - **Memory.** Every table takes its size from the budget in the header
-  (`ZcmPredictor`): the history buffer, the match tables, then the context
-  maps in proportion to their contexts, PPMd a quarter at level 9; the
-  sizes are powers of two, so a model uses between half and all of the
-  budget. The encoder lowers the budget for small inputs (64 bytes per
-  input byte plus 8 MiB) and stores what it used.
+  (`ZcmPredictor`): the history buffer, the match tables, the SSE chains,
+  then the context maps in proportion to their contexts, PPMd a quarter
+  at level 9 (DMC and PPMd only with 16 MiB or more); the sizes are
+  powers of two, so a model uses between half and all of the budget. The
+  image and audio models are built on the first segment of their type and
+  may add a quarter of the budget each. The encoder lowers the budget for
+  small inputs (64 bytes per input byte plus 8 MiB) and stores what it
+  used.
 - **Hot loops** follow rule 3: typed lists, the tables of a component in
   locals, inputs written straight into the mixer's `Int32List`, no
-  closures on the bit path, the mixer dot products unrolled by four.
+  closures on the bit path. The mixer multiplies only the nonzero inputs
+  (two weight sets per pass), the context map learns and looks up in one
+  pass and adds the inputs in a second one, and the hot functions are
+  marked `vm:unsafe:no-bounds-checks`: their indices come from masks and
+  from the mixer selectors, which assert their ranges in tests.
 - **Credits.** zcm uses the state table, parameters and designs of
   paq8px, lpaq1, paq8l and cmix, credited in each file, in the README and
   in LICENSE. It is new Dart code distributed as part of zx under the
@@ -778,11 +825,38 @@ around one predictor, and the file headers name their sources.
   (`lib/src/format/zx/zx_codecs.dart`, `_registerExperimentalCodecs`)
   registers it as codec 0x10000.
 - **In .zx.** `-m0=zcm[:params]` (params as `zcmOptionsFromString`:
-  `level=N` or a level name, `mem=`, `lstm[=C/L/H]`, `seg=`,
-  `nodetect`; the archive level is the default zcm level). Each .zx block
-  is one zcm stream with its own model; the container codes blocks in
-  parallel, so memory is about threads times the zcm budget (capped per
-  block by 64 bytes per input byte plus 8 MiB).
+  `level=N` or a level name, `mem=`, `lstm[=C/L/H|small|medium|large]`,
+  `seg=`, `nodetect`, `nodict`; the archive level is the default zcm
+  level). Each .zx block is one zcm stream with its own model; the
+  container codes blocks in parallel, so memory is about threads times
+  the zcm budget (capped per block by 64 bytes per input byte plus 8
+  MiB).
+- **Automatic settings in .zx** (`lib/src/cli/zx_zcm_auto.dart`, zx
+  switches): `-m0=zcm:auto`, `-mtime`, `-mmem`, `-mlstm`, `-mcal` and the
+  named `-mx` levels are read by `ZxArc.setProperties`
+  (`zxPrepareZcmProperties`) before the handler sees the properties, so
+  `lib/src/format/zx` never parses them: the auto method becomes a plain
+  `zcm` placeholder, and `ZxArc.updateFile` / `updateItems`, once the
+  size of the new data is known from the update callback, runs
+  `zxPlanZcm` (`zcmAutoSelect` with the memory budget imposed through a
+  `ZcmMachine`, then one .zx block per worker of at most 64 MiB, the
+  budget of each stream refitted to the block) and gives the handler an
+  explicit method (`zcm:level=6:mem=1024`), `-mmt` and `-mbs`. The memory
+  of a worker is the estimate of the .zx memory guard (`zxWorkerMemory`
+  of `zx_memory.dart`) and the budget is `-mmem` or the guard's limit
+  (`-mmemuse`, by default the same safe maximum), so the guard never cuts
+  the workers of a plan: the model budget is lowered (to a quarter at
+  most while several workers run), then the workers are halved. With
+  `-mmem` above the guard's limit the plan passes `-mmemuse` too. The
+  archive holds only those settings, so the output does not depend on the
+  machine that decodes it, only the choice depends on the machine that
+  writes it. The CLI prints `ZxZcmPlan.summary` before compressing
+  (`UpdateCallbackUI2.zxInfo`, -bb0; the details at -bb1) and the reason
+  of a bad switch (`zxError`). `ZxArchive.estimate` (`lib/src/
+  zx_estimate.dart`) makes the same plan without compressing, with the
+  speed measured by coding a 64 KiB sample of the input at level 3; its
+  `ZxEstimate.compression` pins the plan so that the update does what
+  was shown.
 
 ## 16. The .zx format (zx extension)
 
@@ -803,8 +877,11 @@ does not apply to it.
   sendable arguments only), `zx_crypto.dart` (scrypt of the vendored zpaq
   engine, AES-256-CTR over `aes.dart`, HMAC-SHA-256), `zx_reader.dart`
   (the last valid Footer, generations, volumes found by their header),
-  `zx_writer.dart` (the block pipeline, solid packing, streamed inline
-  records, volumes with destination folders, appends, compaction),
+  `zx_writer.dart` (the block pipeline, solid packing, deduplication,
+  streamed inline records, volumes with destination folders, appends,
+  compaction with repacking), `zx_dedup.dart` (zpaq's content-defined
+  fragmenter, the chunk index, the solid and dedup features of a set of
+  extents), `zx_memory.dart` (the memory estimates and the worker count),
   `zx_handler.dart` (the 7-Zip shaped handler: properties, extraction,
   random access, updates, timeline, the sequential reader of pipes).
   `lib/src/cli/arc_zx.dart` adapts it; `update.dart` lets it write in
@@ -826,9 +903,24 @@ does not apply to it.
   locals and the buckets in a `Uint32List`; CRC-32C is slicing-by-8 like
   `crc.dart`; the per file SHA-256 and TLSH run on the handler's isolate
   while the workers code the blocks.
-- **Limits.** The writer does not deduplicate (the reader handles shared
-  extents). Blocks shared by kept and deleted files stay whole in a
-  compaction. The sequential reader of pipes reads every generation in
+- **Dedup.** The writer cuts each file with zpaq's fragmenter (64 KiB on
+  average), hashes each chunk with SHA-256 and looks it up in
+  `ZxChunkIndex` (open addressing on the first bytes of the hash, about
+  70 bytes per chunk on the handler's isolate); a new chunk goes to the
+  dedup chunk store block being filled, a known one becomes an extent.
+  The chunks of earlier generations come from the chunk table of the
+  last Index (record 0x34, checked against the block table by its
+  fingerprint). A file with the size and SHA-256 of a stored file reuses
+  its extents (read whole, up to 64 MiB, only when such a size exists).
+  New data is placed as positions in the stream of new data and turned
+  into extents when the blocks are written, so the output does not depend
+  on the number of workers. Compaction repacks partly used blocks in the
+  workers (decode, then code again with the rebuilt chain) and keeps the
+  chunks that are still used.
+- **Limits.** The chunk index of a large archive lives in memory while an
+  update runs (about 1.1 GB per TB of unique data at 64 KiB chunks), and
+  the chunk table is written in every Index (about 42 bytes per chunk).
+  The sequential reader of pipes reads every generation in
   order (a later version of a path comes after the earlier one) and does
   not apply deletions. Appending in place with the archive open for
   reading has not been tried on Windows.

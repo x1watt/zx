@@ -69,6 +69,106 @@ class AppPaths {
   }
 }
 
+/// The compression defaults of new .zx data (Settings, Compression).
+class ZxPrefs {
+  /// Auto (zx chooses the zcm settings) or manual.
+  final bool auto;
+
+  /// Auto: 'fast', 'balanced', 'max' or 'custom' (then [minutes]).
+  final String speed;
+  final int minutes;
+
+  /// Manual: 'zcm:1'..'zcm:9', 'LZMA2', 'PPMd8', 'PPMd', 'BZip2',
+  /// 'Deflate', 'zpaq' or 'store'.
+  final String method;
+
+  /// Manual zcm: the memory budget of each stream in MiB (0: the level's
+  /// default), the LSTM of level 9 and its size, the threads (0: auto).
+  final int memoryMiB;
+  final bool lstm;
+  final int lstmCells;
+  final int lstmLayers;
+  final int threads;
+
+  /// Deduplicate identical data (ZxOptions.dedup, on by default).
+  final bool dedup;
+
+  const ZxPrefs({
+    this.dedup = true,
+    this.auto = true,
+    this.speed = 'balanced',
+    this.minutes = 10,
+    this.method = 'zcm:4',
+    this.memoryMiB = 0,
+    this.lstm = false,
+    this.lstmCells = 64,
+    this.lstmLayers = 1,
+    this.threads = 0,
+  });
+
+  static const speeds = ['fast', 'balanced', 'max', 'custom'];
+
+  ZxPrefs copyWith({
+    bool? auto,
+    String? speed,
+    int? minutes,
+    String? method,
+    int? memoryMiB,
+    bool? lstm,
+    int? lstmCells,
+    int? lstmLayers,
+    int? threads,
+    bool? dedup,
+  }) => ZxPrefs(
+    dedup: dedup ?? this.dedup,
+    auto: auto ?? this.auto,
+    speed: speed ?? this.speed,
+    minutes: minutes ?? this.minutes,
+    method: method ?? this.method,
+    memoryMiB: memoryMiB ?? this.memoryMiB,
+    lstm: lstm ?? this.lstm,
+    lstmCells: lstmCells ?? this.lstmCells,
+    lstmLayers: lstmLayers ?? this.lstmLayers,
+    threads: threads ?? this.threads,
+  );
+
+  Map<String, Object?> toJson() => {
+    'mode': auto ? 'auto' : 'manual',
+    'speed': speed,
+    'minutes': minutes,
+    'method': method,
+    'memoryMiB': memoryMiB,
+    'lstm': lstm,
+    'lstmCells': lstmCells,
+    'lstmLayers': lstmLayers,
+    'threads': threads,
+    'dedup': dedup,
+  };
+
+  static ZxPrefs fromJson(Object? j) {
+    if (j is! Map) return const ZxPrefs();
+    const d = ZxPrefs();
+    T get<T>(String k, T def) {
+      final v = j[k];
+      return v is T ? v : def;
+    }
+
+    final speed = get<String>('speed', d.speed);
+    return ZxPrefs(
+      dedup: get<bool>('dedup', d.dedup),
+      auto: get<String>('mode', 'auto') != 'manual',
+      speed: speeds.contains(speed) ? speed : d.speed,
+      minutes: get<int>('minutes', d.minutes).clamp(1, 24 * 60),
+      method: get<String>('method', d.method),
+      memoryMiB: get<int>('memoryMiB', d.memoryMiB).clamp(0, 1 << 16),
+      lstm: get<bool>('lstm', d.lstm),
+      lstmCells: get<int>('lstmCells', d.lstmCells).clamp(1, 1024),
+      lstmLayers: get<int>('lstmLayers', d.lstmLayers).clamp(1, 8),
+      threads: get<int>('threads', d.threads).clamp(0, 64),
+    );
+  }
+}
+
 /// The settings, a ChangeNotifier that saves itself after each change.
 class Settings extends ChangeNotifier {
   final String? file;
@@ -80,6 +180,7 @@ class Settings extends ChangeNotifier {
   bool _showPreview = true;
   bool _openFolderAfterExtract = false;
   bool _showInnerFilesystems = false;
+  ZxPrefs _zx = const ZxPrefs();
   List<String> _recent = [];
 
   Settings({this.file});
@@ -95,6 +196,10 @@ class Settings extends ChangeNotifier {
   /// section shows the files of its UBIFS volume), read-only.
   bool get showInnerFilesystems => _showInnerFilesystems;
   List<String> get recent => List.unmodifiable(_recent);
+
+  /// The compression defaults of new .zx data.
+  ZxPrefs get zxCompression => _zx;
+  set zxCompression(ZxPrefs v) => _change(() => _zx = v);
 
   set theme(ThemeMode v) => _change(() => _theme = v);
   set defaultFormat(String v) => _change(() => _defaultFormat = v);
@@ -163,6 +268,7 @@ class Settings extends ChangeNotifier {
     'showPreview': _showPreview,
     'openFolderAfterExtract': _openFolderAfterExtract,
     'showInnerFilesystems': _showInnerFilesystems,
+    'zxCompression': _zx.toJson(),
     'recent': _recent,
   };
 
@@ -183,6 +289,9 @@ class Settings extends ChangeNotifier {
     if (o is bool) _openFolderAfterExtract = o;
     final n = j['showInnerFilesystems'];
     if (n is bool) _showInnerFilesystems = n;
+    if (j.containsKey('zxCompression')) {
+      _zx = ZxPrefs.fromJson(j['zxCompression']);
+    }
     final r = j['recent'];
     if (r is List) {
       _recent = [

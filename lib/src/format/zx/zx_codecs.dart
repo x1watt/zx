@@ -633,6 +633,52 @@ String zxChainName(ZxChain chain) {
   return (v, experimental);
 }
 
+/// Coder specs that encode as [chain] did, from the parameters its props
+/// give (the dictionary of LZMA and LZMA2, the order and memory of PPMd,
+/// the level and budget of zcm, the distance of Delta, the start of a
+/// branch filter) and the archive [level] for the rest. For repacking the
+/// data of a block (compaction); null when a coder can not be rebuilt.
+List<ZxCoderSpec>? zxSpecsFromChain(ZxChain chain, int level) {
+  final out = <ZxCoderSpec>[];
+  for (final c in chain.coders) {
+    final p = c.props;
+    final info = zxCodecById(c.codecId);
+    if (info == null || !info.canEncode) return null;
+    var params = '';
+    switch (c.codecId) {
+      case ZxCodecId.lzma2:
+        if (p.length == 1 && p[0] <= 40) {
+          params = 'd=${lzma2DictSizeFromProp(p[0]) >> 10}k';
+        }
+      case ZxCodecId.lzma:
+        if (p.length == 5) params = 'd=${getUint32LE(p, 1) >> 10}k';
+      case ZxCodecId.ppmd7:
+        if (p.length == 5) params = 'o=${p[0]}:mem=${getUint32LE(p, 1) >> 10}k';
+      case ZxCodecId.ppmd8:
+        if (p.length == 2) {
+          final w = p[0] | (p[1] << 8);
+          params = 'o=${(w & 15) + 1}:mem=${((w >> 4) & 0xFF) + 1}m';
+        }
+      case zcmCodecId:
+        try {
+          final h = zcmParseProps(p);
+          params = 'level=${h.level}:mem=${h.memoryMiB}m'
+              '${h.lstm ? ':lstm=${h.lstmCells}/${h.lstmLayers}/${h.lstmHorizon}' : ':nolstm'}'
+              '${h.detect ? '' : ':nodetect'}'
+              '${h.independent ? ':seg=${h.segmentSize}' : ''}';
+        } on Object {
+          return null;
+        }
+      case ZxCodecId.delta:
+        if (p.length == 1) params = '${p[0] + 1}';
+      default:
+        if (info.isFilter && p.length == 4) params = '${getUint32LE(p, 0)}';
+    }
+    out.add(ZxCoderSpec(c.codecId, ZxCoderConfig(level: level, params: params)));
+  }
+  return out;
+}
+
 /// Parses a method switch value ("LZMA2:d=16m", "PPMd:o=8", "Delta:4",
 /// "zpaq:3") into a coder spec; [level] is the archive level.
 ZxCoderSpec zxParseCoder(String s, int level) {

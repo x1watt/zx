@@ -5,6 +5,9 @@ import 'dart:io';
 
 import 'package:file_selector/file_selector.dart' as fs;
 
+import 'package:zx/zx.dart' show ZxArchive;
+
+import 'dialogs/zx_compression.dart' show Estimator;
 import 'integration.dart';
 import 'settings.dart';
 
@@ -117,11 +120,15 @@ class AppServices {
   final FilePicker picker;
   final DesktopIntegration integration;
 
+  /// The estimate of a .zx compression (a fake in the tests).
+  final Estimator estimator;
+
   AppServices({
     required this.paths,
     required this.settings,
     required this.launcher,
     required this.picker,
     required this.integration,
+    this.estimator = ZxArchive.estimate,
   });
 }

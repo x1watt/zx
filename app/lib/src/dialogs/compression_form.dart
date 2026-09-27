@@ -1,10 +1,14 @@
 // The compression settings shared by the add and new archive dialogs:
-// level, method, password (with the zip cipher), encrypted names, solid.
+// level, method, password (with the zip cipher), encrypted names, solid;
+// for .zx the Compression section of zx_compression.dart (Auto or Manual)
+// in place of the level and method.
 
 import 'package:flutter/material.dart';
 import 'package:zx/zx.dart';
 
 import '../formats.dart';
+import '../settings.dart';
+import 'zx_compression.dart';
 
 class CompressionSettings {
   int level;
@@ -14,7 +18,11 @@ class CompressionSettings {
   bool solid = true;
   bool zipAes = true;
 
-  CompressionSettings({this.level = 5});
+  /// The .zx compression (Auto or Manual) and its estimate.
+  final ZxCompressionState zx;
+
+  CompressionSettings({this.level = 5, ZxPrefs zx = const ZxPrefs()})
+    : zx = ZxCompressionState(zx);
 
   ZxOptions toOptions(NewFormat f, {bool allowPassword = true}) {
     final pw = allowPassword && f.password && password.isNotEmpty
@@ -22,6 +30,21 @@ class CompressionSettings {
         : null;
     final sw = <String, String>{};
     String? m;
+    if (f.id == 'zx') {
+      final c = zx.compression;
+      final zcm = !zx.prefs.auto && zcmLevelOf(zx.prefs.method) != null;
+      return ZxOptions(
+        // the level of the other methods (zcm has its own)
+        level: zx.prefs.auto || zcm ? null : level,
+        password: pw,
+        encryptHeaders: pw != null && f.encryptNames && encryptNames
+            ? true
+            : null,
+        solid: solid,
+        compression: c,
+        dedup: zx.prefs.dedup,
+      );
+    }
     if (method != null && f.methods.contains(method)) {
       if (f.id == '7z' || f.id == 'zip') {
         m = method;
@@ -62,12 +85,18 @@ class CompressionForm extends StatefulWidget {
   /// that can not).
   final bool canEncrypt;
   final bool canEncryptNames;
+
+  /// The files to add (the .zx estimate), changed in place by the dialog.
+  final List<String> sources;
+  final Estimator estimator;
   const CompressionForm({
     super.key,
     required this.format,
     required this.settings,
     this.canEncrypt = true,
     this.canEncryptNames = true,
+    this.sources = const [],
+    this.estimator = ZxArchive.estimate,
   });
 
   @override
@@ -94,42 +123,54 @@ class _CompressionFormState extends State<CompressionForm> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Wrap(
-          spacing: 24,
-          runSpacing: 8,
-          children: [
-            if (f.levels)
-              _labeled(
-                'Compression level',
-                DropdownButton<int>(
-                  key: const Key('opt-level'),
-                  value: _levels.containsKey(s.level) ? s.level : 5,
-                  onChanged: (v) => setState(() => s.level = v ?? 5),
-                  items: [
-                    for (final e in _levels.entries)
-                      DropdownMenuItem(value: e.key, child: Text(e.value)),
-                  ],
+        if (f.id == 'zx')
+          ZxCompressionSection(
+            state: s.zx,
+            sources: widget.sources,
+            level: s.level,
+            onLevel: (v) => setState(() => s.level = v),
+            estimator: widget.estimator,
+          )
+        else
+          Wrap(
+            spacing: 24,
+            runSpacing: 8,
+            children: [
+              if (f.levels)
+                _labeled(
+                  'Compression level',
+                  DropdownButton<int>(
+                    key: const Key('opt-level'),
+                    value: _levels.containsKey(s.level) ? s.level : 5,
+                    onChanged: (v) => setState(() => s.level = v ?? 5),
+                    items: [
+                      for (final e in _levels.entries)
+                        DropdownMenuItem(value: e.key, child: Text(e.value)),
+                    ],
+                  ),
                 ),
-              ),
-            if (f.methods.isNotEmpty)
-              _labeled(
-                'Method',
-                DropdownButton<String?>(
-                  key: const Key('opt-method'),
-                  value: f.methods.contains(s.method) ? s.method : null,
-                  onChanged: (v) => setState(() => s.method = v),
-                  items: [
-                    const DropdownMenuItem(value: null, child: Text('Default')),
-                    for (final m in f.methods)
-                      DropdownMenuItem(
-                        value: m,
-                        child: Text(methodLabel(f, m)),
+              if (f.methods.isNotEmpty)
+                _labeled(
+                  'Method',
+                  DropdownButton<String?>(
+                    key: const Key('opt-method'),
+                    value: f.methods.contains(s.method) ? s.method : null,
+                    onChanged: (v) => setState(() => s.method = v),
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('Default'),
                       ),
-                  ],
+                      for (final m in f.methods)
+                        DropdownMenuItem(
+                          value: m,
+                          child: Text(methodLabel(f, m)),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-          ],
-        ),
+            ],
+          ),
         if (f.solid)
           CheckboxListTile(
             key: const Key('opt-solid'),

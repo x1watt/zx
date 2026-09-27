@@ -82,10 +82,38 @@ that there are 20 blocks; `/usr/bin/time`, one run each:
 The archive is 14.3 MB. Compression scales with the workers (2.9 times
 with 4); each worker holds its block, its output and an LZMA2 encoder with
 the dictionary reduced to the block. With the default 16 MiB blocks a
-worker needs about 230 MB at level 5, so the default number of workers is
-also bounded by 1 GiB of estimated memory (`zxWorkerMemory`); `-mmt`
-overrides it. The per file SHA-256 and TLSH are computed on the handler's
-isolate while the workers code.
+worker needs about 230 MB at level 5, so the number of workers is also
+bounded by a memory limit (`zxWorkerMemory` against `-mmemuse`, by default
+min(75% of the available memory, the available memory minus 1.5 GiB)).
+The per file SHA-256 and TLSH are computed on the handler's isolate while
+the workers code.
+
+### .zx, dedup
+
+`zx_writer.dart` with 64 KiB chunks, LZMA2 level 5 in 16 MiB blocks, 4
+workers, AOT, this machine (the trees are in `ref/`); dedup on against
+`-mdedup=off`:
+
+| input | off | on | dedup found |
+|---|---|---|---|
+| cmix and cmix-lowmem (two versions of a tree, 14.5 MB) | 5.04 MB, 4.0 s | 5.05 MB, 2.9 s | 6.1 MB |
+| the LZMA SDK twice (16.1 MB) | 1.93 MB, 5.1 s | 1.94 MB, 3.3 s | 8.1 MB |
+| libarchive, lhasa, rars, libarchive again (78.5 MB) | 34.0 MB, 8.2 s | 22.0 MB, 7.6 s | 28.4 MB |
+| cmix-lowmem appended to an archive of cmix (7.0 MB new) | 4.76 MB new | 0.31 MB new, 0.5 s | 6.1 MB |
+
+Copies within one 16 MiB block are already found by LZMA2 (its window is
+the block), so there dedup saves time (the duplicate data is not coded)
+and not size; copies further apart, and data met again in a later
+generation, are stored once. Most of these duplicates are whole files,
+found by the whole-file check (same size and SHA-256).
+
+The cost is on the handler's isolate: the fragmenter and a SHA-256 per
+chunk. On 100 MB of random data stored (`-mx0`, one thread, without TLSH)
+the write takes 1.82 s with dedup against 0.95 s without, so chunking and
+hashing run at about 115 MB/s, far above the LZMA2 workers; the chunk
+table adds 62 KB per 100 MB of unique data to every Index. Memory: the
+chunk index costs about 70 bytes per chunk (about 1.1 GB per TB of unique
+data).
 
 ### LZMA against the SDK itself
 

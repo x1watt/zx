@@ -2040,6 +2040,16 @@ List<MapEntry<String, String>> _props(
     r.add(MapEntry('he', he ? 'on' : 'off'));
   }
   if (fmt == 'zx') {
+    final c = o.compression;
+    if (c != null) {
+      for (final e in c.toSwitches().entries) {
+        r.add(MapEntry(e.key, e.value));
+      }
+    }
+    final dd = o.dedup;
+    if (dd != null) r.add(MapEntry('dedup', dd ? 'on' : 'off'));
+    final ml = o.memoryLimit;
+    if (ml != null) r.add(MapEntry('memuse', '${ml}b'));
     final vs = o.volumeSizes;
     if (vs.isNotEmpty) r.add(MapEntry('vsizes', vs.join(',')));
     for (final d in o.volumeDirs) {

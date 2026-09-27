@@ -9,7 +9,9 @@ import 'package:zx/zx.dart';
 
 import '../formats.dart';
 import '../services.dart';
+import '../settings.dart';
 import 'compression_form.dart';
+import 'zx_compression.dart';
 
 /// A list of files and folders with buttons to add more.
 class SourceList extends StatelessWidget {
@@ -148,10 +150,14 @@ Future<AddRequest?> showAddDialog(
   required ZxCapabilities caps,
   required int defaultLevel,
   required FilePicker picker,
+  ZxPrefs zxDefaults = const ZxPrefs(),
+  Estimator estimator = ZxArchive.estimate,
 }) {
   return showDialog<AddRequest>(
     context: context,
     builder: (_) => _AddDialog(
+      zxDefaults: zxDefaults,
+      estimator: estimator,
       sources: [...sources],
       folders: {...folders},
       archiveName: archiveName,
@@ -172,7 +178,11 @@ class _AddDialog extends StatefulWidget {
   final ZxCapabilities caps;
   final int defaultLevel;
   final FilePicker picker;
+  final ZxPrefs zxDefaults;
+  final Estimator estimator;
   const _AddDialog({
+    required this.zxDefaults,
+    required this.estimator,
     required this.sources,
     required this.folders,
     required this.archiveName,
@@ -188,7 +198,10 @@ class _AddDialog extends StatefulWidget {
 }
 
 class _AddDialogState extends State<_AddDialog> {
-  late final _settings = CompressionSettings(level: widget.defaultLevel);
+  late final _settings = CompressionSettings(
+    level: widget.defaultLevel,
+    zx: widget.zxDefaults,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -228,6 +241,8 @@ class _AddDialogState extends State<_AddDialog> {
                 settings: _settings,
                 canEncrypt: widget.caps.canEncrypt,
                 canEncryptNames: false,
+                sources: widget.sources,
+                estimator: widget.estimator,
               ),
               const SizedBox(height: 8),
               Text(
@@ -279,10 +294,14 @@ Future<NewArchiveRequest?> showNewArchiveDialog(
   required String formatId,
   required int defaultLevel,
   required FilePicker picker,
+  ZxPrefs zxDefaults = const ZxPrefs(),
+  Estimator estimator = ZxArchive.estimate,
 }) {
   return showDialog<NewArchiveRequest>(
     context: context,
     builder: (_) => _NewArchiveDialog(
+      zxDefaults: zxDefaults,
+      estimator: estimator,
       folder: folder,
       sources: [...sources],
       folders: {...folders},
@@ -299,7 +318,11 @@ class _NewArchiveDialog extends StatefulWidget {
   final Set<String> folders;
   final int defaultLevel;
   final FilePicker picker;
+  final ZxPrefs zxDefaults;
+  final Estimator estimator;
   const _NewArchiveDialog({
+    required this.zxDefaults,
+    required this.estimator,
     required this.folder,
     required this.sources,
     required this.folders,
@@ -316,7 +339,10 @@ class _NewArchiveDialogState extends State<_NewArchiveDialog> {
   late NewFormat _format = newFormatById(widget.formatId);
   late final _folder = TextEditingController(text: widget.folder);
   late final _name = TextEditingController(text: _suggestName());
-  late final _settings = CompressionSettings(level: widget.defaultLevel);
+  late final _settings = CompressionSettings(
+    level: widget.defaultLevel,
+    zx: widget.zxDefaults,
+  );
   bool _nameEdited = false;
   String? _error;
 
@@ -403,6 +429,7 @@ class _NewArchiveDialogState extends State<_NewArchiveDialog> {
                     flex: 2,
                     child: DropdownButtonFormField<String>(
                       key: const Key('new-format'),
+                      isExpanded: true,
                       initialValue: _format.id,
                       decoration: const InputDecoration(
                         labelText: 'Format',
@@ -467,6 +494,8 @@ class _NewArchiveDialogState extends State<_NewArchiveDialog> {
                 key: ValueKey(_format.id),
                 format: _format,
                 settings: _settings,
+                sources: widget.sources,
+                estimator: widget.estimator,
               ),
               if (_error != null) ...[
                 const SizedBox(height: 12),

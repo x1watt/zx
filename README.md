@@ -50,13 +50,13 @@ function, and it would not exist without it.
 | **lhasa**: the LHA decoders (`lib/src/codec/lzh`) | **Simon Howard**: <https://github.com/fragglet/lhasa>. ISC license. |
 | **PPMd var.I**, zip method 98 (`lib/src/codec/ppmd8`) | **Dmitry Shkarin** (2001), as ported to C by Igor Pavlov. Public domain. |
 | **BLAKE2sp**, the RAR5 file hash | **Samuel Neves**, the BLAKE2 reference code. CC0 1.0. |
-| **zpaq**: the ZPAQ journaling format, libzpaq, the ZPAQL machine (`lib/src/zpaq`, vendored from the author's zpaq-flutter port) | **Matt Mahoney**: <http://mattmahoney.net/dc/zpaq.html>. Public domain. zpaq 7.15 is the specification. |
+| **zpaq**: the ZPAQ journaling format, libzpaq, the ZPAQL machine (`lib/src/zpaq`, vendored from the author's zpaq-flutter port); its content-defined fragmenter also cuts the chunks of .zx dedup (`lib/src/format/zx/zx_dedup.dart`) | **Matt Mahoney**: <http://mattmahoney.net/dc/zpaq.html>. Public domain. zpaq 7.15 is the specification. |
 | **zpaqfranz**: the per file attribute extension (hashes and CRC-32) and its tables | **Franco Corbelli**: <https://github.com/fcorbelli/zpaqfranz>. MIT. |
 | **divsufsort** (in libzpaq), **scrypt** (the zpaq `-key` derivation, also the .zx key derivation) | **Yuta Mori** (MIT) and **Colin Percival** (BSD 2-clause). |
 | **TLSH**, the similarity digest of .zx entries (`lib/src/util/tlsh.dart`) | **Jonathan Oliver**, **Chun Cheng** and **Yanggui Chen** (Trend Micro): "TLSH: A Locality Sensitive Hash" (2013), <https://github.com/trendmicro/tlsh>. Apache 2.0 or BSD 3-clause; used under the BSD license. |
 | **zcm**, the experimental context mixing codecs (`lib/src/codec/zcm`): paq8 and lpaq (StateMap, APM, ContextMap, mixer, match, word, sparse, record, indirect, DMC and x86 models, the arithmetic coder) | **Matt Mahoney** (paq8, lpaq1: <http://mattmahoney.net/dc/>), with **Alexander Rhatushnyak** and **Serge Osnach** (paq8 exe and model work). GNU GPL. |
-| zcm: the paq8px state table, byte history context map, char group, indirect, E8/E9 transform and SSE designs | the **paq8px** authors: Jan Ondrus, **Marcio Pais**, **Andrew Epstein**, **Zoltan Gotthardt**, Simon Berger, Moises Cardona, Surya Kandau and others (<https://github.com/hxim/paq8px>). GNU GPL. |
-| zcm: the LSTM byte model, byte models turned into bit predictions | **Byron Knoll** (cmix, <https://github.com/byronknoll/cmix>, and lstm-compress). GNU GPL v3. |
+| zcm: the paq8px state table, byte history context map, char group, indirect, word, chart, nest, XML and x86 models, image and audio models, E8/E9 transform, SSE stages and APMPost | the **paq8px** authors: Jan Ondrus, **Marcio Pais** (image models from his Emma, audio models), **Andrew Epstein**, **Zoltan Gotthardt**, **Sebastian Lehmann** (the OLS and LMS predictors), Simon Berger, Moises Cardona, Surya Kandau and others (<https://github.com/hxim/paq8px>); the audio model follows **Florin Ghido**'s stereo audio predictor. GNU GPL. |
+| zcm: the LSTM byte model, byte models turned into bit predictions, the English dictionary transform and its word list | **Byron Knoll** (cmix, <https://github.com/byronknoll/cmix>, and lstm-compress). GNU GPL v3. |
 | zcm: PPMd var.H as a byte predictor | **Dmitry Shkarin** (PPMd), through the LZMA SDK port in `lib/src/codec/ppmd`. |
 
 The 7z, xz and lzma code comes only from the public domain LZMA SDK; the
@@ -354,10 +354,36 @@ reading any data.
   PPMd and an optional LSTM (`-m0=zcm:level=3`, `-m0=zcm:cmix:mem=4g`;
   `lib/src/codec/zcm`, `docs/performance.md`). An archive that uses it
   can only be read by the zx version that wrote it or a later one.
+- **Compression settings** (zx switches, not in 7-Zip): `-m0=zcm:auto`
+  chooses the zcm level, its memory and the number of workers for this
+  machine and this input, and prints the choice before compressing
+  (`zcm level 6, 1.2 GiB, 2 threads, estimated 3 min`; `-bb1` adds the
+  machine, the budget and the reason). The choice is the strongest level
+  whose estimated time fits `-mtime` (`90s`, `10m`, `2h`, `1h30m`, or the
+  presets `fast`, `balanced` (the default) and `max`, about 500, 100 and
+  10 KB/s of input, and at least 5 s, 30 s and 5 min) within the memory zx may use: `-mmem=SIZE`, or 75% of
+  the available memory and at most the available memory less 1.5 GiB
+  (the default of `-mmemuse`, whose estimate the choice uses, so the
+  memory guard never has to cut its workers). The workers each code one
+  block (`-mmt`, `-mbs`, `-mmemuse` bound the choice when given). `-mcal` measures this machine first (a quarter of a
+  second) instead of the nominal speeds of `docs/performance.md`.
+  `-mtime` or `-mcal` without a method means `-m0=zcm:auto`. With a
+  fixed level, `-mmem` is the model memory of each block and
+  `-mlstm[=CELLS/LAYERS/HORIZON]` adds the LSTM of level 9 (with auto it
+  sizes the LSTM when it is chosen; `-mlstm-` never chooses it). `-mx`
+  takes names: with zcm `fast` (2), `normal` (4), `max` (6), `ultra` (8)
+  and `cmix` (9, with the LSTM), with the other methods `store` (0),
+  `fastest` (1), `fast` (3), `normal` (5), `max` (7), `ultra` (9). The
+  archive stores plain settings (`zcm:6:m1024`), so any machine decodes
+  it; decompression takes about as long as compression.
 - **Blocks** of 16 MiB (`-mbs=4k..64m`), solid by default (`-ms=off`: a
   file per block), coded in parallel by worker isolates (`-mmt`; by
-  default as many as half the processors and about 1 GiB of memory
-  allow). A damaged block fails only the files that use it; every block
+  default as many as half the processors). The workers of a write, an
+  extraction or a compaction keep their estimated memory (from the codec
+  settings: the LZMA dictionary, the PPMd model, the zpaq method, the zcm
+  budget) under `-mmemuse=SIZE` (`4g`, or `p50` for half the RAM), by
+  default 75% of the available memory and at most the available memory
+  less 1.5 GiB; fewer blocks are coded at once when they would not fit. A damaged block fails only the files that use it; every block
   has a check (`-mcheck=xxh64|crc32c|sha256|blake2sp|none`).
 - **Generations**: every `a`, `u`, `d` or `rn` appends a generation in
   place, with its time; the old bytes are never rewritten, and an
@@ -368,9 +394,18 @@ reading any data.
   -mtimeline=path` lists the versions of one file with the generation
   (and date) that wrote each and the one that replaced or deleted it.
   `a -mcompact[=N] x.zx` (without file names) rewrites the archive with
-  the data of the last N generations only (1 by default); `-mcompact`
-  with an update compacts after it. `l -slt` shows `Wasted`, the bytes a
-  compaction frees.
+  the data of the last N generations only (1 by default; blocks used in
+  part are repacked); `-mcompact` with an update compacts after it. `l
+  -slt` shows `Wasted`, the bytes a compaction frees.
+- **Dedup** (on by default, `-mdedup=off`): every file is cut into chunks
+  of about 64 KiB where its content says (zpaq's fragmenter,
+  `-mchunk=4k..4m`), and a chunk already stored, in this update or in an
+  earlier generation, is stored once; a file with the size and SHA-256 of
+  a stored one reuses its data at once. Copies, renamed or moved files,
+  files sharing parts and data added again later cost almost nothing (a
+  second version of a 7 MB source tree added as a new generation: 0.3 MB).
+  The archive keeps a table of its chunks for the next updates; it is
+  left out of a clear index of an encrypted archive.
 - **Hashes**: every file has its SHA-256 (sorted in a lookup table) and a
   TLSH digest (similar files, `ZxArchive.findSimilar`).
 - **Encryption**: `-p` (scrypt, AES-256-CTR, HMAC-SHA-256); the names are
@@ -388,6 +423,9 @@ reading any data.
 zx a -m0=PPMd8:o=8:mem=256m notes.zx notes/
 zx a -mf=ARM64 -m0=LZMA2:d=64m firmware.zx build/
 zx a -m0=zcm:level=6 -mmt2 texts.zx texts/
+zx a -m0=zcm:auto -mtime=2h -mmem=4g corpus.zx corpus/
+zx a -mtime=max -mcal -bb1 notes.zx notes/
+zx a -mx=ultra -m0=zcm -mmem=1g logs.zx logs/
 zx a -v4g -v25g -mvdir=/mnt/disk1:100g -mvdir=/mnt/disk2:full big.zx data/
 zx l -mvsearch=/mnt/disk2 /mnt/disk1/big.zx.001
 zx l -mtimeline=docs/plan.txt backup.zx
@@ -395,8 +433,17 @@ zx l -mtimeline=docs/plan.txt backup.zx
 
 In the library: `ZxArchive.create`, `open(version:, date:,
 searchDirs:)`, `add`, `delete`, `rename`, `extract`, `test`, `compact`,
-`timeline`, `findBySha256`, `findSimilar`, and `ZxOptions.volumeSizes` and
-`volumeDirs`; the synchronous building blocks (`ZxWriter`,
+`timeline`, `findBySha256`, `findSimilar`, and `ZxOptions.volumeSizes`,
+`volumeDirs` and `compression`: `ZxCompression.auto(timeBudget:, speed:,
+memoryBudget:, calibrate:)` or `ZxCompression.manual(zcm: ZcmOptions(...))`
+/ `manual(chain: 'BCJ LZMA2:d=64m')`. `ZxArchive.estimate(sources,
+options:)` tells, without compressing, what an update would choose and
+cost: the zcm level, threads, estimated time and peak memory, a range of
+output sizes (from a 64 KiB sample of the input, which also measures this
+machine's speed) and warnings (more memory than the machine can spare,
+hours of work); its `compression` pins those settings for the update.
+`ZxOptions.dedup` and `memoryLimit` give `-mdedup` and `-mmemuse`.
+The synchronous building blocks (`ZxWriter`,
 `ZxArchiveReader`, `ZxHandler`, `Tlsh`) are exported by `package:zx/zx.dart`.
 
 ### Nested archives
@@ -598,8 +645,9 @@ dart test
 Tests that compare with `/usr/bin/7z` or `xz` are skipped when those are
 not installed. The zpaq interop tests (`test/zpaq_test.dart`) look for
 `zpaq` and `zpaqfranz` on the PATH or in `ZPAQ_BIN` and `ZPAQFRANZ_BIN`.
-The .zx tests are `test/zx_format_test.dart`, `test/zx_generations_test.dart`
-and `test/zx_tlsh_test.dart` (TLSH vectors made with the reference
+The .zx tests are `test/zx_format_test.dart`, `test/zx_generations_test.dart`,
+`test/zx_dedup_test.dart` (dedup, compaction and the memory guard) and
+`test/zx_tlsh_test.dart` (TLSH vectors made with the reference
 `tlsh_unittest` tool; a zstd block is made with `zstd` when it is
 installed). The desktop app has widget tests and end to end tests that
 drive the real Linux app against real archives:

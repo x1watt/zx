@@ -9,6 +9,7 @@ import 'dart:typed_data';
 
 import '../../io/streams.dart';
 import '../../util/crc32c.dart';
+import '../../util/xxhash.dart';
 import '../../version.dart';
 
 /// The magic bytes at the start of every .zx file (and volume).
@@ -133,6 +134,7 @@ abstract final class ZxRec {
   static const entry = 0x21;
   static const shaTable = 0x30;
   static const tlshList = 0x32;
+  static const chunkTable = 0x34;
   static const prevIndex = 0x40;
   static const generation = 0x42;
   static const generationList = 0x44;
@@ -1119,6 +1121,63 @@ class ZxVolumeInfo {
   const ZxVolumeInfo(this.number, this.name, this.size, this.xxh64);
 }
 
+/// The chunk table of a deduplicating writer (Index record 0x34, section
+/// 6.4): where each stored chunk is and its SHA-256, so that a later
+/// generation stores a chunk it meets again only once.
+class ZxChunkTable {
+  /// xxHash64 of the payload of the block table record (0x12) of the
+  /// Index the table was written for. A table whose value differs from
+  /// the block table of its Index is stale (an older writer renumbered
+  /// the blocks) and MUST be ignored.
+  final int fingerprint;
+
+  /// Flat triples: block, offset in block, length; sorted by block, then
+  /// offset.
+  final Int64List locs;
+
+  /// 32 bytes (SHA-256) per chunk.
+  final Uint8List sha;
+  const ZxChunkTable(this.fingerprint, this.locs, this.sha);
+
+  int get length => locs.length ~/ 3;
+
+  /// The record payload: vint count, u64 fingerprint, then per chunk vint
+  /// block_delta (block minus the previous chunk's block, the first one
+  /// from 0), vint offset, vint length, bytes(32) sha256.
+  void write(ZxBytes x, int fp) {
+    final n = length;
+    x.vint(n);
+    x.u64(fp);
+    var prev = 0;
+    for (var i = 0; i < n; i++) {
+      final b = locs[3 * i];
+      x.vint(b - prev);
+      prev = b;
+      x.vint(locs[3 * i + 1]);
+      x.vint(locs[3 * i + 2]);
+      x.bytes(sha, 32 * i, 32 * i + 32);
+    }
+  }
+
+  static ZxChunkTable read(ZxRead r) {
+    final n = r.count(35);
+    final fp = r.u64();
+    final locs = Int64List(3 * n);
+    final sha = Uint8List(32 * n);
+    var b = 0;
+    for (var i = 0; i < n; i++) {
+      b += r.vint();
+      final off = r.vint(), len = r.vint();
+      if (b < 0 || len == 0) zxDamaged('bad chunk table');
+      locs[3 * i] = b;
+      locs[3 * i + 1] = off;
+      locs[3 * i + 2] = len;
+      sha.setRange(32 * i, 32 * i + 32, r.bytes(32));
+    }
+    return ZxChunkTable(fp, locs, sha);
+  }
+}
+
 /// The Index of one generation (section 6).
 class ZxIndex {
   final Map<int, ZxChain> chains = {};
@@ -1130,6 +1189,13 @@ class ZxIndex {
 
   /// (tlsh, entry number) pairs (record 0x32).
   List<(String, int)>? tlshList;
+
+  /// The chunk table of the dedup writer (record 0x34); see [chunksValid].
+  ZxChunkTable? chunkTable;
+
+  /// xxHash64 of the payload of the block table record, as read (the
+  /// fingerprint a valid chunk table carries).
+  int blockTableHash = 0;
   ZxIndexLoc? previous;
   ZxGeneration? generation;
 
@@ -1144,6 +1210,13 @@ class ZxIndex {
 
   /// Non-critical records this reader does not know.
   final List<ZxRecord> other = [];
+
+  /// The chunk table, when there is one and it was written for this block
+  /// table (section 6.4).
+  ZxChunkTable? get chunksValid {
+    final t = chunkTable;
+    return t != null && t.fingerprint == blockTableHash ? t : null;
+  }
 
   Uint8List encode({required bool multiVolume}) {
     final w = ZxBytes(1024);
@@ -1205,17 +1278,18 @@ class ZxIndex {
       if (id == 0) continue;
       w.rec(ZxRec.chain, chains[id]!.write);
     }
-    w.rec(ZxRec.blockTable, (x) {
-      x.vint(blocks.length);
-      for (final b in blocks) {
-        if (multiVolume) x.vint(b.volume);
-        x.vint(b.offset);
-        x.vint(b.headerSize);
-        x.vint(b.packedSize);
-        x.vint(b.unpackedSize);
-        x.vint(b.chainId);
-      }
-    });
+    final bt = ZxBytes(16 + blocks.length * 12);
+    bt.vint(blocks.length);
+    for (final b in blocks) {
+      if (multiVolume) bt.vint(b.volume);
+      bt.vint(b.offset);
+      bt.vint(b.headerSize);
+      bt.vint(b.packedSize);
+      bt.vint(b.unpackedSize);
+      bt.vint(b.chainId);
+    }
+    blockTableHash = xxh64(bt.view());
+    w.record(ZxRec.blockTable, bt.view());
     for (final e in entries) {
       w.record(ZxRec.entry, e.encode());
     }
@@ -1239,6 +1313,11 @@ class ZxIndex {
         }
       });
     }
+    final ct = chunkTable;
+    if (ct != null) {
+      final fp = blockTableHash;
+      w.rec(ZxRec.chunkTable, (x) => ct.write(x, fp));
+    }
     for (final o in other) {
       w.record(o.type, o.payload);
     }
@@ -1257,6 +1336,7 @@ class ZxIndex {
           idx.chains[c.id] = c;
         case ZxRec.blockTable:
           if (sawEntry) zxDamaged('the block table after the entries');
+          idx.blockTableHash = xxh64(rec.payload);
           final n = r.count(5);
           final list = <ZxBlockRef>[];
           for (var i = 0; i < n; i++) {
@@ -1277,6 +1357,8 @@ class ZxIndex {
         case ZxRec.tlshList:
           final n = r.count(2);
           idx.tlshList = [for (var i = 0; i < n; i++) (r.string(), r.vint())];
+        case ZxRec.chunkTable:
+          idx.chunkTable = ZxChunkTable.read(r);
         case ZxRec.prevIndex:
           final vol = multiVolume ? r.vint() : 0;
           idx.previous = ZxIndexLoc(vol, r.vint(), r.vint());

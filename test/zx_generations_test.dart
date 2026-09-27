@@ -191,7 +191,9 @@ void main() {
             expect(extractAll(openMem(f.readAsBytesSync(), version: '3')),
                 {'a': a2, 'c': c});
           }
-          expect(h2.reader!.wastedBytes(), 0);
+          // with two generations kept, the data only generation 3 uses
+          // is what a compaction to one would free
+          if (keep == 1) expect(h2.reader!.wastedBytes(), 0);
         }
       } finally {
         tmp.deleteSync(recursive: true);

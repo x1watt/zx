@@ -403,6 +403,29 @@ class UpdateCallbackConsole extends UpdateCallbackUI2 with CallbackConsoleBaseMi
 
   // not in 7-Zip
   @override
+  void zxInfo(String message, {int level = 0}) {
+    if (base.logLevel < level) return;
+    final so = base.so;
+    if (so == null) return;
+    base.closePercents2();
+    so.write('$message\n');
+    so.flush();
+  }
+
+  // not in 7-Zip
+  @override
+  void zxError(String message) {
+    base.closePercents2();
+    final se = base.se;
+    if (se != null) {
+      base.so?.flush();
+      se.write('\nERROR: $message\n');
+      se.flush();
+    }
+  }
+
+  // not in 7-Zip
+  @override
   void zxWarning(String message) {
     base.closePercents2();
     final se = base.se;

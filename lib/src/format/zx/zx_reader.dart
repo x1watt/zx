@@ -649,20 +649,47 @@ class ZxArchiveReader {
     return names.join(' ');
   }
 
-  /// Bytes of blocks no entry of the kept generations uses (the space a
-  /// compaction frees).
+  /// The space a compaction to the last generation frees, about: the
+  /// blocks no entry uses, and the share of the unused bytes of the blocks
+  /// used in part (a compaction repacks them).
   int wastedBytes() {
-    final used = <int>{};
+    // per block: the (start, end) ranges the entries use
+    final used = <int, List<int>>{};
     for (final e in lastIndex.entries) {
-      for (var i = 0; i < e.extents.length; i += 3) {
-        used.add(e.extents[i]);
+      final x = e.extents;
+      for (var i = 0; i < x.length; i += 3) {
+        if (x[i + 2] == 0) continue;
+        (used[x[i]] ??= <int>[])
+          ..add(x[i + 1])
+          ..add(x[i + 1] + x[i + 2]);
       }
     }
-    var w = 0;
+    var w = 0.0;
     for (var i = 0; i < lastIndex.blocks.length; i++) {
-      if (!used.contains(i)) w += lastIndex.blocks[i].totalSize;
+      final ref = lastIndex.blocks[i];
+      final l = used[i];
+      if (l == null) {
+        w += ref.totalSize;
+        continue;
+      }
+      final n = l.length ~/ 2;
+      final order = List<int>.generate(n, (k) => k)
+        ..sort((a, b) => l[2 * a] - l[2 * b]);
+      var covered = 0, end = 0;
+      for (final k in order) {
+        var s = l[2 * k];
+        final e = l[2 * k + 1];
+        if (s < end) s = end;
+        if (e > s) {
+          covered += e - s;
+          end = e;
+        }
+      }
+      if (covered < ref.unpackedSize && ref.unpackedSize > 0) {
+        w += ref.totalSize * (ref.unpackedSize - covered) / ref.unpackedSize;
+      }
     }
-    return w;
+    return w.round();
   }
 
   void close() => volumes.close();

@@ -307,6 +307,14 @@ abstract class UpdateCallbackUI2 extends UpdateCallbackUI
   /// Not in 7-Zip: a warning of the zx writer (an experimental codec, a
   /// file that changed while it was read).
   void zxWarning(String message) {}
+
+  /// Not in 7-Zip: a note of the zx writer, shown at log level [level]
+  /// (-bb) and above: the zcm settings chosen for -m0=zcm:auto.
+  void zxInfo(String message, {int level = 0}) {}
+
+  /// Not in 7-Zip: the reason of an error of the zx handler (a bad
+  /// switch), shown before the error code.
+  void zxError(String message) {}
   void moveArcStart(String srcTempPath, String destFinalPath, int size,
       bool updateMode);
   void moveArcProgress(int total, int current);
@@ -419,7 +427,9 @@ void _compress(
   // SetProperties
   try {
     setArchiveProperties(outArchive, options.methodMode.properties);
-  } on SevenZipException {
+  } on SevenZipException catch (e) {
+    // not in 7-Zip: the reason of a bad zx switch
+    if (outArchive is ZxArc) callback.zxError(e.message);
     throw const SystemException(HRes.eInvalidArg);
   }
 
@@ -556,6 +566,14 @@ void _compress(
         ? path
         : (outArchive.openedPath ?? resolvePath(arc.path));
     ZxUpdateFileResultLike r;
+    outArchive.onZcmPlan = (p) {
+      if (p.inputSize == 0) return;
+      callback.zxInfo(p.summary);
+      callback.zxInfo(p.details, level: 1);
+      for (final w in p.warnings) {
+        callback.zxWarning('zcm: $w');
+      }
+    };
     try {
       final res = outArchive.updateFile(
           target, updatePairs2.length, updateCallbackSpec,

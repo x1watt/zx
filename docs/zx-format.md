@@ -97,8 +97,10 @@ version (section 11) among: the format version itself, every codec and
 filter used, every critical record type used, every required feature set.
 It MUST set in `required_features` exactly the required features it uses
 (for the Header: those of the first generation and the `appendable`
-bit; zx also sets `solid` whenever solid blocks are enabled). The same rules give the
-requirements record of every Index.
+bit; zx also sets `solid` whenever solid blocks are enabled, and `dedup`
+whenever deduplication is). The same rules give the requirements record of
+every Index, where zx sets `solid` and `dedup` only when the extents of the
+generation need them (section 6.4).
 
 ### 3.2 Feature bits
 
@@ -257,6 +259,7 @@ location is given by the Footer. The content is a sequence of records:
 | 0x21 | yes | entry (section 6.2); one per item, in listing order |
 | 0x30 | no | SHA-256 lookup table (section 6.5) |
 | 0x32 | no | TLSH lookup list (section 6.5) |
+| 0x34 | no | chunk table (section 6.4) |
 | 0x40 | no | previous Index location (section 9.1) |
 | 0x42 | no | generation number, time and comment (section 9.1) |
 | 0x44 | no | generation list (section 9.1) |
@@ -347,7 +350,71 @@ form.
 With the `dedup` required feature, identical chunks are stored once (in
 data or dedup chunk store blocks) and several entries' extents point to
 them. The chunking algorithm is a writer choice and is not part of the
-format. (zx reads such files; its writer does not deduplicate yet.)
+format.
+
+A generation needs `dedup` (in its requirements record 0x46) when two
+extents of its entries, of one entry or of two, share bytes of a block. A
+reader needs nothing more than following the extents: the same block range
+may be read for several entries, and a block may be used in part.
+
+Dedup chunk store blocks (block_type 3) hold chunks one after the other.
+They are listed in the block table and coded with a chain like data
+blocks.
+
+A writer that deduplicates across generations keeps a chunk table in the
+Index:
+
+```
+ChunkTable (record 0x34) =
+  vint chunk_count,
+  u64  blocks_fingerprint,
+  chunk_count x ( vint block_delta, vint offset, vint length,
+                  bytes(32) sha256 )
+```
+
+- A chunk is `length` (at least 1) bytes at `offset` of block number
+  `block`; it lies in one block (`offset + length` is at most the block's
+  `unpacked_size`). `block` is the previous chunk's block plus
+  `block_delta` (the first chunk's block is its `block_delta`). Chunks are
+  sorted by block, then offset, and do not overlap. `sha256` is the
+  SHA-256 of the chunk's bytes.
+- `blocks_fingerprint` is the xxHash64 (seed 0) of the payload of the
+  block table record (0x12) of the same Index, as written. A writer MUST
+  ignore a chunk table whose fingerprint differs (a writer that did not
+  know the record copied it after renumbering the blocks) and MUST check
+  every chunk against the block table before it references it.
+- The table is an aid to writers: readers ignore it. It lists chunks that
+  a later generation may reference; they need not be used by an entry of
+  this generation (zx keeps the chunks of deleted files until a
+  compaction). A new generation MAY carry the table forward (with the
+  fingerprint of its own block table) and add its chunks.
+- A clear Index of an encrypted archive MUST NOT hold a chunk table
+  (section 7).
+
+zx (informative):
+
+- Chunking is the fragmenter of zpaq 7.15 (Matt Mahoney, public domain):
+  a hash `h = (h + c + 1) * M` over the bytes since the last cut, where
+  `M` is 314159265 when an order 1 table (the last byte that followed the
+  previous byte) predicted `c`, else 271828182, both mod 2^32; a cut
+  follows the byte where `h < 2^(32 - k)` once the chunk has at least
+  2^k / 16 bytes, or at 2^k * 127 / 16 bytes; the hash, the previous byte
+  and the table restart at every cut and every file. The average chunk is
+  2^k bytes, k = 16 (64 KiB) by default (`-mchunk=4k..4m`); a chunk is
+  also at most the block size.
+- Every chunk gets its SHA-256. A chunk known (from the chunk table of
+  the last generation or from this one) is referenced; a new one is
+  appended to the dedup chunk store block being filled, which is written
+  when the next chunk does not fit (a chunk is never cut by a block
+  boundary, except when a block is cut to fit a volume, section 10.1;
+  such a chunk is left out of the table).
+- A file whose size and SHA-256 are those of a file of the last
+  generation or of this one reuses its extents, without chunking. zx reads
+  a file of at most 64 MiB whole to check this when a stored file has the
+  same size.
+- Streamed files (section 8) do not deduplicate: an entry's data is
+  contiguous in them. `-mdedup=off` turns deduplication off; the chunk
+  table of the last generation is then carried forward unchanged.
 
 ### 6.5 Lookup tables
 
@@ -394,8 +461,8 @@ Kdf = vint kdf_id, vint params_size, bytes(params_size)
   sizes are hidden. zx encrypts the metadata by default when it is given
   a password (`-mhe=off` keeps the names visible).
 - A clear Index of an encrypted archive MUST NOT hold SHA-256 or TLSH
-  attributes, nor the lookup tables: they would identify the encrypted
-  content.
+  attributes, nor the lookup tables and the chunk table (section 6.4):
+  they would identify the encrypted content.
 
 Other KDFs (for example Argon2id) and ciphers are added as new ids with
 their "introduced in" versions.
@@ -513,9 +580,17 @@ compacted. Compaction is an operation of the writer, not a structure:
   new block table, fresh Indexes and Footer.
 - Blocks are copied as they are, without recompression, when all of their
   content is still referenced. Blocks that are only partly referenced
-  (solid or dedup blocks) MAY be repacked; the writer chooses. (zx copies
-  them whole; an encrypted block stays valid since its MAC does not cover
-  its position.)
+  (solid or dedup blocks) MAY be repacked; the writer chooses. (An
+  encrypted block copied whole stays valid since its MAC does not cover
+  its position.) zx repacks them: the referenced ranges of the partly used
+  blocks of one chain are decoded, put one after the other into new
+  blocks of the block size (a range goes whole to the next block when it
+  does not fit, and is cut only when it is larger than a block), coded
+  again with the chain rebuilt from the old chain's props (or the chain
+  of `-m0` when it is given) and written after the copied blocks. The
+  extents and the chunk tables of the kept generations follow the ranges
+  to their new places; a chunk table keeps only the chunks that lie
+  whole in referenced bytes.
 - The compacted file keeps the archive_id and restarts the generation
   history at the kept generations (their numbers and times are preserved).
   zx writes the blocks, then for each kept generation, oldest first, its
@@ -523,7 +598,9 @@ compacted. Compaction is an operation of the writer, not a structure:
 - Writers SHOULD report how much space compaction would free (the sum of
   unreferenced block bytes) so tools can suggest it, and MAY compact
   automatically when the wasted fraction exceeds a user setting. (zx
-  shows it as `Wasted` in `l -slt`.)
+  shows it as `Wasted` in `l -slt`: the blocks the last generation does
+  not use, and the packed share of the unused bytes of the blocks it uses
+  in part.)
 
 ## 10. Multi-volume sets
 
@@ -677,7 +754,12 @@ content and level) will be decided after benchmarking the candidates on
 representative data (text, source code, binaries, firmware, media), and
 documented separately. Until then zx 0.5.0 writes LZMA2 at the level of
 `-mx` (5 by default, the dictionary at most the block), solid 16 MiB
-blocks, xxHash64 block checks, and metadata with LZMA2.
+blocks, xxHash64 block checks, and metadata with LZMA2, and deduplicates
+with 64 KiB chunks (section 6.4). The blocks are coded by worker isolates,
+as many as `-mmt` gives and as fit in a memory limit (`-mmemuse`, by
+default 75% of the available memory and at most the available memory
+minus 1.5 GiB): each worker's memory is estimated from the chain (the
+LZMA dictionary, the PPMd model, the zpaq method, the zcm budget).
 
 ## 13. Reading algorithm (informative)
 
@@ -688,7 +770,10 @@ blocks, xxHash64 block checks, and metadata with LZMA2.
 3. For each entry to extract: for each extent, decode (or reuse from a
    cache) its block, copy the range; verify the block check and, at the
    end, the entry SHA-256. zx decodes the blocks the entries need in
-   worker isolates, in the order the entries use them.
+   worker isolates, in the order the entries use them, and starts a
+   decoder only while the estimated memory of those in flight stays under
+   its limit (from the chain's props: the PPMd model size, the zcm
+   budget; one decoder always runs).
 
 ## 14. Footer
 
@@ -746,3 +831,23 @@ Changes made while implementing the draft in zx 0.5.0:
     zx 0.5.0 reads only (zstd, LZ4, LZO1X).
 12. The writer stores a block that its chain does not make smaller with
     chain 0; `0x76` is the current generation after a rename.
+
+Changes made in zx 0.5.0 when the writer learned deduplication (the
+format version and the reader requirements do not change: every reader
+of format version 1 follows shared extents, and the new record is not
+critical):
+
+13. **Chunk table** (Index record 0x34, section 6.4): the location, length
+    and SHA-256 of every chunk a deduplicating writer stored, with the
+    fingerprint of the block table it was written for, so that appended
+    generations deduplicate against all earlier data and a table made
+    stale by an older writer is detected. Not in a clear Index of an
+    encrypted archive.
+14. **When `dedup` is required**: when two extents of a generation share
+    bytes (section 6.4); the Header of a new archive has it when the
+    writer deduplicates, as `solid` when it writes solid blocks.
+15. **Dedup chunk store blocks** (type 3) are what zx writes with dedup:
+    chunks one after the other, never cut by a block boundary.
+16. **Compaction repacks** blocks that are only partly referenced (section
+    9.2) instead of copying them whole, and `Wasted` counts their unused
+    share.

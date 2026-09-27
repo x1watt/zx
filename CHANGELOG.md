@@ -1,3 +1,28 @@
+## Unreleased
+
+- **Compression settings for .zx** (zx switches): `-m0=zcm:auto` chooses
+  the zcm level, memory and workers for the machine and the input and
+  prints the choice (`zcm level 6, 1.2 GiB, 2 threads, estimated 3 min`,
+  details with `-bb1`); `-mtime=90s|10m|2h|fast|balanced|max` (the time
+  budget; alone it means zcm:auto), `-mmem=SIZE` (the zcm memory: the
+  budget of all workers with auto, the model of each block with a level),
+  `-mlstm[=C/L/H]` and `-mlstm-`, `-mcal` (measure the machine first),
+  named `-mx` levels (`-mx=ultra`: zcm 8, the other methods 9). A bad
+  zx switch prints its reason before E_INVALIDARG.
+- `ZxOptions.compression`: `ZxCompression.auto(timeBudget:, speed:,
+  memoryBudget:, calibrate:, allowLstm:, threads:)` and
+  `ZxCompression.manual(zcm: ZcmOptions(...) | chain: '...', threads:,
+  blockSize:)`; `ZxArchive.estimate(sources, options:)` returns the
+  chosen settings, the estimated time, peak memory and output size range
+  and warnings without compressing (`ZxEstimate`, with `compression` to
+  pin them). `ZcmOptions`, `zcmLevelByName`, `zcmDefaultMemoryMiB` and
+  `ZxAutoSpeed` are exported.
+- App: a Compression section for .zx archives in the New archive and Add
+  dialogs and in Settings (Auto with a speed preset or minutes and the
+  estimated choice; Manual with the method, zcm level names, memory with
+  the machine's safe maximum, LSTM and threads; warnings for memory and
+  long runs); the progress dialog shows the speed and the time left.
+
 ## 0.5.0
 
 - **.zx**, the format of zx itself (`docs/zx-format.md`, format version 1),

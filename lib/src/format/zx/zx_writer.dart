@@ -4,7 +4,11 @@
 // a fixed size (solid by default: entries share blocks, cut at the block
 // size), the blocks are coded in worker isolates (sync_pool.dart) and
 // written in order, each entry gets its SHA-256 and TLSH digest, and a
-// multi-volume set is split at block boundaries.
+// multi-volume set is split at block boundaries. With dedup (the default)
+// the data of each file is cut into chunks (zx_dedup.dart) and a chunk
+// already stored, in this generation or an earlier one, is referenced
+// instead of stored again. The number of workers is bounded by a memory
+// budget (zx_memory.dart).
 
 import 'dart:convert';
 import 'dart:io';
@@ -20,8 +24,13 @@ import '../../codec/lzma/lzma_coder.dart' show lzma2PropForDictSize;
 import 'zx_blocks.dart';
 import 'zx_codecs.dart';
 import 'zx_crypto.dart';
+import 'zx_dedup.dart';
 import 'zx_format.dart';
+import 'zx_memory.dart';
 import 'zx_reader.dart';
+
+export 'zx_memory.dart'
+    show zxWorkerMemory, zxDecodeMemory, zxWorkersFor, zxDefaultMemoryLimit;
 
 /// The default block size (16 MiB).
 const int zxDefaultBlockSize = 16 << 20;
@@ -101,28 +110,6 @@ int? zxFreeSpace(String dir) {
   }
 }
 
-/// An estimate of the memory one worker uses to code a block of
-/// [blockSize] bytes with [coders]: the block, its output, and the
-/// encoder's model (LZMA and LZMA2 about 11.5 times the dictionary, which
-/// is at most the block).
-int zxWorkerMemory(List<ZxCoderSpec> coders, int blockSize) {
-  var m = 3 * blockSize;
-  for (final c in coders) {
-    switch (c.codecId) {
-      case ZxCodecId.lzma || ZxCodecId.lzma2:
-        m += blockSize * 23 ~/ 2;
-      case ZxCodecId.ppmd7 || ZxCodecId.ppmd8:
-        final lv = c.config.level.clamp(1, 9);
-        m += 1 << (lv + 19);
-      case ZxCodecId.zpaq:
-        m += blockSize * 6;
-      default:
-        m += blockSize;
-    }
-  }
-  return m;
-}
-
 /// What a writer uses.
 class ZxWriteOptions {
   /// The coder chain of the data, in writing order (filters first).
@@ -150,12 +137,35 @@ class ZxWriteOptions {
   int scryptLog2N = zxDefaultScryptLog2N;
   int threads = defaultThreads();
 
-  /// [threads] was set by the caller (-mmt): no memory cap.
+  /// [threads] was set by the caller (-mmt): a warning says when the
+  /// memory limit lowers it.
   bool threadsExplicit = false;
 
-  /// The memory the workers may use together when [threads] is the
-  /// default (the estimate of [zxWorkerMemory]).
-  int memoryBudget = 1 << 30;
+  /// The memory the block workers may use together, in bytes (-mmemuse;
+  /// the estimate of [zxWorkerMemory] per worker). null: the default of
+  /// [zxDefaultMemoryLimit], min(75% of the available memory, the
+  /// available memory minus 1.5 GiB). The reader uses the same limit.
+  int? memoryLimit;
+
+  /// Old name of [memoryLimit].
+  int get memoryBudget => memoryLimit ?? zxDefaultMemoryLimit();
+  set memoryBudget(int v) => memoryLimit = v;
+
+  /// Deduplication (section 6.4, -mdedup): identical chunks of data are
+  /// stored once, also against the chunks of earlier generations, and a
+  /// file identical to one already stored reuses its extents. Not used in
+  /// streamed files (their entries' data is contiguous).
+  bool dedup = true;
+
+  /// log2 of the average chunk size of dedup, 12 to 22 (-mchunk; 16:
+  /// 64 KiB, as zpaq). Chunks are at least 1/16 and at most 127/16 of it,
+  /// and at most the block size.
+  int chunkLog2 = zxDefaultChunkLog2;
+
+  /// The coder chain was given by the caller (-m0, -mf): a compaction
+  /// repacks partly used blocks with it (otherwise with the chain of each
+  /// block).
+  bool codersSet = false;
   String? archiveComment;
   String generationComment = '';
 
@@ -403,17 +413,40 @@ class ZxWriteResult {
   final int packedBytes;
   final List<String> volumes;
   final int endPosition;
+
+  /// Dedup: bytes of new files that were not stored because an identical
+  /// chunk or file was stored already, chunks stored and chunks reused,
+  /// and files that reused a whole stored file.
+  final int dedupBytes;
+  final int storedChunks;
+  final int reusedChunks;
+  final int reusedFiles;
+
+  /// The number of block workers used (after the memory limit).
+  final int workers;
   const ZxWriteResult(this.generation, this.newBlocks, this.newBytes,
-      this.packedBytes, this.volumes, this.endPosition);
+      this.packedBytes, this.volumes, this.endPosition,
+      {this.dedupBytes = 0,
+      this.storedChunks = 0,
+      this.reusedChunks = 0,
+      this.reusedFiles = 0,
+      this.workers = 1});
 }
 
-// a new entry's data in the stream of new data
+// a new entry's data: flat triples (block, offset, length), where block
+// -1 is a position in the stream of new data (placed at the end)
 class _NewData {
   final ZxEntry entry;
-  final int start;
+  final List<int> pieces = [];
   int length = 0;
-  _NewData(this.entry, this.start);
+  _NewData(this.entry);
 }
+
+/// The largest file read whole for the whole-file dedup check.
+const int _wholeFileLimit = 64 << 20;
+
+/// The read size of the chunker.
+const int _chunkRead = 1 << 16;
 
 // a block in flight
 class _Pending {
@@ -471,6 +504,21 @@ class ZxWriter {
   int _packed = 0;
   bool _finished = false;
 
+  // dedup: the chunks known (old and new), the chunker and its buffer,
+  // the files a new identical file reuses (by the first bytes of their
+  // SHA-256: old entries or new _NewData), and the sizes among them
+  final bool _dedupOn;
+  ZxChunkIndex? _chunks;
+  ZxChunker? _chunker;
+  Uint8List? _cbuf;
+  final Uint8List _digest = Uint8List(32);
+  final Sha256 _chunkSha = Sha256();
+  final Map<int, List<Object>> _whole = {};
+  final Set<int> _sizes = {};
+  // the chunk table of the last generation, carried when dedup is off
+  ZxChunkTable? _carried;
+  int _dupBytes = 0, _storedChunks = 0, _reusedChunks = 0, _reusedFiles = 0;
+
   ZxWriter._(
       this.o,
       this.header,
@@ -485,7 +533,8 @@ class ZxWriter {
       this._earlierVolumes)
       : _pool = SyncJobPool(_threadsFor(o)),
         _firstNewBlock = _blocks.length,
-        _coders = o.level == 0 ? const [] : o.coders {
+        _coders = o.level == 0 ? const [] : o.coders,
+        _dedupOn = o.dedup && !o.streamed {
     if (o.blockSize < zxMinWriteBlockSize ||
         o.blockSize > zxMaxWriteBlockSize) {
       throw InvalidArgExceptionZx('zx: the block size must be 4 KiB to 64 MiB');
@@ -497,17 +546,32 @@ class ZxWriter {
             '$zxVersionString can read this archive');
       }
     }
+    if (_dedupOn) {
+      _chunks = ZxChunkIndex();
+      final ch = _chunker = ZxChunker(o.chunkLog2, maxLimit: o.blockSize);
+      _cbuf = Uint8List(ch.maxSize + _chunkRead);
+    }
   }
 
+  /// The number of block workers: [ZxWriteOptions.threads], fewer when
+  /// their estimated memory ([zxWorkerMemory]) exceeds the limit.
   static int _threadsFor(ZxWriteOptions o) {
-    var t = o.threads < 1 ? 1 : o.threads;
-    if (!o.threadsExplicit) {
-      final per = zxWorkerMemory(o.coders, o.blockSize);
-      final cap = o.memoryBudget ~/ (per < 1 ? 1 : per);
-      if (t > cap) t = cap < 1 ? 1 : cap;
+    final limit = o.memoryLimit ?? zxDefaultMemoryLimit();
+    final per = zxWorkerMemory(o.level == 0 ? const [] : o.coders, o.blockSize);
+    final t = zxWorkersFor(o.threads, per, limit);
+    if (per > limit) {
+      o.warnings.add('zx: one block worker needs about ${per >> 20} MiB, more '
+          'than the memory limit of ${limit >> 20} MiB (-mmemuse)');
+    } else if (t < o.threads && o.threadsExplicit) {
+      o.warnings.add('zx: $t block worker${t == 1 ? '' : 's'} instead of '
+          '${o.threads}: each needs about ${per >> 20} MiB and the memory '
+          'limit is ${limit >> 20} MiB (-mmemuse)');
     }
     return t;
   }
+
+  /// The number of block workers (after the memory limit).
+  int get workers => _pool.threads;
 
   /// The time of a new generation: now, or the previous time when the
   /// clock is behind it (section 9.1).
@@ -547,7 +611,8 @@ class ZxWriter {
     h.required = ZxFeature.appendable |
         (keys != null ? ZxFeature.encryption : 0) |
         (multi ? ZxFeature.multiVolume : 0) |
-        (o.solid ? ZxFeature.solid : 0);
+        (o.solid ? ZxFeature.solid : 0) |
+        (o.dedup && !o.streamed ? ZxFeature.dedup : 0);
     h.optional = (o.hashTable ? ZxOptFeature.hashTable : 0) |
         (o.tlsh ? ZxOptFeature.similarity : 0);
     h.minReaderVersion = _minReader(o.coders);
@@ -593,7 +658,79 @@ class ZxWriter {
         number,
         t,
         last.volumes ?? const [])
-      .._prevPaths = {for (final e in last.entries) e.path};
+      .._prevPaths = {for (final e in last.entries) e.path}
+      .._loadOld(last);
+  }
+
+  // the chunks and the files of the last generation, which new data can
+  // reuse (dedup); the chunks that do not fit the block table are left out
+  void _loadOld(ZxIndex last) {
+    final t = last.chunksValid;
+    final clear = keys != null && !header.encryptedMetadata;
+    if (!_dedupOn) {
+      _carried = clear ? null : t;
+      return;
+    }
+    final ix = _chunks!;
+    if (t != null) {
+      for (var i = 0; i < t.length; i++) {
+        final b = t.locs[3 * i], off = t.locs[3 * i + 1];
+        final len = t.locs[3 * i + 2];
+        if (b >= _blocks.length || off + len > _blocks[b].unpackedSize) {
+          continue;
+        }
+        if (ix.find(t.sha, len, 32 * i) >= 0) continue;
+        ix.add(t.sha, b, off, len, 32 * i);
+      }
+    }
+    for (final e in last.entries) {
+      final s = e.sha256;
+      if (e.kind != ZxKind.file ||
+          s == null ||
+          e.size == 0 ||
+          e.sparse != null ||
+          e.unsupported != null) {
+        continue;
+      }
+      var ok = true;
+      for (var k = 0; k < e.extents.length; k += 3) {
+        final b = e.extents[k];
+        if (b >= _blocks.length ||
+            e.extents[k + 1] + e.extents[k + 2] > _blocks[b].unpackedSize) {
+          ok = false;
+        }
+      }
+      if (ok) _addWhole(s, e.size, e);
+    }
+  }
+
+  void _addWhole(Uint8List sha, int size, Object ref) {
+    (_whole[ZxChunkIndex.keyOf(sha)] ??= []).add(ref);
+    _sizes.add(size);
+  }
+
+  // the pieces of a stored file with [sha] and [size], or null
+  List<int>? _findWhole(Uint8List sha, int size) {
+    final l = _whole[ZxChunkIndex.keyOf(sha)];
+    if (l == null) return null;
+    for (final x in l) {
+      if (x is ZxEntry) {
+        if (x.size == size && _sameHash(x.sha256!, sha)) return x.extents;
+      } else if (x is _NewData) {
+        if (x.length == size && _sameHash(x.entry.sha256!, sha)) {
+          return x.pieces;
+        }
+      }
+    }
+    return null;
+  }
+
+  static bool _sameHash(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   int get generation => _genNumber;
@@ -625,10 +762,12 @@ class ZxWriter {
       return 0;
     }
     if (!o.solid && _fill > 0) _flushBlock();
+    if (_dedupOn) return _addDedup(e, data, knownSize);
     if (o.streamed && knownSize == null && _fill > 0) _flushBlock();
-    final nd = _NewData(e, _streamPos);
+    final nd = _NewData(e);
+    final start = _streamPos;
     _new.add(nd);
-    _startOf[e] = _streamPos;
+    _startOf[e] = start;
     if (o.streamed) {
       // the inline record gives the size when it is known before
       e.size = knownSize ?? -1;
@@ -657,11 +796,122 @@ class ZxWriter {
       o.warnings.add('zx: ${e.path} got shorter while it was read');
     }
     nd.length = total;
+    if (total > 0) {
+      nd.pieces
+        ..add(-1)
+        ..add(start)
+        ..add(total);
+    }
     e.size = total;
     e.sha256 = sha.digest();
     e.tlsh = tl?.digest();
     if (o.streamed && knownSize == null && _fill > 0) _flushBlock();
     return total;
+  }
+
+  // a file with dedup: a file identical to one stored (same size and
+  // SHA-256) reuses its extents; otherwise its chunks are looked up and
+  // only the new ones are stored
+  int _addDedup(ZxEntry e, InStream data, int? knownSize) {
+    final nd = _NewData(e);
+    _new.add(nd);
+    final sha = Sha256();
+    final tl = o.tlsh ? Tlsh() : null;
+    var src = data;
+    if (knownSize != null &&
+        knownSize > 0 &&
+        knownSize <= _wholeFileLimit &&
+        _sizes.contains(knownSize)) {
+      // one more byte than the size tells a file that grew
+      final buf = Uint8List(knownSize + 1);
+      final n = readFully(data, buf, 0, buf.length);
+      final view = Uint8List.sublistView(buf, 0, n);
+      if (n == knownSize) {
+        final h = Sha256.hash(view);
+        final hit = _findWhole(h, n);
+        if (hit != null) {
+          nd.pieces.addAll(hit);
+          nd.length = n;
+          e.size = n;
+          e.sha256 = h;
+          e.tlsh = tl == null ? null : (tl..update(view)).digest();
+          _dupBytes += n;
+          _reusedFiles++;
+          _addWhole(h, n, nd);
+          return n;
+        }
+      }
+      src = n > knownSize
+          ? ConcatInStream([MemoryInStream(view), data])
+          : MemoryInStream(view);
+    }
+    final ch = _chunker!;
+    ch.reset();
+    final cb = _cbuf!;
+    var start = 0, scan = 0, fill = 0;
+    for (;;) {
+      if (scan == fill) {
+        if (cb.length - fill < _chunkRead && start > 0) {
+          cb.setRange(0, fill - start, cb, start);
+          fill -= start;
+          scan -= start;
+          start = 0;
+        }
+        var want = cb.length - fill;
+        if (want > _chunkRead) want = _chunkRead;
+        final n = src.read(cb, fill, want);
+        if (n <= 0) break;
+        fill += n;
+      }
+      final cut = ch.scan(cb, scan, fill);
+      if (cut < 0) {
+        scan = fill;
+        continue;
+      }
+      _chunk(nd, cb, start, cut - start, sha, tl);
+      start = scan = cut;
+    }
+    if (fill > start) _chunk(nd, cb, start, fill - start, sha, tl);
+    e.size = nd.length;
+    e.sha256 = sha.digest();
+    e.tlsh = tl?.digest();
+    if (nd.length > 0) _addWhole(e.sha256!, nd.length, nd);
+    return nd.length;
+  }
+
+  // one chunk of a file: referenced when known, else stored in the block
+  // being filled (a chunk is never cut by a block boundary)
+  void _chunk(
+      _NewData nd, Uint8List b, int off, int len, Sha256 sha, Tlsh? tl) {
+    sha.update(b, off, len);
+    tl?.update(b, off, off + len);
+    nd.length += len;
+    _chunkSha
+      ..update(b, off, len)
+      ..finalTo(_digest);
+    final ix = _chunks!;
+    final id = ix.find(_digest, len);
+    if (id >= 0) {
+      zxAddExtent(nd.pieces, ix.block(id), ix.offset(id), len);
+      _dupBytes += len;
+      _reusedChunks++;
+      return;
+    }
+    if (_fill + len > o.blockSize) _flushBlock();
+    if (_fill + len > _buf.length) {
+      var c = _buf.length * 2;
+      if (c < _fill + len) c = _fill + len;
+      if (c > o.blockSize) c = o.blockSize;
+      _buf = Uint8List(c)..setRange(0, _fill, _buf);
+    }
+    _buf.setRange(_fill, _fill + len, b, off);
+    final pos = _streamPos;
+    _fill += len;
+    _streamPos += len;
+    ix.add(_digest, -1, pos, len);
+    _storedChunks++;
+    zxAddExtent(nd.pieces, -1, pos, len);
+    if (_fill == o.blockSize) _flushBlock();
   }
 
   // makes room in the block for up to [want] bytes; returns how many
@@ -697,7 +947,11 @@ class ZxWriter {
     final data = Uint8List.fromList(Uint8List.sublistView(_buf, 0, _fill));
     final start = _blockStart;
     final len = _fill;
-    final type = _contribs > 1 ? ZxBlockType.solid : ZxBlockType.data;
+    final type = _dedupOn
+        ? ZxBlockType.chunks
+        : _contribs > 1
+            ? ZxBlockType.solid
+            : ZxBlockType.data;
     _blockStart += _fill;
     _fill = 0;
     _contribs = 0;
@@ -871,47 +1125,114 @@ class ZxWriter {
     return out;
   }
 
-  // the extents of each new entry from the blocks' ranges
+  // the extents of each new entry: its pieces, the positions in the stream
+  // of new data placed in the blocks
   void _computeExtents() {
-    var bi = 0;
     for (final nd in _new) {
       final ext = <int>[];
-      var pos = nd.start;
-      final end = nd.start + nd.length;
-      while (bi < _blockRange.length &&
-          _blockRange[bi].$1 + _blockRange[bi].$2 <= pos) {
-        bi++;
-      }
-      var j = bi;
-      while (pos < end) {
-        final (bs, bl) = _blockRange[j];
-        final take = (bs + bl < end ? bs + bl : end) - pos;
-        ext
-          ..add(_firstNewBlock + j)
-          ..add(pos - bs)
-          ..add(take);
-        pos += take;
-        if (pos >= bs + bl) j++;
+      final p = nd.pieces;
+      for (var i = 0; i < p.length; i += 3) {
+        if (p[i] >= 0) {
+          zxAddExtent(ext, p[i], p[i + 1], p[i + 2]);
+        } else {
+          _resolve(p[i + 1], p[i + 2], ext);
+        }
       }
       nd.entry.extents = Int64List.fromList(ext);
     }
   }
 
+  // the new block holding position [pos] of the stream of new data
+  int _blockAt(int pos) {
+    var lo = 0, hi = _blockRange.length - 1;
+    while (lo < hi) {
+      final mid = (lo + hi + 1) >> 1;
+      if (_blockRange[mid].$1 <= pos) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo;
+  }
+
+  // the extents of [len] bytes at [pos] of the stream of new data
+  void _resolve(int pos, int len, List<int> ext) {
+    var j = _blockAt(pos);
+    final end = pos + len;
+    while (pos < end) {
+      final (bs, bl) = _blockRange[j];
+      final take = (bs + bl < end ? bs + bl : end) - pos;
+      zxAddExtent(ext, _firstNewBlock + j, pos - bs, take);
+      pos += take;
+      j++;
+    }
+  }
+
+  // the chunk table of the new Index: the chunks known, placed; a chunk
+  // that a volume cut split between two blocks is left out
+  ZxChunkTable? _chunkTable() {
+    final ix = _chunks;
+    if (ix == null) return _carried;
+    final n = ix.length;
+    final locs = Int64List(3 * n);
+    final sha = Uint8List(32 * n);
+    var k = 0;
+    var sorted = true;
+    for (var id = 0; id < n; id++) {
+      var b = ix.block(id), off = ix.offset(id);
+      final len = ix.size(id);
+      if (b < 0) {
+        final j = _blockAt(off);
+        final (bs, bl) = _blockRange[j];
+        if (off + len > bs + bl) continue;
+        b = _firstNewBlock + j;
+        off -= bs;
+      }
+      if (k > 0 &&
+          (locs[3 * k - 3] > b ||
+              (locs[3 * k - 3] == b && locs[3 * k - 2] > off))) {
+        sorted = false;
+      }
+      locs[3 * k] = b;
+      locs[3 * k + 1] = off;
+      locs[3 * k + 2] = len;
+      sha.setRange(32 * k, 32 * k + 32, ix.shaOf(id));
+      k++;
+    }
+    if (!sorted) {
+      final order = List<int>.generate(k, (i) => i)
+        ..sort((x, y) {
+          final d = locs[3 * x] - locs[3 * y];
+          return d != 0 ? d : locs[3 * x + 1] - locs[3 * y + 1];
+        });
+      final l2 = Int64List(3 * k);
+      final s2 = Uint8List(32 * k);
+      for (var i = 0; i < k; i++) {
+        final o = order[i];
+        l2.setRange(3 * i, 3 * i + 3, locs, 3 * o);
+        s2.setRange(32 * i, 32 * i + 32, sha, 32 * o);
+      }
+      return ZxChunkTable(0, l2, s2);
+    }
+    return ZxChunkTable(0, Int64List.sublistView(locs, 0, 3 * k),
+        Uint8List.sublistView(sha, 0, 32 * k));
+  }
+
   (ZxVer, int) _requirements() {
     var required = ZxFeature.appendable |
         (keys != null ? ZxFeature.encryption : 0) |
-        (sink.multi || header.multiVolume ? ZxFeature.multiVolume : 0);
-    final users = <int, int>{};
+        (sink.multi || header.multiVolume ? ZxFeature.multiVolume : 0) |
+        zxSharingFeatures(_entries);
+    final users = <int>{};
     for (var i = 0; i < _entries.length; i++) {
       final x = _entries[i].extents;
       for (var k = 0; k < x.length; k += 3) {
-        final prev = users[x[k]];
-        if (prev != null && prev != i) required |= ZxFeature.solid;
-        users[x[k]] = i;
+        users.add(x[k]);
       }
     }
     final used = <ZxCoder>[];
-    for (final b in users.keys) {
+    for (final b in users) {
       if (b >= _blocks.length) continue;
       final c = _chains[_blocks[b].chainId];
       if (c != null) used.addAll(c.coders);
@@ -974,6 +1295,9 @@ class ZxWriter {
           if (_entries[i].tlsh != null) (_entries[i].tlsh!, i)
       ];
     }
+    // the chunk table holds SHA-256 values: not in a clear Index of an
+    // encrypted archive
+    if (!clearOfEncrypted) idx.chunkTable = _chunkTable();
     idx.previous = _prev;
     var added = 0;
     final now = <String>{};
@@ -1018,7 +1342,12 @@ class ZxWriter {
       newBytes += nd.length;
     }
     return ZxWriteResult(_genNumber, _blocks.length - _firstNewBlock, newBytes,
-        _packed, vols, end);
+        _packed, vols, end,
+        dedupBytes: _dupBytes,
+        storedChunks: _storedChunks,
+        reusedChunks: _reusedChunks,
+        reusedFiles: _reusedFiles,
+        workers: _pool.threads);
   }
 
   /// Stops the write (a failure): the workers' results are dropped.
@@ -1033,32 +1362,77 @@ class InvalidArgExceptionZx extends SevenZipException {
       : super(message, SevenZipError.unsupported);
 }
 
-/// Compacts the archive of [r] into [makeSink]'s output: only the blocks
-/// that the last [keep] generations use are copied (as they are, no
-/// recompression), with new block numbers and a fresh Index (and Footer)
-/// for each kept generation, whose numbers and times are kept.
+/// Compacts the archive of [r] into [makeSink]'s output, keeping the data
+/// of the last [keep] generations: the blocks they use whole are copied as
+/// they are (no recompression), the blocks they use in part (solid or
+/// dedup chunk store blocks holding deleted data) are repacked with
+/// [repack]: their used bytes are decoded, packed into new blocks and coded
+/// again (with the chain of [ZxWriteOptions.coders] when
+/// [ZxWriteOptions.codersSet], else with the chain of each block). Each
+/// kept generation gets a fresh Index (and Footer) with its number and
+/// time; its chunk table keeps the chunks still used, at their new places.
+/// [options] gives the block size, the check, the threads and the memory
+/// limit of the repacking.
 ZxWriteResult zxCompact(
     ZxArchiveReader r, int keep, ZxSink Function(ZxHeader h) makeSink,
-    {String? password, bool multi = false}) {
+    {String? password,
+    bool multi = false,
+    ZxWriteOptions? options,
+    bool repack = true}) {
+  final o = options ?? ZxWriteOptions();
   final gens = r.generations;
   if (keep < 1) keep = 1;
   final kept = gens.length <= keep ? gens : gens.sublist(gens.length - keep);
   final keys = r.header.kdf != null ? r.keysFor(() => password) : null;
   final indexes = [for (final g in kept) r.indexOf(g)];
+  final last = r.lastIndex;
 
-  // the blocks used, in file order
-  final used = <int>{};
-  for (final idx in indexes) {
-    for (final e in idx.entries) {
-      for (var i = 0; i < e.extents.length; i += 3) {
-        used.add(e.extents[i]);
-      }
+  // the bytes of each block the kept generations use
+  final live = _liveRanges(indexes);
+  final order = live.keys.toList()..sort();
+  final whole = <int>[];
+  final part = <int>[];
+  for (final b in order) {
+    if (b >= last.blocks.length) zxDamaged('bad block number $b');
+    final l = live[b]!;
+    var covered = 0;
+    for (var i = 0; i < l.length; i += 2) {
+      covered += l[i + 1] - l[i];
+    }
+    if (!repack || covered >= last.blocks[b].unpackedSize) {
+      whole.add(b);
+    } else {
+      part.add(b);
     }
   }
-  final order = used.toList()..sort();
-  final remap = <int, int>{};
-  for (var i = 0; i < order.length; i++) {
-    remap[order[i]] = i;
+
+  // every chain declared in a kept generation; repacked blocks may add one
+  final chains = <int, ZxChain>{...last.chains};
+  for (final idx in indexes) {
+    for (final c in idx.chains.values) {
+      chains.putIfAbsent(c.id, () => c);
+    }
+  }
+  // the partly used blocks by chain, and the coders of their repacking
+  final groups = <int, List<int>>{};
+  for (final b in part) {
+    (groups[last.blocks[b].chainId] ??= []).add(b);
+  }
+  final specs = <int, List<ZxCoderSpec>>{};
+  var repackMin = (0, 5, 0);
+  for (final id in groups.keys) {
+    final chain = id == 0 ? const ZxChain(0, []) : chains[id];
+    if (chain == null) zxDamaged('undeclared chain $id');
+    final sp = o.level == 0
+        ? const <ZxCoderSpec>[]
+        : o.codersSet
+            ? o.coders
+            : zxSpecsFromChain(chain, o.level) ?? o.coders;
+    specs[id] = sp;
+    final (v, exp) = zxChainRequirements(
+        [for (final c in sp) ZxCoder(c.codecId, Uint8List(0))]);
+    final need = exp ? zxVersion : v;
+    if (zxCompareVersions(need, repackMin) > 0) repackMin = need;
   }
 
   final h = ZxHeader()
@@ -1074,6 +1448,13 @@ ZxWriteResult zxCompact(
     ..comment = r.header.comment
     ..metaChain = r.header.metaChain;
   h.otherRecords.addAll(r.header.otherRecords);
+  if (part.isNotEmpty) {
+    // repacked blocks hold data of several entries
+    h.required |= ZxFeature.solid;
+    if (zxCompareVersions(repackMin, h.minReaderVersion) > 0) {
+      h.minReaderVersion = repackMin;
+    }
+  }
   // the inline records are not copied: the new file is not streamed
   h.flags &= ~ZxHeaderFlag.streamed;
   if (multi) {
@@ -1085,17 +1466,207 @@ ZxWriteResult zxCompact(
   }
   final sink = makeSink(h);
   if (!multi) sink.write(h.encode());
-  final last = r.lastIndex;
   final blocks = <ZxBlockRef>[];
   var packed = 0;
-  for (final b in order) {
+
+  // the blocks used whole, copied
+  final newOf = <int, int>{};
+  for (final b in whole) {
     final raw = r.rawBlock(last, b);
     if (multi && raw.length > sink.room!) sink.nextVolume();
     final ref = last.blocks[b];
+    newOf[b] = blocks.length;
     blocks.add(ZxBlockRef(sink.volume, sink.position, ref.headerSize,
         ref.packedSize, ref.unpackedSize, ref.chainId));
     sink.write(raw);
     packed += raw.length;
+  }
+
+  // the blocks used in part, repacked: per old block, the new places of
+  // its used ranges as flat (start, end, new block, offset in new block)
+  final segs = <int, List<int>>{};
+  var workers = 1;
+  if (part.isNotEmpty) {
+    final limit = o.memoryLimit ?? zxDefaultMemoryLimit();
+    var per = 0;
+    for (final b in part) {
+      final ref = last.blocks[b];
+      final chain = ref.chainId == 0 ? const ZxChain(0, []) : chains[ref.chainId]!;
+      final d = zxDecodeMemory(chain, ref.unpackedSize);
+      final e = zxWorkerMemory(specs[ref.chainId]!, o.blockSize);
+      if (d > per) per = d;
+      if (e > per) per = e;
+    }
+    workers = zxWorkersFor(o.threads, per, limit);
+    final pool = SyncJobPool(workers);
+    int chainIdFor(List<ZxCoder> coders) {
+      if (coders.isEmpty) return 0;
+      for (final c in chains.values) {
+        if (c.sameCoders(coders)) return c.id;
+      }
+      var id = _metaChainId + 1;
+      for (final k in chains.keys) {
+        if (k >= id) id = k + 1;
+      }
+      chains[id] = ZxChain(id, coders);
+      return id;
+    }
+
+    void place(_Repacked rp, ZxEncodedBlock enc) {
+      final chainId = chainIdFor(enc.coders);
+      final hdr = ZxBlockHeader.encode(rp.type, chainId, enc.unpackedSize,
+          enc.payload.length, enc.checkType, enc.check);
+      final total = hdr.length + enc.payload.length;
+      if (multi && total > sink.room!) sink.nextVolume();
+      if (keys != null) keys.mac(ZxBlockHeader.macPart(hdr), enc.payload);
+      final nb = blocks.length;
+      blocks.add(ZxBlockRef(sink.volume, sink.position, hdr.length,
+          enc.payload.length, enc.unpackedSize, chainId));
+      sink.write(hdr);
+      sink.write(enc.payload);
+      packed += total;
+      final s = rp.segs;
+      for (var i = 0; i < s.length; i += 4) {
+        (segs[s[i]] ??= <int>[])
+          ..add(s[i + 1])
+          ..add(s[i + 2])
+          ..add(nb)
+          ..add(s[i + 3]);
+      }
+    }
+
+    try {
+      for (final entry in groups.entries) {
+        final list = entry.value;
+        final coders = specs[entry.key]!;
+        final bs = o.blockSize;
+        final cur = Uint8List(bs);
+        var fill = 0;
+        var curSegs = <int>[];
+        var curChunks = false;
+        final ready = <_Repacked>[];
+        final jobs = <(int, int, _Repacked?)>[]; // ticket, old block, block
+        final isChunks = <int, bool>{};
+        var nextDec = 0;
+
+        void closeCur() {
+          if (fill == 0) return;
+          ready.add(_Repacked(
+              Uint8List.fromList(Uint8List.sublistView(cur, 0, fill)),
+              curSegs,
+              curChunks ? ZxBlockType.chunks : ZxBlockType.solid));
+          fill = 0;
+          curSegs = <int>[];
+          curChunks = false;
+        }
+
+        // the used ranges of old block [b] (decoded as [data]) go to the
+        // new blocks; a range moves to the next block when it does not
+        // fit, and is cut only when it is larger than a block
+        void take(int b, Uint8List data) {
+          final l = live[b]!;
+          for (var i = 0; i < l.length; i += 2) {
+            var s = l[i];
+            final e = l[i + 1];
+            if (e > data.length) zxDamaged('an extent beyond its block');
+            while (s < e) {
+              final room = bs - fill;
+              final len = e - s;
+              if (len > room && fill > 0 && len <= bs) {
+                closeCur();
+                continue;
+              }
+              final n = len < room ? len : room;
+              cur.setRange(fill, fill + n, data, s);
+              curSegs
+                ..add(b)
+                ..add(s)
+                ..add(s + n)
+                ..add(fill);
+              if (isChunks[b] ?? false) curChunks = true;
+              fill += n;
+              s += n;
+              if (fill == bs) closeCur();
+            }
+          }
+        }
+
+        for (;;) {
+          if (ready.isNotEmpty && pool.inFlight < pool.threads) {
+            final rp = ready.removeAt(0);
+            final t = pool.submit(
+                zxEncodeBlockJob,
+                ZxEncodeArg(rp.data, coders, o.checkType, keys?.aesKey,
+                    keys?.macKey));
+            jobs.add((t, -1, rp));
+            continue;
+          }
+          if (ready.isEmpty &&
+              nextDec < list.length &&
+              pool.inFlight < pool.threads) {
+            final b = list[nextDec++];
+            final arg = r.decodeArg(last, b);
+            final bh = ZxBlockHeader.tryParse(arg.raw, 0, arg.raw.length);
+            isChunks[b] = bh?.type == ZxBlockType.chunks;
+            jobs.add((pool.submit(zxDecodeBlockJob, arg), b, null));
+            continue;
+          }
+          if (jobs.isEmpty) {
+            if (fill > 0) {
+              closeCur();
+              continue;
+            }
+            break;
+          }
+          final (t, b, rp) = jobs.removeAt(0);
+          final res = pool.take(t);
+          if (rp == null) {
+            take(b, res.data);
+          } else {
+            place(rp, ZxEncodedBlock.fromResult(res));
+          }
+        }
+      }
+    } finally {
+      pool.close();
+    }
+  }
+
+  // the new place of b[off, off + len)
+  void remap(int b, int off, int len, List<int> out) {
+    final nb = newOf[b];
+    if (nb != null) {
+      zxAddExtent(out, nb, off, len);
+      return;
+    }
+    final s = segs[b];
+    if (s == null) zxDamaged('an extent of a block not copied');
+    var p = off;
+    final end = off + len;
+    var i = 0;
+    while (p < end) {
+      while (i < s.length && s[i + 1] <= p) {
+        i += 4;
+      }
+      if (i >= s.length || s[i] > p) zxDamaged('an extent not copied');
+      final e = s[i + 1] < end ? s[i + 1] : end;
+      zxAddExtent(out, s[i + 2], s[i + 3] + p - s[i], e - p);
+      p = e;
+    }
+  }
+
+  // the new place of a chunk, when it is used and in one block
+  (int, int)? remapChunk(int b, int off, int len) {
+    final nb = newOf[b];
+    if (nb != null) return (nb, off);
+    final s = segs[b];
+    if (s == null) return null;
+    for (var i = 0; i < s.length; i += 4) {
+      if (s[i] <= off && off + len <= s[i + 1]) {
+        return (s[i + 2], s[i + 3] + off - s[i]);
+      }
+    }
+    return null;
   }
 
   final newGens = <ZxGeneration>[];
@@ -1108,16 +1679,18 @@ ZxWriteResult zxCompact(
     final chainIds = <int>{};
     for (final e in src.entries) {
       final c = e.copy();
-      final x = Int64List.fromList(c.extents);
-      for (var i = 0; i < x.length; i += 3) {
-        chainIds.add(last.blocks[x[i]].chainId);
-        x[i] = remap[x[i]]!;
+      final x = <int>[];
+      for (var i = 0; i < e.extents.length; i += 3) {
+        remap(e.extents[i], e.extents[i + 1], e.extents[i + 2], x);
       }
-      c.extents = x;
+      for (var i = 0; i < x.length; i += 3) {
+        chainIds.add(blocks[x[i]].chainId);
+      }
+      c.extents = Int64List.fromList(x);
       idx.entries.add(c);
     }
     for (final id in chainIds) {
-      final c = last.chains[id] ?? src.chains[id];
+      final c = chains[id];
       if (c != null) idx.chains[id] = c;
     }
     idx.blocks = blocks;
@@ -1125,11 +1698,21 @@ ZxWriteResult zxCompact(
       idx.shaTable = src.shaTable;
     }
     idx.tlshList = src.tlshList;
+    final t = src.chunksValid;
+    if (t != null) idx.chunkTable = _remapChunks(t, remapChunk);
     idx.previous = prev;
     idx.generation = g;
     idx.generations = [...newGens, g.at(null)];
-    idx.minReaderVersion = src.minReaderVersion ?? (0, 5, 0);
-    idx.requiredFeatures = (src.requiredFeatures & ~ZxFeature.multiVolume) |
+    var mr = src.minReaderVersion ?? (0, 5, 0);
+    final (cv, exp) = zxChainRequirements([
+      for (final id in chainIds) ...?chains[id]?.coders,
+    ]);
+    final need = exp ? zxVersion : cv;
+    if (zxCompareVersions(need, mr) > 0) mr = need;
+    idx.minReaderVersion = mr;
+    idx.requiredFeatures = (src.requiredFeatures &
+            ~(ZxFeature.multiVolume | ZxFeature.solid | ZxFeature.dedup)) |
+        zxSharingFeatures(idx.entries) |
         (multi ? ZxFeature.multiVolume : 0);
     idx.optionalFeatures = src.optionalFeatures;
     idx.other.addAll(src.other);
@@ -1172,7 +1755,75 @@ ZxWriteResult zxCompact(
   final end = sink.position;
   final vols = sink.close();
   return ZxWriteResult(
-      kept.isEmpty ? 0 : kept.last.number, blocks.length, 0, packed, vols, end);
+      kept.isEmpty ? 0 : kept.last.number, blocks.length, 0, packed, vols, end,
+      workers: workers);
+}
+
+// a repacked block before its coding: data, the ranges it holds as flat
+// (old block, start, end, offset), its block type
+class _Repacked {
+  final Uint8List data;
+  final List<int> segs;
+  final int type;
+  _Repacked(this.data, this.segs, this.type);
+}
+
+/// The bytes of each block that the entries of [indexes] use, as sorted
+/// and merged flat (start, end) pairs, by block.
+Map<int, Int64List> _liveRanges(List<ZxIndex> indexes) {
+  final raw = <int, List<int>>{};
+  for (final idx in indexes) {
+    for (final e in idx.entries) {
+      final x = e.extents;
+      for (var i = 0; i < x.length; i += 3) {
+        if (x[i + 2] == 0) continue;
+        (raw[x[i]] ??= <int>[])
+          ..add(x[i + 1])
+          ..add(x[i + 1] + x[i + 2]);
+      }
+    }
+  }
+  final out = <int, Int64List>{};
+  raw.forEach((b, l) {
+    final n = l.length ~/ 2;
+    final order = List<int>.generate(n, (i) => i)
+      ..sort((a, c) => l[2 * a] - l[2 * c]);
+    final m = <int>[];
+    for (final i in order) {
+      final s = l[2 * i], e = l[2 * i + 1];
+      if (m.isNotEmpty && s <= m[m.length - 1]) {
+        if (e > m[m.length - 1]) m[m.length - 1] = e;
+      } else {
+        m
+          ..add(s)
+          ..add(e);
+      }
+    }
+    out[b] = Int64List.fromList(m);
+  });
+  return out;
+}
+
+// the chunks of [t] still used, at their new places, sorted
+ZxChunkTable _remapChunks(
+    ZxChunkTable t, (int, int)? Function(int b, int off, int len) remap) {
+  final keep = <(int, int, int, int)>[]; // block, offset, length, index
+  for (var i = 0; i < t.length; i++) {
+    final len = t.locs[3 * i + 2];
+    final p = remap(t.locs[3 * i], t.locs[3 * i + 1], len);
+    if (p != null) keep.add((p.$1, p.$2, len, i));
+  }
+  keep.sort((a, b) => a.$1 != b.$1 ? a.$1 - b.$1 : a.$2 - b.$2);
+  final locs = Int64List(3 * keep.length);
+  final sha = Uint8List(32 * keep.length);
+  for (var k = 0; k < keep.length; k++) {
+    final (b, off, len, i) = keep[k];
+    locs[3 * k] = b;
+    locs[3 * k + 1] = off;
+    locs[3 * k + 2] = len;
+    sha.setRange(32 * k, 32 * k + 32, t.sha, 32 * i);
+  }
+  return ZxChunkTable(0, locs, sha);
 }
 
 /// Encodes a string as UTF-8 bytes.
