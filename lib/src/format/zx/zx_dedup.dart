@@ -173,6 +173,34 @@ class ZxChunkIndex {
     }
   }
 
+  /// Removes the chunks added last, from id [n] on (a file whose new
+  /// chunks are dropped). Linear probing deletion: the entries after a
+  /// freed slot move back when their home slot allows it.
+  void truncate(int n) {
+    final mask = _slots.length - 1;
+    for (var id = _count - 1; id >= n; id--) {
+      var i = _key(_sha, 32 * id) & mask;
+      while (_slots[i] != id + 1) {
+        i = (i + 1) & mask;
+      }
+      var j = i;
+      for (;;) {
+        j = (j + 1) & mask;
+        final v = _slots[j];
+        if (v == 0) break;
+        final home = _key(_sha, 32 * (v - 1)) & mask;
+        // v stays when its home lies cyclically in (i, j]
+        final stays =
+            i <= j ? (i < home && home <= j) : (i < home || home <= j);
+        if (stays) continue;
+        _slots[i] = v;
+        i = j;
+      }
+      _slots[i] = 0;
+    }
+    if (n < _count) _count = n;
+  }
+
   /// Adds the chunks of [t] (the table of an earlier generation).
   void addTable(ZxChunkTable t) {
     for (var i = 0; i < t.length; i++) {

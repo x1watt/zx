@@ -8,6 +8,7 @@
 // [_registerExperimentalCodecs]). Encoders and decoders run in worker
 // isolates too: the registry is filled on first use in each isolate.
 
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../codec/bzip2/bzip2_coder.dart';
@@ -411,11 +412,17 @@ List<ZxCodecInfo> _standardCodecs() => [
             }
             final out = ZBuffer(input.length ~/ 2 + 1024);
             compressBlock(ZBuffer.of(input), out, method, dosha1: false);
+            // the props keep the method (decoders ignore them) so that a
+            // compaction repacks with it
             return ZxEncoded(
                 Uint8List.fromList(
                     Uint8List.sublistView(out.data, 0, out.size)),
-                Uint8List(0));
+                zxZpaqMethodInProps
+                    ? Uint8List.fromList(utf8.encode(method))
+                    : Uint8List(0));
           },
+          describe: (props) =>
+              props.isEmpty ? 'zpaq' : 'zpaq:${_zpaqMethod(props) ?? '?'}',
           decode: (payload, props, outSize) {
             final out = ZBuffer(outSize >= 0 ? outSize + 16 : 1 << 16);
             decompressAll(MemoryReader(payload), out);
@@ -633,11 +640,39 @@ String zxChainName(ZxChain chain) {
   return (v, experimental);
 }
 
+/// zx writes the zpaq method in the props of a zpaq coder (UTF-8). false
+/// writes empty props as zx 0.5.0 did (for the tests of such archives).
+bool zxZpaqMethodInProps = true;
+
+// the zpaq method of the props of a zpaq coder, or null
+String? _zpaqMethod(Uint8List p) {
+  if (p.isEmpty || p.length > 256) return null;
+  try {
+    final m = utf8.decode(p);
+    return RegExp(r'^[0-9A-Za-z.,_-]+$').hasMatch(m) ? m : null;
+  } on FormatException {
+    return null;
+  }
+}
+
+/// Whether a compaction can repack data of [chain] with the same method:
+/// false for a zpaq coder whose props do not hold its method (zx 0.5.0),
+/// whose blocks are then copied whole.
+bool zxCanRepack(ZxChain chain) {
+  for (final c in chain.coders) {
+    if (c.codecId == ZxCodecId.zpaq && _zpaqMethod(c.props) == null) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Coder specs that encode as [chain] did, from the parameters its props
 /// give (the dictionary of LZMA and LZMA2, the order and memory of PPMd,
-/// the level and budget of zcm, the distance of Delta, the start of a
-/// branch filter) and the archive [level] for the rest. For repacking the
-/// data of a block (compaction); null when a coder can not be rebuilt.
+/// the level and budget of zcm, the method of zpaq, the distance of Delta,
+/// the start of a branch filter) and the archive [level] for the rest. For
+/// repacking the data of a block (compaction); null when a coder can not
+/// be rebuilt.
 List<ZxCoderSpec>? zxSpecsFromChain(ZxChain chain, int level) {
   final out = <ZxCoderSpec>[];
   for (final c in chain.coders) {
@@ -671,6 +706,10 @@ List<ZxCoderSpec>? zxSpecsFromChain(ZxChain chain, int level) {
         }
       case ZxCodecId.delta:
         if (p.length == 1) params = '${p[0] + 1}';
+      case ZxCodecId.zpaq:
+        final m = _zpaqMethod(p);
+        if (m == null) return null;
+        params = 'm=$m';
       default:
         if (info.isFilter && p.length == 4) params = '${getUint32LE(p, 0)}';
     }

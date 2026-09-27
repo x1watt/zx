@@ -22,6 +22,7 @@ import '../../util/tlsh.dart';
 import '../../version.dart';
 import '../../codec/lzma/lzma_coder.dart' show lzma2PropForDictSize;
 import 'zx_blocks.dart';
+import 'zx_chunkrun.dart';
 import 'zx_codecs.dart';
 import 'zx_crypto.dart';
 import 'zx_dedup.dart';
@@ -85,9 +86,18 @@ int? zxParseSize(String s) {
   };
 }
 
-/// Free bytes on the disk of [dir], or null when unknown (df on POSIX
-/// systems, the drive's free space on Windows).
-int? zxFreeSpace(String dir) {
+/// Free bytes on the disk of [dir], or null when unknown: [zxFreeSpaceTool]
+/// (df on POSIX systems, PowerShell on Windows). When no tool answers, a
+/// volume sink reserves the space of a volume as it writes it instead
+/// ([zxPreallocWrite]).
+int? zxFreeSpace(String dir) => zxFreeSpaceTool(dir);
+
+/// The free space of a folder by a system tool, or null when the tool is
+/// missing or fails. A variable so that tests can simulate a system
+/// without the tool.
+int? Function(String dir) zxFreeSpaceTool = _freeSpaceByTool;
+
+int? _freeSpaceByTool(String dir) {
   try {
     if (Platform.isWindows) {
       final r = Process.runSync('powershell', [
@@ -95,20 +105,38 @@ int? zxFreeSpace(String dir) {
         '-Command',
         '(Get-Item -LiteralPath "$dir").PSDrive.Free'
       ]);
+      if (r.exitCode != 0) return null;
       return int.tryParse((r.stdout as String).trim());
     }
     final r = Process.runSync('df', ['-Pk', dir]);
     if (r.exitCode != 0) return null;
-    final lines = (r.stdout as String).trim().split('\n');
-    if (lines.length < 2) return null;
-    final f = lines.last.trim().split(RegExp(r'\s+'));
-    if (f.length < 4) return null;
-    final k = int.tryParse(f[3]);
-    return k == null ? null : k * 1024;
+    return zxParseDfOutput(r.stdout as String);
   } on Object {
     return null;
   }
 }
+
+/// The available bytes in the output of `df -Pk DIR` (POSIX format: a
+/// header line, then a line whose fourth field is the available KiB), or
+/// null.
+int? zxParseDfOutput(String out) {
+  final lines = out.trim().split('\n');
+  if (lines.length < 2) return null;
+  final f = lines.last.trim().split(RegExp(r'\s+'));
+  if (f.length < 4) return null;
+  final k = int.tryParse(f[3]);
+  return k == null || k < 0 ? null : k * 1024;
+}
+
+/// Writes [len] zero bytes of [buf] at the position of [f]: how a volume
+/// reserves disk space when the free space is unknown. A variable so that
+/// tests can simulate a full disk (by throwing a [FileSystemException]).
+void Function(RandomAccessFile f, Uint8List buf, int len) zxPreallocWrite =
+    (f, buf, len) => f.writeFromSync(buf, 0, len);
+
+/// How far ahead of the data a volume reserves its space (the largest
+/// block, a run or an Index block fits in it).
+const int _reserveAhead = 96 << 20;
 
 /// What a writer uses.
 class ZxWriteOptions {
@@ -258,6 +286,12 @@ class ZxVolumeSink implements ZxSink {
   int _pos = 0;
   int _limit = 0;
   final Map<int, int> _usedInDir = {};
+  // "until full" without a known free space: the space of the volume is
+  // reserved by writing zeros ahead of the data, up to _reserved; the
+  // volume ends where a reservation fails
+  bool _probe = false;
+  int _reserved = 0;
+  final Uint8List _zeros = Uint8List(1 << 20);
   final List<String> _written = [];
   final List<ZxVolumeInfo> _table = [];
   final Uint8List _buf = Uint8List(1 << 16);
@@ -278,48 +312,121 @@ class ZxVolumeSink implements ZxSink {
   String _name(int v) => '$baseName.${'${v + 1}'.padLeft(3, '0')}';
 
   void _open() {
-    var want = _sizeOf(_vol);
+    final want = _sizeOf(_vol);
+    final min = header.size + 4 * zxFooterSize + 4096;
+    final name = _name(_vol).split(Platform.pathSeparator).last;
     String? dir;
+    var cap = want;
     for (var i = 0; i < dirs.length; i++) {
       final d = dirs[i];
-      var cap = want;
+      cap = want;
       final b = d.budget;
       if (b != null) {
         final left = b - (_usedInDir[i] ?? 0);
         if (left < cap) cap = left;
       }
+      var probe = false;
       if (d.untilFull) {
         final free = zxFreeSpace(d.path);
-        if (free != null && free - (1 << 20) < cap) cap = free - (1 << 20);
+        if (free == null) {
+          probe = true;
+        } else if (free - (1 << 20) < cap) {
+          cap = free - (1 << 20);
+        }
       }
-      if (cap >= header.size + 4 * zxFooterSize + 4096) {
-        dir = d.path;
-        want = cap;
-        _usedInDir[i] = (_usedInDir[i] ?? 0) + cap;
-        break;
+      if (cap < min) continue;
+      if (probe) {
+        // no tool gives the free space: the volume reserves its space as
+        // it goes; a folder without room for the start of a volume is full
+        final path = '${d.path}${Platform.pathSeparator}$name';
+        onFile?.call(path);
+        Directory(d.path).createSync(recursive: true);
+        final f = File(path).openSync(mode: FileMode.write);
+        _f = f;
+        _limit = cap;
+        _reserved = 0;
+        _probe = true;
+        _reserve(0);
+        if (_limit < min) {
+          f.closeSync();
+          _f = null;
+          _probe = false;
+          try {
+            File(path).deleteSync();
+          } on FileSystemException {
+            // ignore
+          }
+          continue;
+        }
+        _path = path;
+        _written.add(path);
+        _usedInDir[i] = (_usedInDir[i] ?? 0) + _limit;
+        _pos = 0;
+        header.volumeNumber = _vol;
+        header.volumeCount = null;
+        _raw(header.encode());
+        return;
       }
+      dir = d.path;
+      _usedInDir[i] = (_usedInDir[i] ?? 0) + cap;
+      break;
     }
     if (dirs.isEmpty) {
       final f = File(baseName);
       dir = f.parent.path;
+      cap = want;
     }
     if (dir == null) {
       throw SevenZipException(
           'zx: no destination folder has room for volume ${_vol + 1}',
           SevenZipError.io);
     }
-    final name = _name(_vol).split(Platform.pathSeparator).last;
     final path = '$dir${Platform.pathSeparator}$name';
     onFile?.call(path);
     Directory(dir).createSync(recursive: true);
     _f = File(path).openSync(mode: FileMode.write);
     _path = path;
     _written.add(path);
-    _limit = want;
+    _limit = cap;
+    _probe = false;
     _pos = 0;
     header.volumeNumber = _vol;
     header.volumeCount = null;
     _raw(header.encode());
+  }
+
+  // reserves the space up to [upTo] plus the look ahead (at most the
+  // volume's limit) by writing zeros after the data; on a failure (a full
+  // disk) the volume ends at what was reserved
+  void _reserve(int upTo) {
+    if (!_probe) return;
+    var target = upTo + _reserveAhead;
+    if (target > _limit) target = _limit;
+    if (_reserved >= target) return;
+    final f = _f!;
+    final back = f.positionSync();
+    try {
+      f.setPositionSync(_reserved);
+      while (_reserved < target) {
+        var n = target - _reserved;
+        if (n > _zeros.length) n = _zeros.length;
+        zxPreallocWrite(f, _zeros, n);
+        _reserved += n;
+      }
+    } on FileSystemException {
+      // the disk is full: the volume holds what was reserved, with the
+      // whole 4 KiB of a write cut short
+      try {
+        final got = f.lengthSync() & ~4095;
+        if (got > _reserved) _reserved = got;
+        f.truncateSync(_reserved);
+      } on FileSystemException {
+        // ignore
+      }
+      _limit = _reserved;
+      _probe = false;
+    }
+    f.setPositionSync(back);
   }
 
   void _raw(Uint8List b) {
@@ -347,15 +454,28 @@ class ZxVolumeSink implements ZxSink {
   @override
   bool get multi => true;
   @override
-  int? get room => _limit - _pos - zxFooterSize;
+  int? get room {
+    if (_probe) _reserve(_pos);
+    return (_probe && _reserved < _limit ? _reserved : _limit) -
+        _pos -
+        zxFooterSize;
+  }
   @override
   int? get emptyRoom => _sizeOf(_vol + 1) - header.size - zxFooterSize;
 
   @override
   void write(Uint8List b) => _raw(b);
 
+  // the reserved zeros after the data are cut off
+  void _unreserve() {
+    if (_reserved > _pos) _f!.truncateSync(_pos);
+    _reserved = 0;
+    _probe = false;
+  }
+
   void _closeCurrent() {
     _drain();
+    _unreserve();
     _f!.closeSync();
     _f = null;
     final name = _path!.split(Platform.pathSeparator).last;
@@ -380,6 +500,7 @@ class ZxVolumeSink implements ZxSink {
   List<String> close() {
     if (_f != null) {
       _drain();
+      _unreserve();
       _f!.flushSync();
       _f!.closeSync();
       _f = null;
@@ -441,9 +562,6 @@ class _NewData {
   int length = 0;
   _NewData(this.entry);
 }
-
-/// The largest file read whole for the whole-file dedup check.
-const int _wholeFileLimit = 64 << 20;
 
 /// The read size of the chunker.
 const int _chunkRead = 1 << 16;
@@ -515,9 +633,22 @@ class ZxWriter {
   final Sha256 _chunkSha = Sha256();
   final Map<int, List<Object>> _whole = {};
   final Set<int> _sizes = {};
-  // the chunk table of the last generation, carried when dedup is off
+  // the chunk table (zx 0.5.0) and the chunk runs of the last
+  // generation, carried when dedup is off
   ZxChunkTable? _carried;
+  List<ZxChunkRunRef>? _carriedRuns;
+  // the runs of the last generation opened for lookups (oldest first) and
+  // the volumes they are read from
+  final List<ZxChunkRun> _runs = [];
+  ZxVolumes? _vols;
   int _dupBytes = 0, _storedChunks = 0, _reusedChunks = 0, _reusedFiles = 0;
+  // the spill file of the new chunks of a file that may be a stored one
+  // (see _addDedup): the lengths of its chunks, in order
+  bool _spilling = false;
+  RandomAccessFile? _spill;
+  Directory? _spillDir;
+  int _spillLen = 0;
+  final List<int> _spillChunks = [];
 
   ZxWriter._(
       this.o,
@@ -659,17 +790,37 @@ class ZxWriter {
         t,
         last.volumes ?? const [])
       .._prevPaths = {for (final e in last.entries) e.path}
+      .._vols = r.volumes
       .._loadOld(last);
   }
 
   // the chunks and the files of the last generation, which new data can
-  // reuse (dedup); the chunks that do not fit the block table are left out
+  // reuse (dedup): its chunk runs are opened (their fences and filters
+  // are read, the records stay on disk), the chunks of a chunk table of
+  // zx 0.5.0 are loaded (they go into the run of this generation); the
+  // chunks that do not fit the block table are left out
   void _loadOld(ZxIndex last) {
     final t = last.chunksValid;
     final clear = keys != null && !header.encryptedMetadata;
+    final runs = last.chunkRunsValid;
     if (!_dedupOn) {
       _carried = clear ? null : t;
+      _carriedRuns = runs?.runs;
       return;
+    }
+    final vols = _vols;
+    if (runs != null && vols != null) {
+      for (final ref in runs.runs) {
+        try {
+          _runs.add(ZxChunkRun.open(vols, ref, keys));
+        } on ZxNeedPasswordException {
+          rethrow;
+        } on SevenZipException catch (e) {
+          o.warnings.add('zx: a chunk run of the archive can not be read '
+              '(${e.message}): new data is not deduplicated against its '
+              'chunks');
+        }
+      }
     }
     final ix = _chunks!;
     if (t != null) {
@@ -809,42 +960,72 @@ class ZxWriter {
     return total;
   }
 
-  // a file with dedup: a file identical to one stored (same size and
-  // SHA-256) reuses its extents; otherwise its chunks are looked up and
-  // only the new ones are stored
+  // a file with dedup: its chunks are looked up and only the new ones are
+  // stored, while the SHA-256 of the whole file is computed; a file
+  // identical to one stored (same size and SHA-256) then reuses that
+  // file's extents. The file is read once and never held whole: when its
+  // size is that of a stored file, its new chunks wait in a spill file (on
+  // disk) until the end, where they are dropped or stored; otherwise they
+  // are stored at once, and dropped when the file turns out to be a stored
+  // one and they are all still in the block being filled
   int _addDedup(ZxEntry e, InStream data, int? knownSize) {
     final nd = _NewData(e);
     _new.add(nd);
     final sha = Sha256();
     final tl = o.tlsh ? Tlsh() : null;
-    var src = data;
-    if (knownSize != null &&
-        knownSize > 0 &&
-        knownSize <= _wholeFileLimit &&
-        _sizes.contains(knownSize)) {
-      // one more byte than the size tells a file that grew
-      final buf = Uint8List(knownSize + 1);
-      final n = readFully(data, buf, 0, buf.length);
-      final view = Uint8List.sublistView(buf, 0, n);
-      if (n == knownSize) {
-        final h = Sha256.hash(view);
-        final hit = _findWhole(h, n);
-        if (hit != null) {
-          nd.pieces.addAll(hit);
-          nd.length = n;
-          e.size = n;
-          e.sha256 = h;
-          e.tlsh = tl == null ? null : (tl..update(view)).digest();
-          _dupBytes += n;
-          _reusedFiles++;
-          _addWhole(h, n, nd);
-          return n;
-        }
-      }
-      src = n > knownSize
-          ? ConcatInStream([MemoryInStream(view), data])
-          : MemoryInStream(view);
+    final ix = _chunks!;
+    final chunksAt = ix.length, streamAt = _streamPos;
+    final dupAt = _dupBytes, reusedAt = _reusedChunks;
+    final storedAt = _storedChunks;
+    final candidate =
+        knownSize != null && knownSize > 0 && _sizes.contains(knownSize);
+    if (candidate) {
+      _spilling = true;
+      _spillLen = 0;
+      _spillChunks.clear();
     }
+    try {
+      _chunkFile(nd, data, sha, tl);
+    } finally {
+      _spilling = false;
+    }
+    final n = nd.length;
+    e.size = n;
+    e.sha256 = sha.digest();
+    e.tlsh = tl?.digest();
+    final stored = ix.length > chunksAt;
+    var whole = false;
+    if (n > 0 && _sizes.contains(n)) {
+      final hit = _findWhole(e.sha256!, n);
+      // spilled chunks are dropped; chunks stored at once only while they
+      // are all in the block being filled (no block written since)
+      if (hit != null && (!stored || candidate || _blockStart <= streamAt)) {
+        if (stored) {
+          ix.truncate(chunksAt);
+          if (!candidate) {
+            _fill -= _streamPos - streamAt;
+            _streamPos = streamAt;
+          }
+          _storedChunks = storedAt;
+        }
+        nd.pieces
+          ..clear()
+          ..addAll(hit);
+        _dupBytes = dupAt + n;
+        _reusedChunks = reusedAt;
+        _reusedFiles++;
+        whole = true;
+      }
+    }
+    if (!whole && candidate && _spillChunks.isNotEmpty) {
+      _commitSpill(nd, chunksAt);
+    }
+    if (n > 0) _addWhole(e.sha256!, n, nd);
+    return n;
+  }
+
+  // cuts the data of a file into chunks (see _chunk)
+  void _chunkFile(_NewData nd, InStream data, Sha256 sha, Tlsh? tl) {
     final ch = _chunker!;
     ch.reset();
     final cb = _cbuf!;
@@ -859,7 +1040,7 @@ class ZxWriter {
         }
         var want = cb.length - fill;
         if (want > _chunkRead) want = _chunkRead;
-        final n = src.read(cb, fill, want);
+        final n = data.read(cb, fill, want);
         if (n <= 0) break;
         fill += n;
       }
@@ -872,11 +1053,21 @@ class ZxWriter {
       start = scan = cut;
     }
     if (fill > start) _chunk(nd, cb, start, fill - start, sha, tl);
-    e.size = nd.length;
-    e.sha256 = sha.digest();
-    e.tlsh = tl?.digest();
-    if (nd.length > 0) _addWhole(e.sha256!, nd.length, nd);
-    return nd.length;
+  }
+
+  // the chunk of [len] bytes with SHA-256 [sha] in a run of the last
+  // generation, when it lies in a block of the table: (block, offset)
+  (int, int)? _inRuns(Uint8List sha, int len) {
+    for (var i = _runs.length - 1; i >= 0; i--) {
+      final h = _runs[i].find(sha, 0);
+      if (h == null || h.length != len) continue;
+      final b = h.block;
+      if (b >= _firstNewBlock || h.offset + len > _blocks[b].unpackedSize) {
+        continue;
+      }
+      return (b, h.offset);
+    }
+    return null;
   }
 
   // one chunk of a file: referenced when known, else stored in the block
@@ -897,6 +1088,36 @@ class ZxWriter {
       _reusedChunks++;
       return;
     }
+    if (_runs.isNotEmpty) {
+      final hit = _inRuns(_digest, len);
+      if (hit != null) {
+        zxAddExtent(nd.pieces, hit.$1, hit.$2, len);
+        _dupBytes += len;
+        _reusedChunks++;
+        return;
+      }
+    }
+    _storedChunks++;
+    if (_spilling) {
+      // a file that may be a stored one: its new chunks wait in the spill
+      // file (block -2: an offset in it)
+      final pos = _spillLen;
+      _spillWrite(b, off, len);
+      ix.add(_digest, -2, pos, len);
+      _spillChunks.add(len);
+      zxAddExtent(nd.pieces, -2, pos, len);
+      return;
+    }
+    final pos = _store(b, off, len);
+    ix.add(_digest, -1, pos, len);
+    zxAddExtent(nd.pieces, -1, pos, len);
+    if (_fill == o.blockSize) _flushBlock();
+  }
+
+  // puts [len] bytes of a new chunk into the block being filled (a chunk
+  // is never cut by a block boundary); returns its position in the stream
+  // of new data
+  int _store(Uint8List b, int off, int len) {
     if (_fill + len > o.blockSize) _flushBlock();
     if (_fill + len > _buf.length) {
       var c = _buf.length * 2;
@@ -908,10 +1129,70 @@ class ZxWriter {
     final pos = _streamPos;
     _fill += len;
     _streamPos += len;
-    ix.add(_digest, -1, pos, len);
-    _storedChunks++;
-    zxAddExtent(nd.pieces, -1, pos, len);
-    if (_fill == o.blockSize) _flushBlock();
+    return pos;
+  }
+
+  void _spillWrite(Uint8List b, int off, int len) {
+    var f = _spill;
+    if (f == null) {
+      final dir = _spillDir = Directory.systemTemp.createTempSync('zx-dedup-');
+      f = _spill = File('${dir.path}${Platform.pathSeparator}spill')
+          .openSync(mode: FileMode.write);
+    }
+    f.setPositionSync(_spillLen);
+    f.writeFromSync(b, off, off + len);
+    _spillLen += len;
+  }
+
+  // the new chunks of the file of [nd] (ids from [firstId]) go from the
+  // spill file into the blocks, in order: the spill offset o becomes the
+  // stream position base + o
+  void _commitSpill(_NewData nd, int firstId) {
+    final ix = _chunks!;
+    final f = _spill!;
+    final buf = _cbuf!;
+    final base = _streamPos;
+    var pos = 0;
+    for (final len in _spillChunks) {
+      f.setPositionSync(pos);
+      if (f.readIntoSync(buf, 0, len) != len) {
+        throw const SevenZipException(
+            'zx: the dedup spill file is cut', SevenZipError.io);
+      }
+      _store(buf, 0, len);
+      if (_fill == o.blockSize) _flushBlock();
+      pos += len;
+    }
+    for (var id = firstId; id < ix.length; id++) {
+      if (ix.block(id) == -2) ix.setLocation(id, -1, base + ix.offset(id));
+    }
+    final p = nd.pieces;
+    final out = <int>[];
+    for (var i = 0; i < p.length; i += 3) {
+      if (p[i] == -2) {
+        zxAddExtent(out, -1, base + p[i + 1], p[i + 2]);
+      } else {
+        zxAddExtent(out, p[i], p[i + 1], p[i + 2]);
+      }
+    }
+    p
+      ..clear()
+      ..addAll(out);
+  }
+
+  void _dropSpill() {
+    try {
+      _spill?.closeSync();
+    } on FileSystemException {
+      // ignore
+    }
+    _spill = null;
+    try {
+      _spillDir?.deleteSync(recursive: true);
+    } on FileSystemException {
+      // ignore
+    }
+    _spillDir = null;
   }
 
   // makes room in the block for up to [want] bytes; returns how many
@@ -1169,16 +1450,15 @@ class ZxWriter {
     }
   }
 
-  // the chunk table of the new Index: the chunks known, placed; a chunk
-  // that a volume cut split between two blocks is left out
-  ZxChunkTable? _chunkTable() {
-    final ix = _chunks;
-    if (ix == null) return _carried;
+  // the chunks known in memory (stored in this generation, and those of a
+  // chunk table of zx 0.5.0), placed and sorted by SHA-256; a chunk that
+  // a volume cut split between two blocks is left out
+  ZxMemChunks _memChunks() {
+    final ix = _chunks!;
     final n = ix.length;
     final locs = Int64List(3 * n);
     final sha = Uint8List(32 * n);
     var k = 0;
-    var sorted = true;
     for (var id = 0; id < n; id++) {
       var b = ix.block(id), off = ix.offset(id);
       final len = ix.size(id);
@@ -1189,34 +1469,62 @@ class ZxWriter {
         b = _firstNewBlock + j;
         off -= bs;
       }
-      if (k > 0 &&
-          (locs[3 * k - 3] > b ||
-              (locs[3 * k - 3] == b && locs[3 * k - 2] > off))) {
-        sorted = false;
-      }
       locs[3 * k] = b;
       locs[3 * k + 1] = off;
       locs[3 * k + 2] = len;
       sha.setRange(32 * k, 32 * k + 32, ix.shaOf(id));
       k++;
     }
-    if (!sorted) {
-      final order = List<int>.generate(k, (i) => i)
-        ..sort((x, y) {
-          final d = locs[3 * x] - locs[3 * y];
-          return d != 0 ? d : locs[3 * x + 1] - locs[3 * y + 1];
-        });
-      final l2 = Int64List(3 * k);
-      final s2 = Uint8List(32 * k);
-      for (var i = 0; i < k; i++) {
-        final o = order[i];
-        l2.setRange(3 * i, 3 * i + 3, locs, 3 * o);
-        s2.setRange(32 * i, 32 * i + 32, sha, 32 * o);
-      }
-      return ZxChunkTable(0, l2, s2);
+    return ZxMemChunks.sort(sha, locs, k);
+  }
+
+  // the most records of one run: zxRunMaxRecords, and what an empty
+  // volume holds (about 50 bytes a record with the fences and the filter)
+  int _runCap() {
+    var cap = zxRunMaxRecords;
+    if (sink.multi) {
+      final fit = (sink.emptyRoom! - 1024) ~/ 50;
+      if (fit < cap) cap = fit;
     }
-    return ZxChunkTable(0, Int64List.sublistView(locs, 0, 3 * k),
-        Uint8List.sublistView(sha, 0, 32 * k));
+    return cap;
+  }
+
+  // the chunk runs of the new Index (section 6.4.1): the runs of the last
+  // generation, and the chunks known in memory as a new run, merged with
+  // the last runs of about its size (their records are read again and
+  // written into the new runs; the old blocks stay until a compaction)
+  List<ZxChunkRunRef>? _writeRuns() {
+    if (!_dedupOn) return _carriedRuns;
+    final mem = _memChunks();
+    final old = _runs;
+    final cap = _runCap();
+    if (mem.length == 0) return [for (final r in old) r.ref];
+    if (cap < zxRunPageRecords) {
+      o.warnings.add('zx: the volumes are too small for the chunk runs: '
+          'later generations do not deduplicate against this one');
+      return null;
+    }
+    final k = zxRunsToMerge([for (final r in old) r.count], mem.length, cap);
+    final merged = old.sublist(old.length - k);
+    final out = [for (final r in old.sublist(0, old.length - k)) r.ref];
+    final enc = keys != null;
+    zxMergeRuns(
+        () => [mem.cursor(), for (final r in merged.reversed) r.cursor()],
+        (count) {
+      final size = zxRunBlockSize(count, enc);
+      if (sink.multi && size > sink.room!) sink.nextVolume();
+      out.add(ZxChunkRunRef(sink.volume, sink.position, size, count));
+      return ZxRunWriter(sink.write, count, keys);
+    },
+        // the records of old runs are checked against the block table
+        map: merged.isEmpty
+            ? null
+            : (b, off, len) => b < _blocks.length &&
+                    off + len <= _blocks[b].unpackedSize
+                ? (b, off)
+                : null,
+        maxRecords: cap);
+    return out;
   }
 
   (ZxVer, int) _requirements() {
@@ -1258,14 +1566,18 @@ class ZxWriter {
       }
     } finally {
       _pool.close();
+      _dropSpill();
     }
     _computeExtents();
+    // a clear Index of an encrypted archive holds no content hashes
+    final clearOfEncrypted = keys != null && !header.encryptedMetadata;
+    // the runs are blocks of their own (encrypted in an encrypted archive,
+    // so a clear Index may list them), written before the Index
+    final runs = _writeRuns();
 
     final idx = ZxIndex();
     idx.chains.addAll(_chains);
     idx.blocks = _blocks;
-    // a clear Index of an encrypted archive holds no content hashes
-    final clearOfEncrypted = keys != null && !header.encryptedMetadata;
     idx.entries = clearOfEncrypted
         ? [
             for (final e in _entries)
@@ -1295,9 +1607,11 @@ class ZxWriter {
           if (_entries[i].tlsh != null) (_entries[i].tlsh!, i)
       ];
     }
-    // the chunk table holds SHA-256 values: not in a clear Index of an
-    // encrypted archive
-    if (!clearOfEncrypted) idx.chunkTable = _chunkTable();
+    // a chunk table of zx 0.5.0 (SHA-256 values: not in a clear Index of an
+    // encrypted archive) is carried when dedup is off; with dedup its
+    // chunks went into a run
+    if (!_dedupOn && !clearOfEncrypted) idx.chunkTable = _carried;
+    if (runs != null && runs.isNotEmpty) idx.chunkRuns = ZxChunkRuns(0, runs);
     idx.previous = _prev;
     var added = 0;
     final now = <String>{};
@@ -1353,6 +1667,7 @@ class ZxWriter {
   /// Stops the write (a failure): the workers' results are dropped.
   void abort() {
     _pool.close();
+    _dropSpill();
   }
 }
 
@@ -1387,6 +1702,14 @@ ZxWriteResult zxCompact(
   final indexes = [for (final g in kept) r.indexOf(g)];
   final last = r.lastIndex;
 
+  // every chain declared in a kept generation; repacked blocks may add one
+  final chains = <int, ZxChain>{...last.chains};
+  for (final idx in indexes) {
+    for (final c in idx.chains.values) {
+      chains.putIfAbsent(c.id, () => c);
+    }
+  }
+
   // the bytes of each block the kept generations use
   final live = _liveRanges(indexes);
   final order = live.keys.toList()..sort();
@@ -1399,18 +1722,15 @@ ZxWriteResult zxCompact(
     for (var i = 0; i < l.length; i += 2) {
       covered += l[i + 1] - l[i];
     }
-    if (!repack || covered >= last.blocks[b].unpackedSize) {
+    final id = last.blocks[b].chainId;
+    final chain = id == 0 ? const ZxChain(0, []) : chains[id];
+    // a block whose method can not be rebuilt (zpaq without its method in
+    // the props, written by zx 0.5.0) is copied whole unless -m0 is given
+    final keepMethod = o.codersSet || chain == null || zxCanRepack(chain);
+    if (!repack || !keepMethod || covered >= last.blocks[b].unpackedSize) {
       whole.add(b);
     } else {
       part.add(b);
-    }
-  }
-
-  // every chain declared in a kept generation; repacked blocks may add one
-  final chains = <int, ZxChain>{...last.chains};
-  for (final idx in indexes) {
-    for (final c in idx.chains.values) {
-      chains.putIfAbsent(c.id, () => c);
     }
   }
   // the partly used blocks by chain, and the coders of their repacking
@@ -1669,6 +1989,50 @@ ZxWriteResult zxCompact(
     return null;
   }
 
+  // the chunk runs of the last kept generation: the chunks of the runs
+  // (and of a chunk table of zx 0.5.0) of the last Index that lie whole in
+  // bytes still used, at their new places; the earlier kept generations
+  // get none (only the last Index serves a writer)
+  List<ZxChunkRunRef>? newRuns;
+  final lastSrc = indexes.isEmpty ? null : indexes.last;
+  if (lastSrc != null) {
+    final srcRuns = <ZxChunkRun>[];
+    for (final ref in lastSrc.chunkRunsValid?.runs ?? const <ZxChunkRunRef>[]) {
+      try {
+        srcRuns.add(ZxChunkRun.open(r.volumes, ref, keys));
+      } on SevenZipException catch (e) {
+        o.warnings.add('zx: a chunk run can not be read (${e.message}): '
+            'its chunks are left out');
+      }
+    }
+    final legacy = lastSrc.chunksValid;
+    final mem = legacy == null
+        ? null
+        : ZxMemChunks.sort(Uint8List.fromList(legacy.sha),
+            Int64List.fromList(legacy.locs), legacy.length);
+    if (srcRuns.isNotEmpty || mem != null) {
+      var cap = zxRunMaxRecords;
+      if (multi) {
+        final fit = (sink.emptyRoom! - 1024) ~/ 50;
+        if (fit < cap) cap = fit;
+      }
+      if (cap >= zxRunPageRecords) {
+        final out = newRuns = <ZxChunkRunRef>[];
+        final enc = keys != null;
+        zxMergeRuns(
+            () => [
+                  if (mem != null) mem.cursor(),
+                  for (final x in srcRuns.reversed) x.cursor(),
+                ], (count) {
+          final size = zxRunBlockSize(count, enc);
+          if (multi && size > sink.room!) sink.nextVolume();
+          out.add(ZxChunkRunRef(sink.volume, sink.position, size, count));
+          return ZxRunWriter(sink.write, count, keys);
+        }, map: remapChunk, maxRecords: cap);
+      }
+    }
+  }
+
   final newGens = <ZxGeneration>[];
   ZxIndexLoc? prev;
   late ZxFooter footer;
@@ -1698,8 +2062,10 @@ ZxWriteResult zxCompact(
       idx.shaTable = src.shaTable;
     }
     idx.tlshList = src.tlshList;
-    final t = src.chunksValid;
-    if (t != null) idx.chunkTable = _remapChunks(t, remapChunk);
+    final nr = newRuns;
+    if (gi == kept.length - 1 && nr != null && nr.isNotEmpty) {
+      idx.chunkRuns = ZxChunkRuns(0, nr);
+    }
     idx.previous = prev;
     idx.generation = g;
     idx.generations = [...newGens, g.at(null)];
@@ -1802,28 +2168,6 @@ Map<int, Int64List> _liveRanges(List<ZxIndex> indexes) {
     out[b] = Int64List.fromList(m);
   });
   return out;
-}
-
-// the chunks of [t] still used, at their new places, sorted
-ZxChunkTable _remapChunks(
-    ZxChunkTable t, (int, int)? Function(int b, int off, int len) remap) {
-  final keep = <(int, int, int, int)>[]; // block, offset, length, index
-  for (var i = 0; i < t.length; i++) {
-    final len = t.locs[3 * i + 2];
-    final p = remap(t.locs[3 * i], t.locs[3 * i + 1], len);
-    if (p != null) keep.add((p.$1, p.$2, len, i));
-  }
-  keep.sort((a, b) => a.$1 != b.$1 ? a.$1 - b.$1 : a.$2 - b.$2);
-  final locs = Int64List(3 * keep.length);
-  final sha = Uint8List(32 * keep.length);
-  for (var k = 0; k < keep.length; k++) {
-    final (b, off, len, i) = keep[k];
-    locs[3 * k] = b;
-    locs[3 * k + 1] = off;
-    locs[3 * k + 2] = len;
-    sha.setRange(32 * k, 32 * k + 32, t.sha, 32 * i);
-  }
-  return ZxChunkTable(0, locs, sha);
 }
 
 /// Encodes a string as UTF-8 bytes.

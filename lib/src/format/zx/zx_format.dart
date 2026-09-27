@@ -90,6 +90,10 @@ abstract final class ZxBlockType {
   static const chunks = 3;
   static const padding = 4;
   static const index = 5;
+
+  /// A chunk run of the dedup writer (section 6.4.1): not a data block,
+  /// not in the block table; readers skip it.
+  static const chunkRun = 6;
 }
 
 /// check_type values.
@@ -135,6 +139,7 @@ abstract final class ZxRec {
   static const shaTable = 0x30;
   static const tlshList = 0x32;
   static const chunkTable = 0x34;
+  static const chunkRuns = 0x36;
   static const prevIndex = 0x40;
   static const generation = 0x42;
   static const generationList = 0x44;
@@ -1178,6 +1183,56 @@ class ZxChunkTable {
   }
 }
 
+/// One chunk run (a block of type 6, section 6.4.1): where it is and how
+/// many chunks it lists.
+class ZxChunkRunRef {
+  final int volume;
+  final int offset;
+
+  /// Bytes of the whole block, header included.
+  final int size;
+  final int count;
+  const ZxChunkRunRef(this.volume, this.offset, this.size, this.count);
+}
+
+/// The chunk runs of a deduplicating writer (Index record 0x36, section
+/// 6.4.1), oldest first.
+class ZxChunkRuns {
+  /// xxHash64 of the payload of the block table record of the Index the
+  /// list was written for (as in [ZxChunkTable.fingerprint]).
+  final int fingerprint;
+  final List<ZxChunkRunRef> runs;
+  const ZxChunkRuns(this.fingerprint, this.runs);
+
+  int get chunks => runs.fold(0, (s, r) => s + r.count);
+
+  /// The record payload: u64 fingerprint, vint count, then per run
+  /// [vint volume, with multi_volume] vint offset, vint size, vint count.
+  void write(ZxBytes x, int fp, bool multiVolume) {
+    x.u64(fp);
+    x.vint(runs.length);
+    for (final r in runs) {
+      if (multiVolume) x.vint(r.volume);
+      x.vint(r.offset);
+      x.vint(r.size);
+      x.vint(r.count);
+    }
+  }
+
+  static ZxChunkRuns read(ZxRead r, bool multiVolume) {
+    final fp = r.u64();
+    final n = r.count(3);
+    final out = <ZxChunkRunRef>[];
+    for (var i = 0; i < n; i++) {
+      final vol = multiVolume ? r.vint() : 0;
+      final off = r.vint(), size = r.vint(), count = r.vint();
+      if (count == 0) zxDamaged('bad chunk run list');
+      out.add(ZxChunkRunRef(vol, off, size, count));
+    }
+    return ZxChunkRuns(fp, out);
+  }
+}
+
 /// The Index of one generation (section 6).
 class ZxIndex {
   final Map<int, ZxChain> chains = {};
@@ -1190,8 +1245,13 @@ class ZxIndex {
   /// (tlsh, entry number) pairs (record 0x32).
   List<(String, int)>? tlshList;
 
-  /// The chunk table of the dedup writer (record 0x34); see [chunksValid].
+  /// The chunk table of the dedup writer (record 0x34, written by zx
+  /// 0.5.0); see [chunksValid].
   ZxChunkTable? chunkTable;
+
+  /// The chunk runs of the dedup writer (record 0x36); see
+  /// [chunkRunsValid].
+  ZxChunkRuns? chunkRuns;
 
   /// xxHash64 of the payload of the block table record, as read (the
   /// fingerprint a valid chunk table carries).
@@ -1215,6 +1275,13 @@ class ZxIndex {
   /// table (section 6.4).
   ZxChunkTable? get chunksValid {
     final t = chunkTable;
+    return t != null && t.fingerprint == blockTableHash ? t : null;
+  }
+
+  /// The chunk runs, when there are some and they were listed for this
+  /// block table (section 6.4.1).
+  ZxChunkRuns? get chunkRunsValid {
+    final t = chunkRuns;
     return t != null && t.fingerprint == blockTableHash ? t : null;
   }
 
@@ -1318,6 +1385,11 @@ class ZxIndex {
       final fp = blockTableHash;
       w.rec(ZxRec.chunkTable, (x) => ct.write(x, fp));
     }
+    final cr = chunkRuns;
+    if (cr != null) {
+      final fp = blockTableHash;
+      w.rec(ZxRec.chunkRuns, (x) => cr.write(x, fp, multiVolume));
+    }
     for (final o in other) {
       w.record(o.type, o.payload);
     }
@@ -1359,6 +1431,8 @@ class ZxIndex {
           idx.tlshList = [for (var i = 0; i < n; i++) (r.string(), r.vint())];
         case ZxRec.chunkTable:
           idx.chunkTable = ZxChunkTable.read(r);
+        case ZxRec.chunkRuns:
+          idx.chunkRuns = ZxChunkRuns.read(r, multiVolume);
         case ZxRec.prevIndex:
           final vol = multiVolume ? r.vint() : 0;
           idx.previous = ZxIndexLoc(vol, r.vint(), r.vint());

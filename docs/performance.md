@@ -110,10 +110,35 @@ found by the whole-file check (same size and SHA-256).
 The cost is on the handler's isolate: the fragmenter and a SHA-256 per
 chunk. On 100 MB of random data stored (`-mx0`, one thread, without TLSH)
 the write takes 1.82 s with dedup against 0.95 s without, so chunking and
-hashing run at about 115 MB/s, far above the LZMA2 workers; the chunk
-table adds 62 KB per 100 MB of unique data to every Index. Memory: the
-chunk index costs about 70 bytes per chunk (about 1.1 GB per TB of unique
-data).
+hashing run at about 115 MB/s, far above the LZMA2 workers.
+
+### .zx, the chunk index at scale
+
+`tool/zx_dedup_scale.dart` (AOT, one process per case, under
+`systemd-run --user --scope -p MemoryMax=3G -p MemorySwapMax=0`) simulates
+the chunks of a large archive without writing its data: 1,638,400 chunks
+(100 GiB of unique data at 64 KiB) with synthetic SHA-256 values.
+
+| | zx 0.5.0 (chunk table, 0x34) | chunk runs (0x36) |
+|---|---|---|
+| per Index | 58 MB (every generation) | 17 bytes (record 0x36; the whole Index of the test: 415 bytes) |
+| on disk | in every Index | 77 MB (49.5 bytes a chunk), once and at merges |
+| writer memory, last generation | +157 MB for the index alone (100 bytes a chunk), 255 MB resident after opening | 2.4 MB kept (1.5 bytes a chunk), 13 MB resident after opening |
+| append of 64 MiB of new data, peak | 431 MB | 123 MB (64 MiB of it the tool's input) |
+| append time | 3.1 s | 1.5 s |
+| 200,000 lookups of stored chunks | 49 ms (memory) | 1.7 s, one 3 KiB page read each |
+| 200,000 lookups of new chunks | | 31 ms (0.8% of pages read, the Bloom filter) |
+
+The append rows are a real append (`prepare` then `append`, stored
+data, one thread) to an archive whose last Index knows the 1.6 M chunks:
+the zx 0.5.0 row is the writer of the previous release (git HEAD before
+the change) on its chunk table; the new writer on that same archive peaks
+at 319 MB once (it loads the table and writes it as a run), then at 78 MB.
+At 16.8 M chunks (1 TiB): the run is 792 MB, opened in 36 ms with 25 MB
+kept; the index of zx 0.5.0 alone takes 1.47 GB, and building its chunk
+table in the same process passes 3 GB (the process is killed). Merging two
+runs of 819,200 records takes 0.66 s (8.4 M: 9.6 s), streamed page by
+page (+11 MB resident).
 
 ### LZMA against the SDK itself
 

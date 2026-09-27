@@ -137,6 +137,24 @@ class ZxKeys {
     }
   }
 
+  /// [ctr] for the bytes at [offset] (a multiple of 16) of a payload whose
+  /// first counter block is [nonce]: the counter starts at nonce plus
+  /// offset / 16 (random access into an encrypted block).
+  void ctrAt(Uint8List nonce, int offset, Uint8List b,
+      [int off = 0, int? len]) {
+    if ((offset & 15) != 0) throw ArgumentError('offset not aligned');
+    final counter = Uint8List.fromList(nonce);
+    var add = offset >> 4;
+    var carry = 0;
+    for (var j = 15; j >= 0 && (add != 0 || carry != 0); j--) {
+      final v = counter[j] + (add & 0xFF) + carry;
+      counter[j] = v & 0xFF;
+      carry = v >> 8;
+      add >>= 8;
+    }
+    ctr(counter, b, off, len);
+  }
+
   /// The encrypted payload of a block: nonce, ciphertext of [plain] (which
   /// is changed), MAC over [headerMacPart], the nonce and the ciphertext.
   /// [headerMacPart] is filled in by the caller after the sizes are known,

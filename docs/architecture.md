@@ -885,7 +885,9 @@ does not apply to it.
   streamed inline records, volumes with destination folders, appends,
   compaction with repacking), `zx_dedup.dart` (zpaq's content-defined
   fragmenter, the chunk index, the solid and dedup features of a set of
-  extents), `zx_memory.dart` (the memory estimates and the worker count),
+  extents), `zx_chunkrun.dart` (the chunk runs: the on-disk index of the
+  chunks sorted by SHA-256, its writer, its lookups by random access, the
+  merge of runs), `zx_memory.dart` (the memory estimates and the worker count),
   `zx_handler.dart` (the 7-Zip shaped handler: properties, extraction,
   random access, updates, timeline, the sequential reader of pipes).
   `lib/src/cli/arc_zx.dart` adapts it; `update.dart` lets it write in
@@ -894,7 +896,17 @@ does not apply to it.
 - **Appends in place.** An update of a .zx file opens it in append mode,
   truncates what follows the last valid Footer (an interrupted update) and
   writes a generation; nothing before is changed, so a crash leaves the
-  previous state readable. A volume set gets new volume files after the
+  previous state readable. dart:io opens files with FILE_SHARE_READ and
+  FILE_SHARE_WRITE on Windows, so the handle that reads the archive (the
+  CLI's, the worker's) does not block the append. When the file can not be
+  opened for appending (another program holds it without sharing
+  writing), the handler writes `name.zx-part` (the bytes up to the last
+  valid Footer, then the generation: the same bytes), closes the reader
+  and the caller's handle (`releaseInput`: Windows does not rename over a
+  file open without sharing deletion) and renames it over the archive,
+  trying again for about 3 seconds; a lasting lock leaves the archive as
+  it was. `zxOpenForAppend` and `zxReplaceFile` are the seams the tests use
+  to simulate a locked file. A volume set gets new volume files after the
   last one. The CLI skips 7-Zip's temporary file and its "the file
   already exists" check for .zx (`zxInPlace` in `update.dart`), and
   `zx_worker.dart` does the same for `ZxArchive`. A new archive is still
@@ -909,22 +921,49 @@ does not apply to it.
   while the workers code the blocks.
 - **Dedup.** The writer cuts each file with zpaq's fragmenter (64 KiB on
   average), hashes each chunk with SHA-256 and looks it up in
-  `ZxChunkIndex` (open addressing on the first bytes of the hash, about
-  70 bytes per chunk on the handler's isolate); a new chunk goes to the
-  dedup chunk store block being filled, a known one becomes an extent.
-  The chunks of earlier generations come from the chunk table of the
-  last Index (record 0x34, checked against the block table by its
-  fingerprint). A file with the size and SHA-256 of a stored file reuses
-  its extents (read whole, up to 64 MiB, only when such a size exists).
-  New data is placed as positions in the stream of new data and turned
-  into extents when the blocks are written, so the output does not depend
-  on the number of workers. Compaction repacks partly used blocks in the
-  workers (decode, then code again with the rebuilt chain) and keeps the
-  chunks that are still used.
-- **Limits.** The chunk index of a large archive lives in memory while an
-  update runs (about 1.1 GB per TB of unique data at 64 KiB chunks), and
-  the chunk table is written in every Index (about 42 bytes per chunk).
-  The sequential reader of pipes reads every generation in
-  order (a later version of a path comes after the earlier one) and does
-  not apply deletions. Appending in place with the archive open for
-  reading has not been tried on Windows.
+  `ZxChunkIndex` (the chunks stored in this generation: open addressing
+  on the first bytes of the hash, about 100 bytes per chunk on the
+  handler's isolate), then in the chunk runs of the last Index (record
+  0x36, checked against the block table by its fingerprint): a run keeps
+  its fences and Bloom filter in memory (1.5 bytes per chunk) and reads
+  one 3 KiB page for a lookup the filter lets through. A new chunk goes to
+  the dedup chunk store block being filled, a known one becomes an
+  extent. At the end of the generation the chunks in memory are sorted
+  and written as a run, merged (a streamed k-way merge, counted then
+  written) with the last runs of about their size. A chunk table of zx
+  0.5.0 (record 0x34) is loaded into `ZxChunkIndex` once and goes into the
+  run. A file with the size and SHA-256 of a stored file reuses its
+  extents: the SHA-256 is computed while the file is chunked, and the new
+  chunks of a file whose size matches wait in a spill file in the system's
+  temporary folder, so no file is held whole. New data is placed as
+  positions in the stream of new data and turned into extents when the
+  blocks are written, so the output does not depend on the number of
+  workers. Compaction repacks partly used blocks in the workers (decode,
+  then code again with the rebuilt chain; zpaq keeps its method, stored
+  in its props; a zpaq block of zx 0.5.0 without it is copied whole) and
+  writes the chunks still used as runs for the last kept generation.
+- **Pipes.** `openSeq` copies the input (in memory up to 16 MiB, else to a
+  temporary folder, `-mpipetemp`) and opens it as a file, because an
+  appended archive tells what a generation deleted or replaced only in
+  its Index, after the data (docs/zx-format.md, section 8.1): the items
+  are the state of the last generation or of `-mversion`. `-mpipe=onepass`
+  reads a streamed file in one pass without a copy: every version in
+  stream order, with a warning when later generations replaced or deleted
+  some. `ZxSeqReader` numbers generations by their Footers, decodes the
+  Index blocks it meets and gives `currentEntries` after a whole pass (the
+  reader of a streamed file whose Footers are all damaged uses it: the last
+  version of each path).
+- **Volumes until full.** `-mvdir=DIR:full` asks `df` (PowerShell on
+  Windows) for the free space; without an answer the volume sink reserves
+  the volume's space by writing zeros up to 96 MiB ahead of the data and
+  ends the volume where a write fails (the zeros left are cut off at
+  close). `zxFreeSpaceTool` and `zxPreallocWrite` are the seams of the
+  tests.
+- **Limits.** The chunks a generation stores are in memory until its end
+  (about 100 bytes each: 1.6 GB for a single update of 1 TB of new data
+  at 64 KiB chunks); the runs of earlier generations cost 1.5 bytes a
+  chunk. Merged runs stay in the file until a compaction and are not
+  counted in `Wasted`. Reading a pipe needs room for a copy of it (the
+  one pass reader does not, but gives every version). The fallback of a
+  locked archive and the Windows sharing rules are simulated in the tests,
+  not run on Windows.

@@ -34,6 +34,8 @@ int isArcZx(Uint8List p, int size) {
 class ZxArc extends InArchive {
   final ZxHandler h = ZxHandler();
   String? _openedPath;
+  // the stream opened (closed early when an update replaces the file)
+  SeekableInStream? _input;
 
   /// The path of the file opened (null for a stream).
   String? get openedPath => _openedPath;
@@ -43,6 +45,7 @@ class ZxArc extends InArchive {
       ArchiveOpenCallback? callback) {
     callback?.setTotal(null, stream.length);
     _openedPath = callback?.archivePath;
+    _input = stream;
     try {
       return h.open(stream,
               path: _openedPath,
@@ -159,7 +162,10 @@ class ZxArc extends InArchive {
     final r = h.updateFile(path, numItems, callback,
         volumeSizes: volumeSizes,
         newPassword: _newPassword(callback),
-        onFile: onFile);
+        onFile: onFile, releaseInput: () {
+      final s = _input;
+      if (s is FileInStream) s.close();
+    });
     final keep = h.options.compactKeep;
     if (keep != null) {
       compactFile(r.files.isNotEmpty ? r.files.last : path, keep,

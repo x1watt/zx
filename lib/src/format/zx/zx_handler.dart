@@ -65,6 +65,32 @@ int _kindOfTypeBits(int t) => switch (t & _Ifmt.mask) {
       _ => ZxKind.file,
     };
 
+/// Opens the archive at [path] for an append in place. dart:io opens files
+/// on Windows with FILE_SHARE_READ and FILE_SHARE_WRITE, so the reader of
+/// this process (and other readers that share writing) do not block it; a
+/// program holding the file without sharing writing (an antivirus, a
+/// backup or indexing tool) makes it fail, and the update then writes the
+/// archive again next to it and renames it ([zxReplaceFile]). A variable
+/// so that tests can simulate a locked file.
+RandomAccessFile Function(String path) zxOpenForAppend =
+    (path) => File(path).openSync(mode: FileMode.append);
+
+/// Replaces [to] by [from] (a rename over it; on Windows MoveFileEx with
+/// MOVEFILE_REPLACE_EXISTING, which fails while another program holds
+/// [to] without sharing deletion). A variable so that tests can simulate
+/// a locked file.
+void Function(String from, String to) zxReplaceFile =
+    (from, to) => File(from).renameSync(to);
+
+/// How often and how long [ZxHandler.updateFile] tries [zxReplaceFile]
+/// (locks of scanners are short).
+int zxReplaceTries = 20;
+Duration zxReplaceWait = const Duration(milliseconds: 150);
+
+/// The largest pipe [ZxHandler.openSeq] keeps in memory (16 MiB); a
+/// longer one is copied to a temporary file.
+int zxPipeMemory = 16 << 20;
+
 /// One version of a path in the timeline (section 9.1.1).
 class ZxTimelineVersion {
   final String path;
@@ -98,6 +124,15 @@ class ZxHandlerOptions {
 
   /// Compact after the update: keep this many generations (null: no).
   int? compactKeep;
+
+  /// A pipe (openSeq) is read in one pass, every version of every
+  /// generation in stream order (-mpipe=onepass), instead of being copied
+  /// to a temporary file first and read as a file (-mpipe=spool, the
+  /// default: the state of the last or of the chosen generation).
+  bool pipeOnePass = false;
+
+  /// Where a pipe is copied (null: the system's temporary folder).
+  String? pipeTempDir;
   int? threads;
 
   /// The memory the block workers may use together, when reading and
@@ -126,6 +161,14 @@ class ZxHandler {
   String? _archivePath;
   SeekableInStream? _seqStream;
   String? _seqWarning;
+  // the entries of the pipe or damaged file that are items (null: every
+  // inline entry, in stream order), and notes of the pass that found them
+  List<int>? _seqItems;
+  final List<String> _seqNotes = [];
+  // a pipe copied to a temporary folder (deleted by close)
+  FileInStream? _spoolFile;
+  Directory? _spoolDir;
+  bool _fromPipe = false;
   int _phySize = 0;
   int _totalSize = 0;
 
@@ -135,6 +178,12 @@ class ZxHandler {
   String? get archivePath => _archivePath;
 
   List<ZxEntry> get _entries => _r?.index.entries ?? _seq?.entries ?? const [];
+
+  // the inline entry of item [i] of a sequential read
+  int _seqEntryOf(int i) {
+    final m = _seqItems;
+    return m == null ? i : (i >= 0 && i < m.length ? m[i] : -1);
+  }
 
   /// IInArchive::Open. [path] is the file's full path when known;
   /// [password] is asked when the Index is encrypted.
@@ -192,13 +241,100 @@ class ZxHandler {
     return true;
   }
 
-  /// IArchiveOpenSeq::OpenSeq: reads a streamed file in one pass.
+  /// IArchiveOpenSeq::OpenSeq (a pipe). By default the input is copied to
+  /// a temporary file (in memory up to [zxPipeMemory]) and opened as a
+  /// file: the
+  /// items are the entries of the last generation (or of -mversion), so
+  /// entries deleted or replaced by a later generation are not extracted.
+  /// A one pass reader can not know that before the end of the input,
+  /// since a generation never changes the bytes of the earlier ones
+  /// (docs/zx-format.md, section 8.1). With [ZxHandlerOptions.pipeOnePass]
+  /// a streamed file is read in one pass without a copy: every version of
+  /// every generation in stream order.
   bool openSeq(InStream stream, {String? Function()? password}) {
     close();
-    final s = ZxSeqReader.open(stream, password: password);
-    if (s == null) return false;
-    _seq = s;
+    if (options.pipeOnePass) {
+      if (options.generation != null) {
+        throw const SevenZipException(
+            'zx: -mversion needs the whole input (not -mpipe=onepass)',
+            SevenZipError.unsupported);
+      }
+      final s = ZxSeqReader.open(stream, password: password);
+      if (s == null) return false;
+      _seq = s;
+      return true;
+    }
+    final (sp, file, dir) = _spool(stream);
+    try {
+      if (!open(sp, password: password)) {
+        _dropSpool(file, dir);
+        return false;
+      }
+    } catch (_) {
+      _dropSpool(file, dir);
+      rethrow;
+    }
+    _spoolFile = file;
+    _spoolDir = dir;
+    _fromPipe = true;
     return true;
+  }
+
+  // copies a pipe: in memory up to zxPipeMemory bytes, else to a
+  // temporary file
+  (SeekableInStream, FileInStream?, Directory?) _spool(InStream s) {
+    final inMemory = zxPipeMemory;
+    final got = BytesBuilder(copy: false);
+    final buf = Uint8List(1 << 20);
+    var end = false;
+    while (got.length < inMemory) {
+      var want = inMemory - got.length;
+      if (want > buf.length) want = buf.length;
+      final k = readFully(s, buf, 0, want);
+      if (k > 0) got.add(Uint8List.fromList(Uint8List.sublistView(buf, 0, k)));
+      if (k < want) {
+        end = true;
+        break;
+      }
+    }
+    if (end) return (MemoryInStream(got.takeBytes()), null, null);
+    final head = got.takeBytes();
+    final n = head.length;
+    final base = options.pipeTempDir;
+    final dir = (base == null ? Directory.systemTemp : Directory(base))
+        .createTempSync('zx-pipe-');
+    final path = '${dir.path}${Platform.pathSeparator}input.zx';
+    try {
+      final out = File(path).openSync(mode: FileMode.write);
+      try {
+        out.writeFromSync(head, 0, n);
+        for (;;) {
+          final k = s.read(buf, 0, buf.length);
+          if (k <= 0) break;
+          out.writeFromSync(buf, 0, k);
+        }
+      } finally {
+        out.closeSync();
+      }
+      final f = FileInStream.open(path);
+      return (f, f, dir);
+    } catch (_) {
+      _dropSpool(null, dir);
+      rethrow;
+    }
+  }
+
+  static void _dropSpool(FileInStream? f, Directory? dir) {
+    try {
+      f?.close();
+    } on FileSystemException {
+      // ignore
+    }
+    try {
+      dir?.deleteSync(recursive: true);
+    } on FileSystemException {
+      // ignore
+    }
   }
 
   void close() {
@@ -207,6 +343,14 @@ class ZxHandler {
     _seq = null;
     _seqStream = null;
     _seqWarning = null;
+    _seqItems = null;
+    _seqNotes.clear();
+    _fromPipe = false;
+    if (_spoolFile != null || _spoolDir != null) {
+      _dropSpool(_spoolFile, _spoolDir);
+      _spoolFile = null;
+      _spoolDir = null;
+    }
     _mode = ZxListMode.entries;
     _timeline = const [];
     _genItems = const [];
@@ -222,7 +366,12 @@ class ZxHandler {
         final s = _seq;
         if (s != null) {
           s.readAllRecords();
-          return s.entries.length;
+          // a complete pass: the items are the current entries (a one pass
+          // extraction already gave every version)
+          if (_seqItems == null && !s.extracted) {
+            _seqItems = s.currentEntries();
+          }
+          return _seqItems?.length ?? s.entries.length;
         }
         return _entries.length;
     }
@@ -319,7 +468,10 @@ class ZxHandler {
         break;
     }
     final s = _seq;
-    if (s != null && !s.ensureEntry(index)) return null;
+    if (s != null) {
+      index = _seqEntryOf(index);
+      if (index < 0 || !s.ensureEntry(index)) return null;
+    }
     final list = _entries;
     if (index < 0 || index >= list.length) return null;
     final e = list[index];
@@ -440,7 +592,8 @@ class ZxHandler {
     final h = r?.header ?? _seq?.header;
     switch (propId) {
       case Kpid.phySize:
-        return r == null ? null : _phySize;
+        // a pipe has no size to compare with (as the one pass reader)
+        return r == null || _fromPipe ? null : _phySize;
       case Kpid.totalPhySize:
         return r == null || !r.header.multiVolume ? null : _totalSize;
       case Kpid.method:
@@ -474,6 +627,7 @@ class ZxHandler {
         final w = [
           ...?r?.warnings,
           if (_seqWarning != null) _seqWarning!,
+          ..._seqNotes,
           ...?_seq?.warnings,
         ];
         return w.isEmpty ? null : w.join('\n');
@@ -491,15 +645,22 @@ class ZxHandler {
     var s = _seq;
     if (s != null) {
       final ss = _seqStream;
+      final pw = password ?? _password;
       if (ss != null) {
-        // a file: a new pass from the start (the listing read it all)
-        final n = s.entries.length;
+        // a file: the records first (the current entries), then a new pass
+        // for the data
+        if (_seqItems == null) {
+          ss.position = 0;
+          final r0 = ZxSeqReader.open(ss, password: pw)!;
+          r0.readAllRecords();
+          _seqItems = r0.currentEntries();
+          _seqNotes.addAll(r0.warnings);
+        }
         ss.position = 0;
-        s = ZxSeqReader.open(ss, password: password ?? _password)!;
-        s.ensureEntry(n - 1);
+        s = ZxSeqReader.open(ss, password: pw)!;
         _seq = s;
       }
-      _extractSeq(s, indices, testMode, cb);
+      _extractSeq(s, _seqItems, indices, testMode, cb);
       return;
     }
     final r = _r!;
@@ -735,18 +896,25 @@ class ZxHandler {
     return true;
   }
 
-  void _extractSeq(ZxSeqReader s, List<int>? indices, bool testMode,
-      ArchiveExtractCallback cb) {
+  // [items]: the inline entries that are items (null: all of them, in one
+  // pass); [indices]: the items wanted (null: all)
+  void _extractSeq(ZxSeqReader s, List<int>? items, List<int>? indices,
+      bool testMode, ArchiveExtractCallback cb) {
+    final itemOf = items == null
+        ? null
+        : {for (var k = 0; k < items.length; k++) items[k]: k};
     final want = indices?.toSet();
     final buf = Uint8List(1 << 16);
-    for (var i = 0;; i++) {
+    for (var j = 0;; j++) {
       if (want != null && want.isEmpty) break;
-      if (!s.ensureEntry(i)) break;
-      if (want != null && !want.remove(i)) {
-        s.skipData(i);
+      if (itemOf != null && itemOf.isEmpty) break;
+      if (!s.ensureEntry(j)) break;
+      final i = itemOf == null ? j : itemOf.remove(j);
+      if (i == null || (want != null && !want.remove(i))) {
+        s.skipData(j);
         continue;
       }
-      final e = s.entries[i];
+      final e = s.entries[j];
       var askMode = testMode ? AskMode.test : AskMode.extract;
       final out = cb.getStream(i, askMode);
       if (!testMode && out == null && !e.isDir) askMode = AskMode.skip;
@@ -759,25 +927,42 @@ class ZxHandler {
         } else if (e.kind == ZxKind.file) {
           final sha = Sha256();
           for (;;) {
-            final n = s.readData(i, buf, 0, buf.length);
+            final n = s.readData(j, buf, 0, buf.length);
             if (n == 0) break;
             sha.update(buf, 0, n);
             out?.write(buf, 0, n);
           }
-          s.shaOf[i] = sha.digest();
+          s.shaOf[j] = sha.digest();
         }
       } on SevenZipException catch (x) {
         res = _opResultOf(x);
       }
       out?.flush();
       try {
-        s.skipData(i);
+        s.skipData(j);
       } on SevenZipException catch (x) {
         if (res == OperationResult.ok) res = _opResultOf(x);
       }
       cb.setOperationResult(res);
     }
+    if (items == null) {
+      // one pass: every version was given; say what the last generation
+      // changed
+      s.extracted = true;
+      s.readAllRecords();
+      if (s.generations > 1) {
+        final cur = s.currentEntries().length;
+        final old = s.entries.length - cur;
+        if (old > 0) {
+          s.warnings.add('zx: the input holds ${s.generations} generations '
+              'read in one pass (-mpipe=onepass): $old entr'
+              '${old == 1 ? 'y' : 'ies'} replaced or deleted by a later '
+              'generation were extracted too');
+        }
+      }
+    }
   }
+
 
   // ---- random access
 
@@ -972,6 +1157,20 @@ class ZxHandler {
           if (n == null || n < 1) invalidArg('zx: -mcompact=N needs N >= 1');
           o.compactKeep = n;
         }
+        continue;
+      }
+      if (name == 'pipe') {
+        o.pipeOnePass = switch (str().toLowerCase()) {
+          '' || 'spool' || 'temp' => false,
+          'onepass' || 'stream' => true,
+          _ => invalidArg('zx: -mpipe=spool|onepass'),
+        };
+        continue;
+      }
+      if (name == 'pipetemp' || name == 'pipetmp') {
+        final d = str();
+        if (d.isEmpty) invalidArg('zx: -mpipetemp needs a folder');
+        o.pipeTempDir = d;
         continue;
       }
       if (name == 'vsearch') {
@@ -1216,11 +1415,19 @@ class ZxHandler {
   /// volume sizes, a set), or a generation appended in place (after the
   /// last valid Footer; a volume set gets new volumes). Returns the files
   /// written. [onFile] sees each new file first.
+  ///
+  /// When the file can not be opened for appending (another program holds
+  /// it), the archive is written again as `path.zx-part` (its bytes up to
+  /// the last valid Footer, then the new generation, the same bytes an
+  /// append gives) and renamed over [path]; [releaseInput] closes the
+  /// caller's handle of the archive first (Windows does not rename a file
+  /// that is open without sharing deletion, as dart:io opens files).
   ZxUpdateFileResult updateFile(
       String path, int numItems, ArchiveUpdateCallback cb,
       {List<int> volumeSizes = const [],
       String? newPassword,
-      void Function(String path)? onFile}) {
+      void Function(String path)? onFile,
+      void Function()? releaseInput}) {
     final o = _withPassword(options.write, newPassword);
     if (volumeSizes.isNotEmpty) o.volumeSizes = volumeSizes;
     final r = _r;
@@ -1308,13 +1515,15 @@ class ZxHandler {
         }
         written.addAll(res.volumes);
       } else {
-        final raf = File(path).openSync(mode: FileMode.append);
-        final f = FileOutStream(raf);
+        FileOutStream f;
         try {
-          // garbage after the last valid Footer (an interrupted update) is
-          // overwritten
-          if (f.length > r.validEnd) f.truncate(r.validEnd);
-          f.position = r.validEnd;
+          f = _openAppend(path, r.validEnd);
+        } on FileSystemException catch (e) {
+          res = _appendByRewrite(path, r, o, numItems, cb, e,
+              onFile: onFile, releaseInput: releaseInput);
+          return ZxUpdateFileResult(written, res, o.warnings);
+        }
+        try {
           final wr = ZxWriter.append(r, o, ZxStreamSink(f, r.validEnd));
           try {
             _feed(wr, r, numItems, cb);
@@ -1330,6 +1539,101 @@ class ZxHandler {
       }
     }
     return ZxUpdateFileResult(written, res, o.warnings);
+  }
+
+  // the archive opened for an append at [end]: garbage after the last
+  // valid Footer (an interrupted update) is cut
+  static FileOutStream _openAppend(String path, int end) {
+    final raf = zxOpenForAppend(path);
+    try {
+      final f = FileOutStream(raf);
+      if (f.length > end) f.truncate(end);
+      f.position = end;
+      return f;
+    } catch (_) {
+      try {
+        raf.closeSync();
+      } on FileSystemException {
+        // ignore
+      }
+      rethrow;
+    }
+  }
+
+  // the append when the file can not be opened for writing: the archive
+  // up to its last valid Footer and the new generation go into
+  // path.zx-part, which then replaces the archive (tried a few times, as
+  // the program holding the file may let it go)
+  ZxWriteResult _appendByRewrite(String path, ZxArchiveReader r,
+      ZxWriteOptions o, int numItems, ArchiveUpdateCallback cb,
+      FileSystemException why,
+      {void Function(String path)? onFile, void Function()? releaseInput}) {
+    final tmp = '$path.zx-part';
+    onFile?.call(tmp);
+    ZxWriteResult res;
+    final f = FileOutStream.create(tmp);
+    try {
+      final src = r.volumes.stream(0);
+      src.position = 0;
+      copyStream(src, f, limit: r.validEnd);
+      final wr = ZxWriter.append(r, o, ZxStreamSink(f, r.validEnd));
+      try {
+        _feed(wr, r, numItems, cb);
+        res = wr.finish();
+      } catch (_) {
+        wr.abort();
+        rethrow;
+      }
+      f.flush();
+    } catch (_) {
+      _closeQuietly(f);
+      _deleteQuietly(tmp);
+      rethrow;
+    }
+    f.close();
+    // the handles of the old file go first (a rename over an open file
+    // fails on Windows)
+    r.close();
+    _r = null;
+    releaseInput?.call();
+    FileSystemException? last;
+    for (var i = 0; i < zxReplaceTries; i++) {
+      try {
+        zxReplaceFile(tmp, path);
+        last = null;
+        break;
+      } on FileSystemException catch (e) {
+        last = e;
+        if (i + 1 < zxReplaceTries) sleep(zxReplaceWait);
+      }
+    }
+    if (last != null) {
+      _deleteQuietly(tmp);
+      throw SevenZipException(
+          'zx: the archive is locked by another program and was not '
+          'changed (${last.osError?.message ?? last.message})',
+          SevenZipError.io);
+    }
+    o.warnings.add('zx: the archive could not be opened for appending '
+        '(${why.osError?.message ?? why.message}): it was written again '
+        'and renamed');
+    return res;
+  }
+
+  static void _closeQuietly(FileOutStream f) {
+    try {
+      f.close();
+    } on Object {
+      // closed
+    }
+  }
+
+  static void _deleteQuietly(String p) {
+    try {
+      File(p).deleteSync();
+    } on FileSystemException {
+      // ignore
+    }
   }
 
   // feeds the items of the update callback to the writer
@@ -1735,6 +2039,13 @@ class ZxEntryStream implements SeekableInStream {
 /// for the next block marker with a valid header CRC (section 4.1); the
 /// entries whose data was in the lost part fail, the next inline records
 /// place the following ones again.
+///
+/// An appended file holds its generations one after the other, and the
+/// inline records of a generation are only its new or changed entries
+/// (section 8.1): the reader numbers the generations by their Footers and
+/// decodes the Index blocks it meets, so that after a complete pass
+/// [currentEntries] gives the state of the last generation (the last
+/// version of each path, without the deleted ones).
 class ZxSeqReader {
   final InStream _s;
   final ZxHeader header;
@@ -1742,6 +2053,17 @@ class ZxSeqReader {
   ZxKeys? _keys;
   final Map<int, ZxChain> _chains = {};
   final List<ZxEntry> entries = [];
+
+  /// The generation of each entry, counted from 1 in stream order (the
+  /// Footers passed plus 1).
+  final List<int> entryGeneration = [];
+
+  /// The Footers passed, the last Index decoded and the Footers passed
+  /// before it (its generation is that count plus 1).
+  int footers = 0;
+  ZxIndex? lastIndex;
+  int _lastIndexAt = -1;
+  final List<Uint8List> _indexParts = [];
 
   /// SHA-256 of the entries extracted.
   final Map<int, Uint8List> shaOf = {};
@@ -1909,7 +2231,9 @@ class ZxSeqReader {
     }
     final (h, raw) = x;
     if (h == null) {
+      // a Footer: the end of a generation, with its Index just before
       if (_left < 0) _left = 0;
+      _endGeneration();
       return true;
     }
     switch (h.type) {
@@ -1935,6 +2259,7 @@ class ZxSeqReader {
           } else if (rec.type == ZxRec.entry) {
             final e = ZxEntry.decode(rec.payload, inline: true);
             entries.add(e);
+            entryGeneration.add(footers + 1);
             hadEntry = true;
             if (e.extents.isNotEmpty && _nextNo == null) {
               _nextNo = e.extents[0];
@@ -1946,6 +2271,7 @@ class ZxSeqReader {
         return true;
       case ZxBlockType.data:
       case ZxBlockType.solid:
+      case ZxBlockType.chunks:
         final no = _nextNo;
         _blkNo = no ?? -2;
         _nextNo = no == null ? null : no + 1;
@@ -1965,13 +2291,99 @@ class ZxSeqReader {
         }
         _blkPos = 0;
         return true;
+      case ZxBlockType.index:
+        // kept to learn the state of the generation at its Footer
+        if (_left < 0) _left = 0;
+        try {
+          final chain = ZxArchiveReader.metaChainOf(header, h.chainId);
+          final k = header.encryptedMetadata ? _getKeys() : null;
+          _indexParts.add(
+              zxDecodeBlock(ZxDecodeArg(raw, chain, k?.aesKey, k?.macKey)));
+        } on ZxNeedPasswordException {
+          rethrow;
+        } on SevenZipException {
+          _indexParts
+            ..clear()
+            ..add(Uint8List(0));
+          _indexBad = true;
+        }
+        return true;
       default:
-        // the Index (the entries are known), padding and the rest; they
-        // end an entry without size too
+        // padding, chunk runs and the rest; they end an entry without size
+        // too
         if (_left < 0) _left = 0;
         return true;
     }
   }
+
+  bool _indexBad = false;
+
+  // at a Footer: the Index blocks before it give the state of the
+  // generation
+  void _endGeneration() {
+    if (_indexParts.isNotEmpty && !_indexBad) {
+      final all = BytesBuilder(copy: false);
+      for (final p in _indexParts) {
+        all.add(p);
+      }
+      try {
+        lastIndex =
+            ZxIndex.decode(all.toBytes(), multiVolume: header.multiVolume);
+        _lastIndexAt = footers;
+      } on SevenZipException {
+        // a damaged Index: the state of this generation is not known
+      }
+    }
+    _indexParts.clear();
+    _indexBad = false;
+    footers++;
+  }
+
+  /// The generations met (the last one may have no Footer: an interrupted
+  /// update or a damaged end).
+  int get generations {
+    final g = entryGeneration.isEmpty ? 0 : entryGeneration.last;
+    return g > footers ? g : footers;
+  }
+
+  /// After a complete pass: the entries of the state of the last
+  /// generation, in stream order. A path written again in a later
+  /// generation takes its last version; the paths that the Index of the
+  /// last generation does not list were deleted. Notes about what could
+  /// not be applied go to [warnings].
+  List<int> currentEntries() {
+    final latest = <String, int>{};
+    for (var i = 0; i < entries.length; i++) {
+      latest[entries[i].path] = i;
+    }
+    Set<String>? listed;
+    final idx = lastIndex;
+    final last = generations;
+    if (idx != null && _lastIndexAt + 1 == last) {
+      listed = {for (final e in idx.entries) e.path};
+      var missing = 0;
+      for (final p in listed) {
+        if (!latest.containsKey(p)) missing++;
+      }
+      if (missing > 0) {
+        warnings.add('zx: $missing entr${missing == 1 ? 'y' : 'ies'} of the '
+            'last generation have no inline record (renamed): they are only '
+            'read from a seekable file');
+      }
+    } else if (last > 1) {
+      warnings.add('zx: the Index of the last generation is missing or '
+          'damaged: entries it deleted can not be told apart');
+    }
+    return [
+      for (var i = 0; i < entries.length; i++)
+        if (latest[entries[i].path] == i &&
+            (listed == null || listed.contains(entries[i].path)))
+          i
+    ];
+  }
+
+  /// Set after a one pass extraction (the items were every version).
+  bool extracted = false;
 
   /// Reads the records up to the end (the listing of a pipe).
   void readAllRecords() {

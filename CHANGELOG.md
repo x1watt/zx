@@ -1,5 +1,25 @@
 ## Unreleased
 
+- **.zx dedup at scale**: the chunks of earlier generations are kept in
+  chunk runs (block type 6, Index record 0x36, `docs/zx-format.md`
+  section 6.4.1), sorted by SHA-256 and searched on disk through fences
+  and a Bloom filter (1.5 bytes of memory a chunk instead of about 100),
+  written once per generation and merged in size tiers, instead of a
+  chunk table loaded whole and written in every Index (58 MB per Index
+  for 100 GiB of unique data). Chunk tables of 0.5.0 are migrated. The
+  whole-file check is streamed (a file of the size of a stored one keeps
+  its new chunks in a temporary spill file, never in memory). Encrypted
+  archives with a clear Index now deduplicate across generations.
+- **.zx from a pipe**: the input is copied (memory, or a temporary file
+  with `-mpipetemp=DIR`) and read as a file, so entries deleted or
+  replaced by a later generation are not extracted and `-mversion` works;
+  `-mpipe=onepass` keeps the one pass reader (every version, in order).
+- **.zx updates**: an archive that can not be opened for appending (held
+  by another program) is written again and renamed, with retries;
+  compaction keeps the zpaq method of zpaq blocks (stored in the chain
+  props; blocks of 0.5.0 are copied whole); `-mvdir=DIR:full` works
+  without `df`/PowerShell by reserving each volume's space as it is
+  written.
 - **Compression settings for .zx** (zx switches): `-m0=zcm:auto` chooses
   the zcm level, memory and workers for the machine and the input and
   prints the choice (`zcm level 6, 1.2 GiB, 2 threads, estimated 3 min`,

@@ -307,6 +307,8 @@ class FileInStream implements SeekableInStream {
   factory FileInStream.open(String path) =>
       FileInStream(File(path).openSync());
 
+  bool _closed = false;
+
   @override
   int read(Uint8List buf, int off, int len) {
     if (_pos >= _length || len <= 0) return 0;
@@ -337,7 +339,12 @@ class FileInStream implements SeekableInStream {
   @override
   int get length => _length;
 
-  void close() => raf.closeSync();
+  /// Closes the file; a second close does nothing.
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    raf.closeSync();
+  }
 }
 
 /// Buffered random access file output.
