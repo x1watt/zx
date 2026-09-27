@@ -65,6 +65,13 @@ class SevenZipCancelToken {
       l();
     }
   }
+
+  /// Calls [listener] when [cancel] is called (for the operations of
+  /// `zx_api.dart`). Remove it with [removeCancelListener].
+  void addCancelListener(void Function() listener) => _listeners.add(listener);
+
+  void removeCancelListener(void Function() listener) =>
+      _listeners.remove(listener);
 }
 
 /// A file or a directory (with everything below it) to add to an archive.

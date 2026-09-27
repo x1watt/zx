@@ -85,8 +85,15 @@ the single thread output. On the small inputs of the tests it is.
   locals instead of fields, no closures, no boxing, masking only where C
   relies on 32 bit wraparound.
 - No byte loops in `async` functions: locals that live across an `await`
-  are kept in a heap context. Everything except `api.dart`,
-  `parallel.dart` and `pool.dart` is synchronous.
+  are kept in a heap context. Everything except `api.dart`, `zx_api.dart`,
+  `zx_worker.dart`, `parallel.dart` and `pool.dart` is synchronous, and
+  in those the loops over bytes are in synchronous functions (the handlers,
+  the extract and update callbacks of `zx_worker.dart`).
+- `ZxArchive`: the listing comes to the caller with `Isolate.exit` (no
+  copy) and is not sent back to the workers (each reads the headers again,
+  which is cheap), except for a compressed tar, whose headers are only
+  known after decoding it all. Messages to the caller carry no per item
+  data: progress at most every 100 ms, the questions one at a time.
 - Progress crosses isolates at most every 100 ms; per block or per MB
   callbacks inside the codecs stay on the worker isolate.
 - Blocks cross isolates as `TransferableTypedData`, and the parallel
@@ -97,13 +104,36 @@ the single thread output. On the small inputs of the tests it is.
 
 ## 3. Open items
 
+- `ZxArchive` on a compressed tar (x.tar.gz...): each operation decodes
+  the archive in one pass from the start (listing, extracting one file,
+  reading the first bytes for a preview), and an update decodes the tar
+  to a temporary file first. A cache of the decoded tar for a session
+  would make previews of large archives faster.
+- `ZxArchive` restores folder times with one `touch` process per folder;
+  archives with many thousands of folders spend time there.
+
 - 7z compression on several isolates (LZMA2 blocks inside a folder,
   independent folders), see section 6 of `docs/architecture.md`.
 - Multi-block xz decoding in parallel.
 - Phones: not measured yet. On a phone keep the levels at 5 or below and
   `threads` at 4 or below.
 
-## 4. How to measure
+## 4. The desktop app
+
+- A folder of the list is computed from `ZxArchive.children` (built once
+  per listing) and sorted on the UI isolate (not measured yet on folders
+  with many thousands of items); the rows are built lazily (fixed height
+  list). Folder sizes are summed in one pass over the listing, on first
+  use.
+- The preview reads at most 512 KiB (`readBytes(maxBytes:)`) after a
+  180 ms pause in the selection and cancels the read (the isolate is
+  killed) when the selection changes. On a compressed tar each read
+  decodes the archive from the start (section 3).
+- Opening a file with its program extracts only that file
+  (`extractToTemp`); the temporary copies are deleted a day later, at the
+  next start.
+
+## 5. How to measure
 
 ```sh
 dart compile exe tool/bench.dart -o /tmp/zxbench

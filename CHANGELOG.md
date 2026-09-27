@@ -1,3 +1,26 @@
+## 0.3.0
+
+- zx, a desktop archive manager (Flutter, `app/`) for Linux, Windows and
+  macOS on the `ZxArchive` API: folder tree, sortable file list with
+  multi selection, path bar with history, quick filter, preview of text
+  and images, open with the default program; extract (all, selection,
+  with or without paths, overwrite questions), test, add (dialog and drag
+  and drop), delete, rename, new folder, comment, new archives in every
+  writable format with level, method, password, encrypted names and
+  solid; password and progress dialogs with cancel; light and dark
+  themes; recent archives.
+- `zx_app --extract-to-folder <archive>...`: extracts each archive into a
+  folder named after it, in a small window.
+- Desktop integration at user level, from the settings or the command
+  line (`--install-integration`, `--remove-integration`,
+  `--integration-status`): on Linux a desktop entry with the archive MIME
+  types, the default application in mimeapps.list (restored when switched
+  off), a Nautilus script and nautilus-python extension and a Thunar
+  custom action for "Extract to folder"; on Windows the HKCU ProgID,
+  OpenWithProgids and an "Extract to folder" verb; on macOS the document
+  types of the bundle.
+- `tool/install_linux.sh` and `tool/uninstall_linux.sh`.
+
 ## 0.2.0
 
 - New formats in the command line tool, each registered with 7-Zip's

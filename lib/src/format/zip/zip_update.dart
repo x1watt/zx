@@ -40,6 +40,10 @@ class ZipWriteOptions {
   /// -mem: the encryption method used with a password.
   ZipEncryption encryption = ZipEncryption.zipCrypto;
 
+  /// Not a 7-Zip switch: the archive comment to write instead of the one
+  /// of the old archive (empty removes it). Null keeps the old one.
+  Uint8List? newComment;
+
   /// -mcu: names are always written as UTF-8 with the UTF-8 flag.
   bool? forceUtf8;
 

@@ -2,10 +2,12 @@
 /// program): 7z archives, xz and lzma files, with LZMA, LZMA2, PPMd, the
 /// branch filters, Delta, BCJ2 and AES-256.
 ///
-/// Start with [SevenZipArchive] and the xz / lzma helpers: they run in
-/// background isolates. The lower level building blocks (the synchronous
-/// reader, writer, streams and codecs) are exported too, for callers that
-/// run them in their own isolates.
+/// Start with [ZxArchive] (every format: 7z, zip, rar, tar and the
+/// compressed tars, gzip, bzip2, xz, lzma, lzh, arj, split volumes),
+/// [SevenZipArchive] and the xz / lzma helpers: they run in background
+/// isolates. The lower level building blocks (the synchronous reader,
+/// writer, streams and codecs) are exported too, for callers that run them
+/// in their own isolates.
 library;
 
 // The isolate based API.
@@ -32,6 +34,28 @@ export 'src/api.dart'
         sevenZipCompressBytes,
         sevenZipDecompressBytes;
 export 'src/pool.dart' show defaultThreads;
+
+// The generic API: every format through one handle.
+export 'src/zx_api.dart'
+    show
+        ZxArchive,
+        ZxListing,
+        ZxItem,
+        ZxCapabilities,
+        ZxOptions,
+        ZxSource,
+        ZxProgress,
+        ZxCancelToken,
+        ZxOverwrite,
+        ZxOverwriteAnswer,
+        ZxOverwriteRequest,
+        ZxOverwriteCallback,
+        ZxPasswordReason,
+        ZxPasswordRequest,
+        ZxPasswordCallback,
+        ZxExtractResult,
+        ZxItemError,
+        ZxUpdateResult;
 
 // Streams and errors.
 export 'src/io/streams.dart'

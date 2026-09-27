@@ -1101,7 +1101,7 @@ class ZipHandler {
       options: writeOptions,
       oldStream: _stream,
       oldItems: kept,
-      oldComment: _comment,
+      oldComment: writeOptions.newComment ?? _comment,
     ).update(outStream, numItems, updateCallback);
   }
 }

@@ -19,7 +19,9 @@ No native code, no FFI, no plugins, no run-time dependencies: it works
 wherever `dart:io` does (Android, iOS, Linux, macOS, Windows). All heavy
 work happens in background isolates, so the UI isolate never blocks.
 
-Status: version 0.1.0, not published to pub.dev (`publish_to: none`).
+Status: version 0.3.0, not published to pub.dev (`publish_to: none`).
+Version 0.3.0 adds **zx**, a desktop archive manager (Flutter, in `app/`),
+see Desktop app below.
 
 ## Credits
 
@@ -301,6 +303,66 @@ Windows Dart SDK and wine is installed; on a Mac it builds that Mac's
 binary. Without a binary, `dart run zx:zx ...` runs the same program from
 source.
 
+## Desktop app
+
+`app/` is **zx**, a WinZip / 7-Zip File Manager style archive manager for
+Linux, Windows and macOS, written with Flutter on the `ZxArchive` API (so
+every format of the command line tool, and all the archive work in
+background isolates: the window never freezes).
+
+- Open archives from the command line, File > Open, drag and drop, or the
+  recent list; browse with a folder tree, a breadcrumb path bar (Back,
+  Forward, Up), a sortable file list (Name, Size, Packed, Ratio, Modified,
+  Method, Encrypted, CRC), multi selection, a quick filter and a preview
+  of text and images.
+- Extract (all or the selection, with or without paths, overwrite policy
+  with a per file question: Yes, No, Yes to all, No to all, Keep both,
+  Cancel), extract here, test, open a file with its default program.
+- Add files and folders (dialog or drag and drop, into the current folder
+  of the archive) with level, method, password, encrypted names and solid;
+  delete, rename, new folder, archive comment (zip, RAR5); new archives in
+  7z, zip, tar.gz, tar.bz2, tar.xz, rar (RAR5), tar, lzh, arj, gz, bz2, xz.
+- Passwords are asked when needed (show / hide, wrong password retry);
+  long operations show percent, current file, speed and Cancel. Actions a
+  format does not allow are disabled with a tooltip saying why.
+- Settings: theme (system, light, dark), default format and level,
+  confirmations, and the desktop integration switches below.
+
+### Installing on Linux
+
+```sh
+tool/install_linux.sh            # build, install, associate, add the menu
+tool/install_linux.sh --no-associations --no-context-menu
+tool/uninstall_linux.sh [--purge]
+```
+
+Everything is per user, nothing needs root:
+
+| What | Where |
+|---|---|
+| The release bundle | `~/.local/share/zx/app` (`zx_app`) |
+| Launcher | `~/.local/bin/zx-gui` |
+| Desktop entry with the archive MIME types | `~/.local/share/applications/zx.desktop` |
+| Icon (SVG and PNG sizes) | `~/.local/share/icons/hicolor/*/apps/zx.*` |
+| Default application (when associated) | `~/.config/mimeapps.list` (the previous defaults are restored when switched off) |
+| Nautilus: "Extract to folder (zx)" under Scripts | `~/.local/share/nautilus/scripts/` |
+| Nautilus: top level "Extract to name/" item | `~/.local/share/nautilus-python/extensions/zx_extract.py` (needs `sudo apt install python3-nautilus`, then `nautilus -q`) |
+| Thunar custom action (merged, other actions kept) | `~/.config/Thunar/uca.xml` |
+
+The two switches of Settings (associate archive types, "Extract to
+folder" in the file manager) install and remove the same files as the
+script: both call the same code, also reachable as
+`zx_app --install-integration [--associations] [--context-menu]`,
+`zx_app --remove-integration [...]` and `zx_app --integration-status`.
+`zx_app --extract-to-folder a.zip b.tar.gz` extracts each archive into a
+new folder named after it next to it (`b.tar.gz` gives `b/`, an existing
+name gives `b (2)/`), in a small progress window that asks for a password
+when needed and closes itself; this is what the menu entries run.
+
+Windows (per user, `HKCU\Software\Classes`, no administrator rights) and
+macOS (document types in `Info.plist`, a Finder Quick Action) are
+described in `app/README.md`.
+
 ## Speed
 
 Measured on an 8 core x86-64 desktop with 37.5 MB of mixed files (C
@@ -327,7 +389,15 @@ dart test
 ```
 
 Tests that compare with `/usr/bin/7z` or `xz` are skipped when those are
-not installed.
+not installed. The desktop app has widget tests and end to end tests that
+drive the real Linux app against real archives:
+
+```sh
+cd app
+flutter analyze
+flutter test
+flutter test integration_test -d linux
+```
 
 ## Layout
 
@@ -341,6 +411,8 @@ not installed.
 - `lib/src/cli`, `bin/zx.dart`: the command line (`zx`).
 - `lib/src/api.dart`: the isolate based public API; `lib/src/pool.dart`
   and `lib/src/parallel.dart`: worker isolates and the parallel xz encoder.
+- `app/`: the desktop archive manager (Flutter), `tool/install_linux.sh`
+  and `tool/uninstall_linux.sh`.
 - `docs/architecture.md`: how the port is organised and the rules a change
   must keep.
 - `docs/performance.md`: measured numbers and how to measure.

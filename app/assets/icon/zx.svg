@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4C82F0"/>
+      <stop offset="1" stop-color="#2150C4"/>
+    </linearGradient>
+    <linearGradient id="lid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E4ECFF"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F4F7FF"/>
+      <stop offset="1" stop-color="#DCE6FD"/>
+    </linearGradient>
+    <linearGradient id="tab" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFC94A"/>
+      <stop offset="1" stop-color="#F09A1A"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="232" height="232" rx="54" fill="url(#bg)"/>
+  <!-- box body -->
+  <rect x="58" y="96" width="140" height="112" rx="14" fill="url(#body)"/>
+  <!-- shadow under the lid -->
+  <rect x="58" y="96" width="140" height="10" fill="#1B3F9E" opacity="0.18"/>
+  <!-- lid -->
+  <rect x="46" y="60" width="164" height="42" rx="12" fill="url(#lid)"/>
+  <!-- zipper teeth -->
+  <g fill="#2150C4">
+    <rect x="119" y="64" width="10" height="7" rx="2"/>
+    <rect x="127" y="75" width="10" height="7" rx="2"/>
+    <rect x="119" y="86" width="10" height="7" rx="2"/>
+    <rect x="127" y="97" width="10" height="7" rx="2"/>
+    <rect x="119" y="108" width="10" height="7" rx="2"/>
+    <rect x="127" y="119" width="10" height="7" rx="2"/>
+    <rect x="119" y="130" width="10" height="7" rx="2"/>
+    <rect x="127" y="141" width="10" height="7" rx="2"/>
+  </g>
+  <!-- pull tab -->
+  <rect x="113" y="150" width="30" height="42" rx="9" fill="url(#tab)"/>
+  <rect x="122" y="168" width="12" height="16" rx="6" fill="#FFFFFF" opacity="0.9"/>
+</svg>

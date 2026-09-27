@@ -21,8 +21,8 @@ Read it together with `docs/performance.md`.
    (the tests compare them). When in doubt the reference source wins, not
    this document.
 3. **Nothing heavy on the caller's isolate.** Every public operation of
-   `SevenZipArchive` and every `...File` helper runs in a background
-   isolate. The in memory helpers (`xzCompress`, `sevenZipCompressBytes`...)
+   `ZxArchive`, `SevenZipArchive` and every `...File` helper runs in a
+   background isolate. The in memory helpers (`xzCompress`, `sevenZipCompressBytes`...)
    run where they are called, and say so.
 4. **Pure Dart.** No FFI, no plugins, no dependencies at run time, so the
    package builds for every native Flutter target unchanged.
@@ -38,8 +38,8 @@ Read it together with `docs/performance.md`.
    instead of fields inside loops, no closures, no boxing, no growable
    `List<int>`. Dart ints are 64-bit: mask with `& 0xFFFFFFFF` where C
    relies on UInt32 wraparound. No `>>>` needed on masked values.
-4. Synchronous APIs only in `lib/src`, except `api.dart`, `parallel.dart`
-   and `pool.dart`.
+4. Synchronous APIs only in `lib/src`, except `api.dart`, `zx_api.dart`,
+   `zx_worker.dart`, `parallel.dart` and `pool.dart`.
    Streams are the interfaces in `lib/src/io/streams.dart`. Errors are
    `SevenZipException` (`InvalidArgException` for bad switches).
 5. Comments and docs: plain English, US keyboard characters only. No em or
@@ -145,10 +145,25 @@ Read it together with `docs/performance.md`.
   the reparse data of Windows links (Windows/FileLink.cpp).
 - `lib/src/pool.dart`: worker isolates for one operation.
 - `lib/src/parallel.dart`: parallel block encoding (section 6).
-- `lib/src/api.dart`: the public, isolate based API.
+- `lib/src/api.dart`: the public, isolate based API for 7z, xz and lzma.
+- `lib/src/zx_api.dart`: the generic isolate based API (`ZxArchive`) for
+  every format of the command line tool, for archive managers: open with
+  the detection of the CLI (`ArchiveLink.open`: signatures, extensions,
+  compressed tars, split and RAR volumes), the listing with the folders
+  implied by the paths, extract (items, paths or folders, with or without
+  paths, overwrite policies with a question to the caller), extract to a
+  temporary file, read bytes, test, add, delete, rename, create folder,
+  set comment (zip, rar5) and create, with progress, cancellation and
+  password questions. `zx_worker.dart` is its worker side: it runs the
+  handlers through the CLI's `InArchive` adapters with its own extract
+  and update callbacks (part files, per item errors, links after every
+  file, the update plan of kept, renamed and new items given to
+  `updateItems`, as Update.cpp does).
 - `lib/zx.dart`: the exports: the API, and the synchronous building blocks
   (reader, writer, streams, codecs) for callers that run them in their own
   isolates.
+- `app/`: the desktop archive manager (Flutter, package `zx_app`), a user
+  of `ZxArchive` only (section 11).
 
 ## 4. Coder shapes
 
@@ -185,6 +200,20 @@ caller renames the new file over the old one, as 7-Zip does.
 
 ## 6. Isolates and parallelism
 
+- `ZxArchive` (zx_api.dart) runs each operation in its own isolate the
+  same way, and the worker can ask the caller's isolate a question
+  (password, overwrite) through a reply port. The handlers ask for
+  passwords synchronously, and a synchronous worker can not wait for an
+  answer, so the worker asks before the synchronous part when it can
+  (encrypted items in the listing, existing files for the overwrite
+  decisions, which are all asked before anything is written); when a
+  handler asks unexpectedly, the synchronous part is unwound, the question
+  is asked, and the operation goes on without the items already done (an
+  update starts again with a new part file). A wrong password found at
+  extraction asks again and extracts the failed items again. The listing
+  goes to the caller with `Isolate.exit` (no copy); it goes back to a
+  worker only for a compressed tar, whose listing would need decoding the
+  whole archive again.
 - The caller's isolate only sends a request and receives the result and
   throttled progress events (at most one per 100 ms, plus the last).
 - `_run` in `api.dart` spawns one isolate per operation. The operation
@@ -248,6 +277,15 @@ caller renames the new file over the old one, as 7-Zip does.
   not (dart:io has no chmod). On Windows stored names get the corrections
   of ExtractingFilePath.cpp (characters Windows does not allow, trailing
   dots and spaces, device names such as `con`).
+- `ZxArchive` follows the same rules, and also restores POSIX modes (with
+  the batched `chmod` of `fs_utils.dart`, as the CLI does), folder times
+  (with `touch`, children first) and the access time of files. A link is
+  created only when its target stays inside the output folder and its
+  path does not go through another link (CheckLinkPath_in_FS); a hard link
+  of tar is extracted as a copy of its target. An update of a compressed
+  tar decodes the tar into a temporary folder `.zx-*` next to the archive,
+  deleted at the end or when the operation is cancelled. Volumes of a new
+  archive are registered one by one and deleted if the operation fails.
 
 ## 8. Known limits and differences from 7-Zip
 
@@ -328,9 +366,15 @@ caller renames the new file over the old one, as 7-Zip does.
   rename. `-m` switches go to the compressor, except `-mm=gnu|pax|posix`,
   `-mtm`, `-mtc`, `-mta`, `-mtp` and `-mcp`, which go to tar. `-tgzip`,
   `-tbzip2`, `-txz` and `-tlzma` keep 7-Zip's single level.
-- SFX modules, multi-volume creation from the API (the writer supports
-  `MultiOutStream`, the CLI exposes `-v`), NTFS alternate streams and
-  security descriptors.
+- SFX modules, multi-volume creation from `SevenZipArchive` (the writer
+  supports `MultiOutStream`, the CLI exposes `-v`, `ZxArchive.create` has
+  `volumeSize`), NTFS alternate streams and security descriptors.
+- `ZxArchive` updates: multi-volume archives, RAR 1.5 to 4.x archives,
+  archives after a stub (SFX) or with data after their end can not be
+  updated (`capabilities` says so); gzip, bzip2, xz and lzma hold one file
+  (only gzip can rename it); comments are written for zip and RAR5 only.
+  Adding keeps the old items of an encrypted archive encrypted, and
+  encrypts the new ones only with `ZxOptions.password`.
 - The web platform: archives are files.
 
 ## 9. Platforms of the command line tool
@@ -424,3 +468,29 @@ permissive source or document describes (the RAR5 recovery record) are
 derived by black box study of what the reference tools write and accept:
 archives made by rar are compared field by field and with controlled
 input differences, never by reading or disassembling their code.
+
+## 11. The desktop app (`app/`)
+
+- It uses the public API (`package:zx/zx.dart`, `ZxArchive`) and nothing
+  below it: every archive operation runs in the operation's isolate, the
+  UI isolate sends the request, redraws from the throttled progress and
+  answers the questions (password, overwrite) with dialogs. The progress
+  dialog waits while a question is on screen, so it never covers it.
+- Nothing blocking on the UI isolate: file system calls are the async
+  forms (`exists()`, `create()`, `stat()`...), no `...Sync` call in
+  `app/lib`. The per folder work (children, sort, filter, folder sizes) is
+  derived lazily from the listing and cached until the next change; the
+  preview reads at most 512 KiB with `readBytes` and cancels the read when
+  the selection changes.
+- The outside world (launcher, file dialogs, the folders of the desktop)
+  is behind `AppServices`, so the tests replace it and never touch the
+  real desktop.
+- The desktop integration (`app/lib/src/integration.dart`) is per user
+  and reversible: it edits only its own entries (the zx lines of
+  mimeapps.list, restoring the previous defaults; its own action in
+  Thunar's uca.xml), and keeps a `*.zx-backup` copy of a user file before
+  changing it the first time. The settings switches, the
+  `--install-integration` / `--remove-integration` flags and
+  `tool/install_linux.sh` share it.
+- Same text rules as the library: plain ASCII in comments, docs and
+  strings of the UI.

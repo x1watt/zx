@@ -83,6 +83,10 @@ final class Rar5WriteOptions {
 
   /// The size of the recovery record in percent (0: none).
   int recoveryPercent = 0;
+
+  /// Not a rar switch: the archive comment to write instead of the one of
+  /// the old archive (an empty string removes it). Null keeps the old one.
+  String? newComment;
   final HandlerTimeOptions timeOptions = HandlerTimeOptions();
 
   /// The RAR compression method of the level (0 store ... 5 best).
@@ -618,8 +622,8 @@ final class Rar5Writer {
     _writeVolumeStart();
     _endSize = _headerBytes(_endBody(false)).length;
     _tailSize = _volSizes != null ? _tailFor(_volSize(0)) : _endSize;
-    final comment = old?.comment;
-    if (comment != null) _writeComment(comment);
+    final comment = opt.newComment ?? old?.comment;
+    if (comment != null && comment.isNotEmpty) _writeComment(comment);
 
     var completed = 0;
     final opCb = cb is ArchiveUpdateCallbackFile
