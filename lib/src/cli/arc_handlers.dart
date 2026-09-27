@@ -3,6 +3,8 @@
 // 7z (7zHandler), xz (XzHandler), lzma and lzma86 (LzmaHandler) and Split
 // (SplitHandler).
 
+import 'dart:typed_data';
+
 import '../common/method_props.dart';
 import '../format/archive_types.dart';
 import '../format/lzma_alone.dart';
@@ -11,6 +13,7 @@ import '../format/sevenz/handler_out.dart' as sevenz_out;
 import '../format/sevenz/method_factory.dart';
 import '../format/split.dart';
 import '../format/xz/xz_handler.dart';
+import '../format/zx/zx_format.dart' show ZxHeader;
 import '../io/streams.dart';
 import 'common.dart';
 
@@ -28,6 +31,11 @@ abstract class ArchiveOpenCallback {
 
   /// ICryptoGetTextPassword: throws [SystemException] to abort.
   String? cryptoGetTextPassword() => null;
+
+  /// zx extension: the full path of the file being opened (null for a
+  /// stream that is not a file, such as a nested archive). The zx handler
+  /// finds the other volumes of a set and appends in place with it.
+  String? get archivePath => null;
 }
 
 /// An IInArchive (+ IOutArchive) handler.
@@ -366,6 +374,9 @@ class SplitArc extends InArchive {
       ArchiveOpenCallback? callback) {
     final name = callback?.volumeName;
     if (name == null || callback == null) return HRes.sFalse;
+    // not in 7-Zip: a volume of a zx set (x.zx.001) starts with the zx
+    // magic and is opened by the zx handler, which finds its volumes
+    if (_startsWithZxMagic(stream)) return HRes.sFalse;
     final ok = h.open(stream, name, callback.getVolumeStream,
         callback: _SplitProgress(callback));
     return ok ? HRes.sOk : HRes.sFalse;
@@ -395,6 +406,14 @@ class SplitArc extends InArchive {
 
   @override
   SeekableInStream? getStream(int index) => h.getStream(index);
+}
+
+bool _startsWithZxMagic(SeekableInStream s) {
+  final b = Uint8List(8);
+  s.position = 0;
+  final n = readFully(s, b, 0, 8);
+  s.position = 0;
+  return n == 8 && ZxHeader.hasMagic(b);
 }
 
 class _SplitProgress extends ArchiveProgress {

@@ -36,7 +36,7 @@ static const char *const zx_extensions[] = {
     "tar.gz", "tar.bz2", "tar.xz", "tar.lzma", "tar.bz", "tar.z",
     "7z", "zip", "jar", "war", "ear", "apk", "zipx", "rar", "tar",
     "tgz", "tbz", "tbz2", "tb2", "txz", "tlz",
-    "gz", "bz2", "bz", "xz", "lzma", "lzh", "lha", "arj", "zpaq",
+    "gz", "bz2", "bz", "xz", "lzma", "lzh", "lha", "arj", "zpaq", "zx",
     "cbz", "cbr", "epub", "docx", "xlsx", "pptx", "odt", "ods", "odp",
     NULL,
 };
@@ -78,6 +78,7 @@ static const char *const zx_mime_types[] = {
     "application/x-lzh-compressed",
     "application/x-arj",
     "application/x-zpaq",
+    "application/x-zx",
     NULL,
 };
 

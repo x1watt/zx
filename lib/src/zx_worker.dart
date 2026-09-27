@@ -29,6 +29,7 @@ import 'cli/arc_rar.dart';
 import 'cli/arc_tar.dart';
 import 'cli/arc_zip.dart';
 import 'cli/arc_zpaq.dart';
+import 'cli/arc_zx.dart';
 import 'cli/common.dart';
 import 'cli/extracting_file_path.dart' show getCorrectFsFileName;
 import 'cli/fs_utils.dart';
@@ -40,6 +41,10 @@ import 'cli/update.dart' show rarVolumePath;
 import 'cli/wildcard.dart' show extractFileNameFromPath;
 import 'format/archive_types.dart';
 import 'format/split.dart';
+import 'format/zx/zx_format.dart' show zxHex;
+import 'format/zx/zx_handler.dart' show ZxTimelineVersion;
+import 'format/zx/zx_writer.dart' show ZxVolumeDir;
+import 'sync_pool.dart' show syncPoolRegisterDir, syncPoolUnregisterDir;
 import 'io/streams.dart';
 import 'zx_api.dart';
 
@@ -70,9 +75,24 @@ class ZxOpenRequest {
   /// A journaling archive (zpaq) is shown as of this version (the
   /// listing is then read only); null: the last one.
   final int? version;
+
+  /// A .zx archive is shown as of this date (YYYY-MM-DD[ HH:MM[:SS]]).
+  final String? versionDate;
+
+  /// Folders where the volumes of a .zx set may be.
+  final List<String> searchDirs;
   const ZxOpenRequest(this.archivePath, this.password, this.canAsk,
-      {this.chain = const [], this.nest, this.readOnly = false, this.version});
+      {this.chain = const [],
+      this.nest,
+      this.readOnly = false,
+      this.version,
+      this.versionDate,
+      this.searchDirs = const []});
 }
+
+// the search folders of .zx volumes for the operation of this isolate
+List<String> _zxSearchDirs = const [];
+String? _zxVersionDate;
 
 /// The flattened tree of a request: its depth, and the nested archives
 /// found when it was opened (null: look for them).
@@ -126,6 +146,9 @@ class ZxExtractRequest {
   /// See [ZxOpenRequest.version].
   final int? version;
 
+  /// See [ZxOpenRequest.searchDirs].
+  final List<String> searchDirs;
+
   const ZxExtractRequest({
     required this.archivePath,
     required this.password,
@@ -145,6 +168,7 @@ class ZxExtractRequest {
     this.restoreSymlinks = false,
     this.maxBytes,
     this.version,
+    this.searchDirs = const [],
   });
 }
 
@@ -162,6 +186,9 @@ class ZxUpdateRequest {
   final String? comment;
   final bool overwrite;
 
+  /// See [ZxOpenRequest.searchDirs].
+  final List<String> searchDirs;
+
   const ZxUpdateRequest({
     required this.kind,
     required this.archivePath,
@@ -175,6 +202,7 @@ class ZxUpdateRequest {
     this.newPath,
     this.comment,
     this.overwrite = false,
+    this.searchDirs = const [],
   });
 }
 
@@ -282,6 +310,10 @@ class ZxOps {
 Future<void> zxIsolateMain((SendPort, ZxBody, bool) args) async {
   final (port, body, wantProgress) = args;
   final ops = ZxOps(port, wantProgress);
+  // the temporary folders of the .zx block workers are deleted if the
+  // operation is cancelled
+  syncPoolRegisterDir = ops.registerDir;
+  syncPoolUnregisterDir = ops.unregisterDir;
   Object? r;
   try {
     r = await body(ops);
@@ -426,7 +458,9 @@ _Opened _openSync(Codecs codecs, String path, String? password,
       ..stdInMode = false
       ..filePath = path
       ..compoundTempDir = compoundTempDir
-      ..version = k == 0 ? version : null;
+      ..version = k == 0 ? version : null
+      ..versionDate = k == 0 && version == null ? _zxVersionDate : null
+      ..zxSearchDirs = k == 0 ? _zxSearchDirs : const [];
     if (k > 0) {
       final parent = links.last.arcs.last;
       final index = chain[k - 1];
@@ -555,9 +589,10 @@ const Set<String> _kMultiItemFormats = {
   'Rar5',
   'Lzh',
   'Arj',
-  'zpaq'
+  'zpaq',
+  'zx'
 };
-const Set<String> _kEncryptFormats = {'7z', 'zip', 'Rar5', 'Arj'};
+const Set<String> _kEncryptFormats = {'7z', 'zip', 'Rar5', 'Arj', 'zx'};
 
 ZxListing _readListing(_Opened o, {bool readOnly = false}) {
   final codecs = o.codecs;
@@ -612,6 +647,9 @@ ZxListing _readListing(_Opened o, {bool readOnly = false}) {
       comment: str(Kpid.comment),
       nestChain: flat?.chainOf(i),
       nestedFormat: flat?.nestedFormatOf(i),
+      sha256: str(Kpid.sha256),
+      tlsh: str(ZxKpid.tlsh),
+      generation: num(ZxKpid.version),
     ));
     if (isDir) explicitDirs.add(path);
     all.add(path);
@@ -659,8 +697,11 @@ ZxListing _readListing(_Opened o, {bool readOnly = false}) {
     }
   }
 
-  final multiVolume = link.volumePaths.isNotEmpty ||
-      link.arcs.any((x) => codecs.getFormatNamePtr(x.formatIndex) == 'Split');
+  final zxArc = a is ZxArc ? a : null;
+  final multiVolume = zxArc == null &&
+      (link.volumePaths.isNotEmpty ||
+          link.arcs
+              .any((x) => codecs.getFormatNamePtr(x.formatIndex) == 'Split'));
   var canUpdate = !multiVolume &&
       a.supportsUpdate &&
       fmt != 'Rar' &&
@@ -685,7 +726,7 @@ ZxListing _readListing(_Opened o, {bool readOnly = false}) {
     canCreateFolder: canUpdate && multi,
     canSetComment: canUpdate && (fmt == 'zip' || fmt == 'Rar5'),
     canEncrypt: canUpdate && _kEncryptFormats.contains(fmt),
-    canEncryptHeaders: canUpdate && (fmt == '7z' || fmt == 'Rar5'),
+    canEncryptHeaders: canUpdate && (fmt == '7z' || fmt == 'Rar5' || fmt == 'zx'),
   );
 
   // a journaling archive: its versions
@@ -700,6 +741,19 @@ ZxListing _readListing(_Opened o, {bool readOnly = false}) {
             v.deleted, v.packSize)
     ];
     numVersions = za.h.numVersions;
+  } else if (za is ZxArc) {
+    final zr = za.h.reader;
+    if (zr != null) {
+      final gens = zr.generations;
+      final shown = zr.shownGeneration;
+      versions = [
+        for (final g in gens)
+          if (g.number <= shown)
+            ZxVersion(g.number, g.dateTime, g.added, g.deleted, g.packed)
+      ];
+      // the number of the last one (a compaction keeps the numbers)
+      numVersions = gens.isEmpty ? 0 : gens.last.number;
+    }
   }
 
   final phy = a.getArchiveProperty(Kpid.phySize);
@@ -722,7 +776,7 @@ ZxListing _readListing(_Opened o, {bool readOnly = false}) {
     comment: comment is String && comment.isNotEmpty ? comment : null,
     errors: errors,
     warnings: warnings,
-    volumes: _volumes(o),
+    volumes: zxArc != null ? _zxVolumes(zxArc) : _volumes(o),
     capabilities: caps,
     items: items,
     password: o.password,
@@ -730,6 +784,13 @@ ZxListing _readListing(_Opened o, {bool readOnly = false}) {
     versions: versions,
     numVersions: numVersions,
   );
+}
+
+/// The volume files of a .zx set (empty for one file).
+List<String> _zxVolumes(ZxArc a) {
+  final r = a.h.reader;
+  if (r == null || !r.header.multiVolume) return const [];
+  return r.volumes.paths;
 }
 
 /// The files of a multi-volume archive: the one that was opened, then the
@@ -750,6 +811,8 @@ List<String> _volumes(_Opened o) {
 /// a [ZxOpenResult].
 Future<Object?> workerOpen(ZxOpenRequest r, ZxOps ops) async {
   final codecs = Codecs.load();
+  _zxSearchDirs = r.searchDirs;
+  _zxVersionDate = r.versionDate;
   var base = r.archivePath;
   var chain = r.chain;
   var pw = r.password;
@@ -781,7 +844,10 @@ Future<Object?> workerOpen(ZxOpenRequest r, ZxOps ops) async {
           temps.add(t);
         }
         final l = _readListing(o,
-            readOnly: r.readOnly || temps.isNotEmpty || r.version != null);
+            readOnly: r.readOnly ||
+                temps.isNotEmpty ||
+                r.version != null ||
+                r.versionDate != null);
         for (final d in temps) {
           ops.unregisterDir(d);
         }
@@ -1387,12 +1453,14 @@ String? _linkProblem(String outDir, String rel, String target) {
 
 /// [ZxArchive.extract], [ZxArchive.test], [ZxArchive.extractToTemp].
 Future<Object?> workerExtract(ZxExtractRequest r, ZxOps ops) async {
+  _zxSearchDirs = r.searchDirs;
   final ex = await _extractAll(r, ops);
   return (ex.$1.result(), ex.$2);
 }
 
 /// [ZxArchive.readBytes].
 Future<Object?> workerReadBytes(ZxExtractRequest r, ZxOps ops) async {
+  _zxSearchDirs = r.searchDirs;
   final (ex, pw) = await _extractAll(r, ops);
   final data = ex.mem?.data.takeBytes() ?? Uint8List(0);
   final reached = r.maxBytes != null && data.length >= r.maxBytes!;
@@ -1413,6 +1481,7 @@ Future<Object?> workerReadBytes(ZxExtractRequest r, ZxOps ops) async {
 /// format that matches none is tried with the full detection), else the
 /// start of it is decoded into memory.
 Future<Object?> workerProbe(ZxExtractRequest r, ZxOps ops) async {
+  _zxSearchDirs = r.searchDirs;
   final codecs = Codecs.load();
   final index = r.indices!.single;
   final sniffer = NestSniffer(codecs);
@@ -1957,16 +2026,25 @@ List<MapEntry<String, String>> _props(
     if (fmt == '7z') r.add(MapEntry('0', m));
     if (fmt == 'zip') r.add(MapEntry('m', m));
     if (fmt == 'zpaq') r.add(MapEntry('m', m));
+    if (fmt == 'zx') r.add(MapEntry('0', m));
   }
   final s = o.solid;
-  if (s != null && (fmt == '7z' || fmt == 'Rar5' || fmt == 'Rar')) {
+  if (s != null &&
+      (fmt == '7z' || fmt == 'Rar5' || fmt == 'Rar' || fmt == 'zx')) {
     r.add(MapEntry('s', s ? 'on' : 'off'));
   }
   final he = o.encryptHeaders;
   if (he != null &&
       hasPassword &&
-      (fmt == '7z' || fmt == 'Rar5' || fmt == 'Rar')) {
+      (fmt == '7z' || fmt == 'Rar5' || fmt == 'Rar' || fmt == 'zx')) {
     r.add(MapEntry('he', he ? 'on' : 'off'));
+  }
+  if (fmt == 'zx') {
+    final vs = o.volumeSizes;
+    if (vs.isNotEmpty) r.add(MapEntry('vsizes', vs.join(',')));
+    for (final d in o.volumeDirs) {
+      r.add(MapEntry('vdir', d));
+    }
   }
   for (final e in o.switches.entries) {
     r.add(MapEntry(e.key, e.value));
@@ -2016,6 +2094,11 @@ List<MapEntry<String, String>> _props(
 
 /// [ZxArchive.create] and the operations that change an archive.
 Future<Object?> workerUpdate(ZxUpdateRequest r, ZxOps ops) async {
+  // the destination folders of new .zx volumes are searched too
+  _zxSearchDirs = [
+    ...r.searchDirs,
+    for (final d in r.options.volumeDirs) ZxVolumeDir.parse(d).path,
+  ];
   final codecs = Codecs.load();
   final path = r.archivePath;
   final create = r.kind == ZxUpdateKind.create;
@@ -2298,6 +2381,54 @@ _Written _writeSync(Codecs codecs, _Opened? o, ZxUpdateRequest r, String? pw,
   }
   final cb = _UpdateCallback(plan, old, o?.arc, newPassword, pw, ops, newTotal);
 
+  // .zx writes itself: a new generation in place, new volumes for a set
+  if (outArchive is ZxArc) {
+    final vs = r.options.volumeSizes.isNotEmpty
+        ? r.options.volumeSizes
+        : [if (r.options.volumeSize != null) r.options.volumeSize!];
+    final written = <String>[];
+    try {
+      if (o == null && vs.isEmpty) {
+        final part = ops.partFor(path);
+        final res = outArchive.updateFile(part, plan.length, cb);
+        cb.releaseAll();
+        return _Written(part, const [], File(part).lengthSync(), added,
+            changed, kept, [...cb.skipped, ...res.warnings]);
+      }
+      final target = o == null
+          ? path
+          : ((o.archive as ZxArc).openedPath ?? path);
+      final res = outArchive.updateFile(target, plan.length, cb,
+          volumeSizes: o == null ? vs : const [], onFile: (f) {
+        written.add(f);
+        ops.registerFile(f);
+      });
+      cb.releaseAll();
+      var size = 0;
+      for (final f in res.files.isEmpty ? [target] : res.files) {
+        size += File(f).lengthSync();
+      }
+      if (o != null && res.files.isEmpty) {
+        // appended in place
+        return _Written(null, const [], size, added, changed, kept,
+            [...cb.skipped, ...res.warnings]);
+      }
+      return _Written(null, written, size, added, changed, kept,
+          [...cb.skipped, ...res.warnings]);
+    } catch (_) {
+      cb.releaseAll();
+      for (final f in written) {
+        try {
+          File(f).deleteSync();
+        } on FileSystemException {
+          // ignore
+        }
+        ops.unregisterFile(f);
+      }
+      rethrow;
+    }
+  }
+
   // the output: a part file next to the archive, or volumes
   final volSize = r.options.volumeSize;
   if (volSize != null && o == null) {
@@ -2370,4 +2501,77 @@ _Written _writeSync(Codecs codecs, _Opened? o, ZxUpdateRequest r, String? pw,
   cb.releaseAll();
   out.close();
   return _Written(part, const [], size, added, changed, kept, cb.skipped);
+}
+
+// ---------------------------------------------------------------------------
+// .zx operations
+
+enum ZxZxOp { compact, timeline }
+
+class ZxZxRequest {
+  final String archivePath;
+  final String? password;
+  final bool canAsk;
+  final ZxZxOp op;
+  final String arg;
+  final List<String> searchDirs;
+  const ZxZxRequest(this.archivePath, this.password, this.canAsk, this.op,
+      this.arg, this.searchDirs);
+}
+
+/// [ZxArchive.compact] ((listing, bytes freed)) and [ZxArchive.timeline]
+/// (the versions).
+Future<Object?> workerZx(ZxZxRequest r, ZxOps ops) async {
+  final codecs = Codecs.load();
+  _zxSearchDirs = r.searchDirs;
+  final o = await _openAsk(codecs, r.archivePath, r.password, r.canAsk, ops);
+  var closed = false;
+  try {
+    final a = o.archive;
+    if (a is! ZxArc) {
+      throw const SevenZipException(
+          'not a .zx archive', SevenZipError.unsupported);
+    }
+    switch (r.op) {
+      case ZxZxOp.timeline:
+        return [
+          for (final ZxTimelineVersion v in a.h.timeline(r.arg))
+            ZxFileVersion(
+                v.path,
+                v.generation,
+                DateTime.fromMicrosecondsSinceEpoch(v.time ~/ 1000,
+                    isUtc: true),
+                v.size,
+                v.sha256 == null ? null : zxHex(v.sha256!),
+                v.endGeneration,
+                v.endTime == null
+                    ? null
+                    : DateTime.fromMicrosecondsSinceEpoch(v.endTime! ~/ 1000,
+                        isUtc: true),
+                v.deleted)
+        ];
+      case ZxZxOp.compact:
+        final keep = int.parse(r.arg);
+        final path = a.openedPath ?? r.archivePath;
+        final registered = <String>[];
+        final freed = a.compactFile(path, keep, password: o.password,
+            onFile: (f) {
+          registered.add(f);
+          ops.registerFile(f);
+        });
+        for (final f in registered) {
+          ops.unregisterFile(f);
+        }
+        o.close();
+        closed = true;
+        final o2 = _openSync(codecs, r.archivePath, o.password);
+        try {
+          return (_readListing(o2), freed);
+        } finally {
+          o2.close();
+        }
+    }
+  } finally {
+    if (!closed) o.close();
+  }
 }

@@ -92,6 +92,12 @@ void main() {
       commands.any((c) => c.startsWith('update-desktop-database')),
       isTrue,
     );
+    // application/x-zx for .zx files
+    expect(File(li.zxMimeFile).readAsStringSync(), kZxMimeXml);
+    expect(
+      commands.any((c) => c.startsWith('update-mime-database')),
+      isTrue,
+    );
     final s = await li.status();
     expect(s.registered, isTrue);
     expect(s.associations, isFalse);
@@ -218,6 +224,7 @@ text/plain=org.gnome.TextEditor.desktop
       isFalse,
     );
     expect(File(li.contextMenuDisabledFile).existsSync(), isFalse);
+    expect(File(li.zxMimeFile).existsSync(), isFalse);
     final s = await li.status();
     expect(s.associations || s.contextMenu || s.registered, isFalse);
   });

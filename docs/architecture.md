@@ -39,7 +39,8 @@ Read it together with `docs/performance.md`.
    `List<int>`. Dart ints are 64-bit: mask with `& 0xFFFFFFFF` where C
    relies on UInt32 wraparound. No `>>>` needed on masked values.
 4. Synchronous APIs only in `lib/src`, except `api.dart`, `zx_api.dart`,
-   `zx_worker.dart`, `parallel.dart` and `pool.dart` (and the isolate
+   `zx_worker.dart`, `parallel.dart`, `pool.dart` and
+   `codec/zcm/zcm_parallel.dart` (section 15) (and the isolate
    based API of the vendored zpaq engine, `lib/src/zpaq`, section 14,
    which zx does not call).
    Streams are the interfaces in `lib/src/io/streams.dart`. Errors are
@@ -57,7 +58,10 @@ Read it together with `docs/performance.md`.
 - `lib/src/io/streams.dart`: `InStream`, `OutStream` and their seekable
   forms (7-Zip's ISequentialInStream, IInStream...), memory and file
   implementations, `SevenZipException`.
-- `lib/src/util/crc.dart`: CRC-32 and CRC-64 (7zCrc.c, XzCrc64.c).
+- `lib/src/util/crc.dart`: CRC-32 and CRC-64 (7zCrc.c, XzCrc64.c);
+  `crc32c.dart` (CRC-32C), `xxhash.dart`, `tlsh.dart` (TLSH, section 16).
+- `lib/src/version.dart`: the zx version (the banner, the .zx writer and
+  the min_reader_version check).
 - `lib/src/common/method_props.dart`: MethodProps.cpp (PropVariant,
   CoderPropId, CMethodProps, SetParam, StringToDictSize, ParseMtProp2...)
   and StringToInt.cpp, shared by every coder and handler.
@@ -89,6 +93,7 @@ Read it together with `docs/performance.md`.
     `larc_decoders.dart`, `pma_decoders.dart`), ARJ method 4
     (`arj4_decoder.dart`), and `lzh_encoder.dart` (lh5, lh6, lh7 and ARJ
     methods 1 to 3, written from the format).
+  - `zcm/`: the zcm context mixing codec family (section 15).
   - `rar/`: the RAR 2.0 decoder with its audio blocks (after rardecode),
     the RAR 2.9/3.x decoder and its PPMd variant (after libarchive), the
     RAR5 decoder (after libarchive; compression version 1 of RAR 7 after
@@ -133,6 +138,10 @@ Read it together with `docs/performance.md`.
     black box study of arj 3.10, section 8).
   - `zpaq/`: the zpaq journaling archive handler (`zpaq_handler.dart`,
     `zpaq_update.dart`) over the vendored engine (section 14).
+  - `zx/`: the .zx format (section 16): `zx_format.dart` (structures),
+    `zx_codecs.dart` (the codec registry), `zx_blocks.dart` (one block,
+    the job of a worker), `zx_crypto.dart`, `zx_reader.dart`,
+    `zx_writer.dart`, `zx_handler.dart` (IInArchive / IOutArchive).
   - `rar/`: the RAR handlers ("Rar" for RAR 1.5 to 4.x archives, "Rar5"),
     reading after libarchive, RAR5 writing (`rar5_out.dart`, with volumes),
     volume names (`rar_volumes.dart`), encryption (`rar_crypto.dart`) and
@@ -152,6 +161,8 @@ Read it together with `docs/performance.md`.
   `platform.dart` holds the `_WIN32` switches (section 9), `file_link.dart`
   the reparse data of Windows links (Windows/FileLink.cpp).
 - `lib/src/pool.dart`: worker isolates for one operation.
+- `lib/src/sync_pool.dart`: worker isolates for synchronous code (the .zx
+  handler, section 6).
 - `lib/src/parallel.dart`: parallel block encoding (section 6).
 - `lib/src/api.dart`: the public, isolate based API for 7z, xz and lzma.
 - `lib/src/zx_api.dart`: the generic isolate based API (`ZxArchive`) for
@@ -264,8 +275,23 @@ caller renames the new file over the old one, as 7-Zip does.
   - The LZMA multithreaded match finder (LzFindMt.c): it does not change
     the output and needs shared memory between threads, which isolates do
     not have.
+- **Parallel .zx blocks.** The .zx handler codes blocks in parallel
+  although it is synchronous: `SyncJobPool` (`sync_pool.dart`) spawns an
+  isolate per block job with the block in the spawn message (isolates
+  start without the event loop of the caller), and the isolate writes its
+  result to a file in a private temporary folder, which the handler polls
+  while it waits (sleeps of 0.1 to 20 ms). At most `threads` jobs are in
+  flight; results are written in order, so the output is the same with
+  any number of threads (`test/zx_format_test.dart`). Extraction decodes
+  the blocks ahead in the order the items use them. The folder is
+  registered with the operation (`syncPoolRegisterDir`), so a cancelled
+  `ZxArchive` operation deletes it. With one thread, or when no temporary
+  folder can be made, the jobs run inline. The async `WorkerPool` would
+  need the caller's event loop, which a handler does not have.
 - Default size (`defaultThreads`): half the processors, 1 to 8, and at
-  most 4 on Android and iOS.
+  most 4 on Android and iOS. The .zx writer also keeps the estimated
+  memory of its workers under 1 GiB unless `-mmt` is given
+  (`zxWorkerMemory`).
 
 ## 7. Files on disk
 
@@ -458,7 +484,9 @@ license allows that, and the notice of each one goes into LICENSE:
 | zpaq-flutter (the author's own port; libzpaq and zpaq 7.15 by Matt Mahoney, public domain; zpaqfranz by Franco Corbelli, MIT; divsufsort by Yuta Mori, MIT; scrypt after Colin Percival, BSD 2-clause) | BSD 3-clause here (same author), notices in LICENSE | zpaq (section 14) |
 | `rardecode` (github.com/nwaples/rardecode) | BSD 2-clause | RAR 2.0 decoder (unpack 20 and 26, audio blocks), RAR 3.x AES key derivation and encrypted headers, the CRC range of old comment blocks, RAR5 compression version 1 (RAR 7) |
 | `lhasa` | ISC | LHA decoders |
+| `tlsh` (github.com/trendmicro/tlsh, the paper and the reference implementation's constants) | Apache 2.0 or BSD 3-clause, used under BSD | the TLSH digests of .zx entries (`lib/src/util/tlsh.dart`), checked against its `tlsh_unittest` tool |
 | bitplane/rar-research (github.com/bitplane/rar-research), the prose, tables and cipher definitions of its `doc/` files only | format facts, no code taken | the RAR 1.5 method and the RAR 1.5 and 2.0 ciphers, written here as new code and checked black box (RAR 1.55, WinRAR 2.90, unrar) |
+| `paq8px` (github.com/hxim/paq8px, cloned in `ref/paq8px`), lpaq1 and paq8l (Matt Mahoney), `cmix` v21 (`ref/cmix`, Byron Knoll, with fxcm by kaitz) | GNU GPL (paq8px, lpaq1, paq8l: GPL v2 or later; cmix: GPL v3). The owner decided that zcm may use their models, parameters and code; see the note in section 15 | the zcm codec (`lib/src/codec/zcm`, section 15) |
 | Public format documents: PKWARE APPNOTE, RFC 1951/1952, POSIX ustar/pax, WinZip AES (AE-1/AE-2), RAR5 technote, ARJ technote, Devicetree Specification (devicetree.org), the U-Boot legacy image header layout and its os/arch/type/comp codes (format facts, checked black box with mkimage), the lzop file layout, the UEFI Specification (GPT), Microsoft's FAT specification (fatgen103), the Linux kernel's Documentation/filesystems/ext4, the SquashFS format write-up of dr-emann (dr-emann.github.io/squashfs), the cramfs README and documentation (Linux fs/cramfs, Documentation/filesystems/cramfs), the JFFS2 paper (David Woodhouse, "JFFS: The Journalling Flash File System", 2001) | documents | everything written from a specification |
 
 Never read or copy the LGPL parts of 7-Zip (its CPP handlers and coders for
@@ -691,3 +719,101 @@ format and the port).
 - Not supported (as in zpaq-flutter): streaming format archives (zpaq
   `-method s`, opened as "not an archive"), multi-part archives
   (`name????.zpaq`) and index files, zpaqfranz's "franzen" encryption.
+
+## 15. zcm (context mixing, experimental)
+
+`lib/src/codec/zcm` is a family of context mixing codecs (paq8 style)
+with nine strengths, for the .zx container (experimental codec id
+0x10000, docs/zx-format.md section 11). It is not a port of one program:
+the components follow paq8, lpaq1, paq8px and cmix, rewritten in Dart
+around one predictor, and the file headers name their sources.
+
+- **Files.** `zcm.dart` (options, the stream format, `ZcmCompressor`,
+  `ZcmDecoderStream`, `zcmDecoder`, block detection, the x86 E8/E9
+  transform), `zcm_coder.dart` (the 32-bit carryless binary arithmetic
+  coder of paq8/lpaq), `zcm_tables.dart` and `zcm_state_table.dart`
+  (squash, stretch, ilog, reciprocals, the paq8px nonstationary state
+  table), `zcm_components.dart` (StateMap, APM, the two layer Mixer, the
+  hashed ContextMap with byte history, DirectMap), `zcm_models.dart` (the
+  order-n models, match with two lengths, word/text, sparse, indirect,
+  record, char groups, x86 contexts, DMC, the fast nibble model),
+  `zcm_byte_models.dart` (PPMd var.H of `lib/src/codec/ppmd` and the LSTM
+  as byte predictors), `zcm_lstm.dart`, `zcm_math.dart` (deterministic
+  exp, tanh, logistic, sqrt), `zcm_predictor.dart` (the level table and
+  the memory split), `zcm_auto.dart` (settings from the machine),
+  `zcm_parallel.dart` (independent segments on worker isolates; the only
+  asynchronous file, rule 4).
+- **Determinism.** A stream must decode on every machine, so the model
+  computes the same bits everywhere: integers for every paq style part
+  (states, StateMaps, APMs, fixed point mixer weights; 32-bit wraparound
+  masked explicitly), doubles with +, -, *, / and the functions of
+  `zcm_math.dart` only for the LSTM and the PPMd distribution (IEEE 754
+  defines those exactly; dart:math exp, log, tanh and pow are never
+  used), tables built with integers, and every parameter of the model
+  (level, memory budget, flags, LSTM size) in the stream header. Golden
+  hashes in `test/zcm_test.dart` pin the output of every level. The code
+  relies on 64-bit ints (the native VM; not for the web).
+- **Memory.** Every table takes its size from the budget in the header
+  (`ZcmPredictor`): the history buffer, the match tables, then the context
+  maps in proportion to their contexts, PPMd a quarter at level 9; the
+  sizes are powers of two, so a model uses between half and all of the
+  budget. The encoder lowers the budget for small inputs (64 bytes per
+  input byte plus 8 MiB) and stores what it used.
+- **Hot loops** follow rule 3: typed lists, the tables of a component in
+  locals, inputs written straight into the mixer's `Int32List`, no
+  closures on the bit path, the mixer dot products unrolled by four.
+- **License.** paq8px, lpaq1, paq8l and cmix are GNU GPL. zcm uses their
+  state table, parameters and designs (with credit in each file, in the
+  README and in LICENSE); a distribution that includes `lib/src/codec/zcm`
+  should be reviewed against the GPL. Nothing else in the package imports
+  zcm yet; the .zx container is meant to register it (id 0x10000) with
+  `registerZxCodec` in `lib/src/format/zx/zx_codecs.dart`.
+
+## 16. The .zx format (zx extension)
+
+`.zx` is zx's own container, specified in `docs/zx-format.md` (normative,
+with the changes made while implementing it in its section 15) and
+designed in `docs/zx-format-design.md`. It is not in 7-Zip; the code is
+written from the specification, so rule 2 (a C name above each function)
+does not apply to it.
+
+- **Files** (`lib/src/format/zx`): `zx_format.dart` (vints, records, the
+  Header and its compatibility check, block headers, chains, entries, the
+  Index, the Footer and the volume trailer: encoding only),
+  `zx_codecs.dart` (the registry: id, name, "introduced in", encoder and
+  decoder over whole blocks, wired to the codecs of `lib/src/codec` and to
+  the vendored zpaq engine; `registerZxCodec` is the seam of experimental
+  families such as zcm, section 15), `zx_blocks.dart` (the block check,
+  the chain and the encryption of one block: the jobs of the workers,
+  sendable arguments only), `zx_crypto.dart` (scrypt of the vendored zpaq
+  engine, AES-256-CTR over `aes.dart`, HMAC-SHA-256), `zx_reader.dart`
+  (the last valid Footer, generations, volumes found by their header),
+  `zx_writer.dart` (the block pipeline, solid packing, streamed inline
+  records, volumes with destination folders, appends, compaction),
+  `zx_handler.dart` (the 7-Zip shaped handler: properties, extraction,
+  random access, updates, timeline, the sequential reader of pipes).
+  `lib/src/cli/arc_zx.dart` adapts it; `update.dart` lets it write in
+  place (`ZxArc.updateFile`) instead of the temporary file and rename of
+  7-Zip, and gives it the `-v` sizes instead of `MultiOutStream`.
+- **Appends in place.** An update of a .zx file opens it in append mode,
+  truncates what follows the last valid Footer (an interrupted update) and
+  writes a generation; nothing before is changed, so a crash leaves the
+  previous state readable. A volume set gets new volume files after the
+  last one. The CLI skips 7-Zip's temporary file and its "the file
+  already exists" check for .zx (`zxInPlace` in `update.dart`), and
+  `zx_worker.dart` does the same for `ZxArchive`. A new archive is still
+  written as `name.zx-part` by `ZxArchive` and renamed at the end.
+  Compaction writes `name.zx-compact` and renames it over the archive.
+- **Detection.** The magic at offset 0 (a signature); the Split handler
+  refuses a file that starts with it, so `x.zx.001` opens as .zx, and
+  `update.dart` turns the Split type of such a name into zx.
+- **Hot loops.** TLSH (`Tlsh.update`) keeps its window and checksum in
+  locals and the buckets in a `Uint32List`; CRC-32C is slicing-by-8 like
+  `crc.dart`; the per file SHA-256 and TLSH run on the handler's isolate
+  while the workers code the blocks.
+- **Limits.** The writer does not deduplicate (the reader handles shared
+  extents). Blocks shared by kept and deleted files stay whole in a
+  compaction. The sequential reader of pipes reads every generation in
+  order (a later version of a path comes after the earlier one) and does
+  not apply deletions. Appending in place with the archive open for
+  reading has not been tried on Windows.

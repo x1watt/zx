@@ -74,7 +74,7 @@ class Settings extends ChangeNotifier {
   final String? file;
 
   ThemeMode _theme = ThemeMode.system;
-  String _defaultFormat = '7z';
+  String _defaultFormat = 'zx';
   int _defaultLevel = 5;
   bool _confirmDelete = true;
   bool _showPreview = true;

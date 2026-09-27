@@ -369,3 +369,59 @@ XXH64 and AES are written from their public specifications.
 The zpaq-flutter code itself is Copyright (c) 2026 Max Brito, the author
 of this package, and is included here under the BSD 3-clause license
 above.
+
+-------------------------------------------------------------------------------
+The zcm context mixing codecs (lib/src/codec/zcm) are new Dart code that
+uses the designs, parameters and tables of these programs, at the owner's
+decision:
+
+  paq8 and lpaq1 by Matt Mahoney (http://mattmahoney.net/dc/), with work
+  by Alexander Rhatushnyak and Serge Osnach, GNU GPL.
+  paq8px (https://github.com/hxim/paq8px) by Matt Mahoney, Jan Ondrus,
+  Marcio Pais, Andrew Epstein, Zoltan Gotthardt and others, GNU GPL
+  version 2 or later. The nonstationary state table, its priorities and
+  groups (zcm_state_table.dart) are copied from paq8px StateTable.hpp.
+  cmix (https://github.com/byronknoll/cmix) by Byron Knoll, GNU GPL
+  version 3 (the LSTM and the byte models of zcm follow it).
+  PPMd var.H by Dmitry Shkarin (public domain, through the LZMA SDK).
+
+Because paq8, paq8px and cmix are licensed under the GNU GPL, a
+distribution that includes lib/src/codec/zcm may be subject to the terms
+of the GPL; the rest of this package does not depend on it.
+
+-------------------------------------------------------------------------------
+TLSH (lib/src/util/tlsh.dart) is written from the TLSH paper and the
+reference implementation of Trend Micro (https://github.com/trendmicro/tlsh),
+whose constants (the Pearson table, the length classes and the bucket
+salts) it uses. TLSH is offered under the Apache 2.0 or the BSD license;
+it is used here under the BSD license:
+
+  Copyright (c) 2013, Trend Micro Incorporated
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are
+  met:
+
+  1. Redistributions of source code must retain the above copyright notice,
+     this list of conditions and the following disclaimer.
+
+  2. Redistributions in binary form must reproduce the above copyright
+     notice, this list of conditions and the following disclaimer in the
+     documentation and/or other materials provided with the distribution.
+
+  3. Neither the name of the copyright holder nor the names of its
+     contributors may be used to endorse or promote products derived from
+     this software without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+  IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+  THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+  PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+  EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+  PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

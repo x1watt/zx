@@ -8,6 +8,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import '../codec/registry.dart';
+import '../version.dart';
 import '../format/sevenz/method_factory.dart';
 import '../io/streams.dart';
 import 'archive_command_line.dart';
@@ -32,7 +33,7 @@ import 'prop_id_utils.dart';
 import 'platform.dart';
 
 const String _kVersion = '26.01';
-const String _kZxVersion = '0.4.0';
+const String _kZxVersion = zxVersionString;
 
 String _cpuName() {
   final v = Platform.version;
@@ -81,6 +82,23 @@ const String _kHelpString = 'Usage: zx'
     '  -m{Parameters} : set compression Method\n'
     '    -mmt[N] : set number of CPU threads\n'
     '    -mx[N] : set compression level: -mx1 (fastest) ... -mx9 (ultra)\n'
+    '    (zx) .zx archives, -m extensions:\n'
+    '    -m0={LZMA2|LZMA|PPMd|PPMd8|BZip2|Deflate|zpaq|store}[:params], -m1=...\n'
+    '      : coder chain in writing order; -mf={BCJ|ARM|ARMT|ARM64|PPC|SPARC|\n'
+    '      IA64|RISCV|Delta:N} adds a filter first\n'
+    '    -ms={on|off} : solid blocks; -mbs={Size} : block size (4k..64m)\n'
+    '    -mcheck={crc32c|xxh64|sha256|blake2sp|none} : block check\n'
+    '    -mhe : encrypt the names too (with -p); -mkdf=N : scrypt cost 2^N\n'
+    '    -mstream : inline records for reading from a pipe\n'
+    '    -mversion={N|YYYY-MM-DD[ HH:MM[:SS]]} : l, t, x, e as of a generation\n'
+    '    -mgenerations : l lists the generations\n'
+    '    -mtimeline={path} : l lists the versions of one file\n'
+    '    -mcompact[=N] : a, u, d: keep the data of the last N generations\n'
+    '      (1); "a -mcompact x.zx" without names only compacts\n'
+    '    -mgc={text} : comment of the new generation\n'
+    '    -v{Size} (repeat for a list of sizes, the last one repeats)\n'
+    '    -mvdir={Dir}[:{Size}|:full] : destination folders of the volumes\n'
+    '    -mvsearch={Dir} : folders where volumes are looked for\n'
     '  -o{Directory} : set Output directory\n'
     '  -p{Password} : set Password\n'
     '  -r[-|0] : Recurse subdirectories for name search\n'

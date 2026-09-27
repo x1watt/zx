@@ -13,6 +13,8 @@ import '../io/streams.dart';
 import 'arc_compound.dart';
 import 'arc_handlers.dart';
 import 'arc_zpaq.dart';
+import 'arc_zx.dart';
+import '../format/zx/zx_reader.dart' show ZxGenerationSelector;
 import 'common.dart';
 import 'fs_utils.dart' show resolvePath;
 import 'load_codecs.dart';
@@ -300,6 +302,13 @@ class OpenOptions {
   /// is shown as of this version instead of its last one (the CLI sets it
   /// with -mversion=N, a handler property).
   int? version;
+
+  /// zx extension: a .zx archive is shown as of this date (YYYY-MM-DD[
+  /// HH:MM[:SS]], local time) instead of its last generation.
+  String? versionDate;
+
+  /// zx extension: folders where the volumes of a .zx set may be.
+  List<String> zxSearchDirs = const [];
 }
 
 /// CReadArcItem.
@@ -515,6 +524,16 @@ class Arc {
     }
     final v = op.version;
     if (v != null && archive is ZpaqArc) archive.h.openVersion = v;
+    // zx: a generation by number or date
+    final vd = op.versionDate;
+    if (archive is ZxArc) {
+      archive.h.options.searchDirs.addAll(op.zxSearchDirs);
+      if (vd != null) {
+        archive.h.options.generation = ZxGenerationSelector.parse(vd);
+      } else if (v != null) {
+        archive.h.options.generation = ZxGenerationSelector(number: v);
+      }
+    }
     return archive;
   }
 
@@ -1498,6 +1517,11 @@ class OpenCallbackImp extends ArchiveOpenCallback {
   @override
   String? get volumeName =>
       _subArchiveMode ? _subArchiveName : _fileInfo.name;
+
+  @override
+  String? get archivePath => _subArchiveMode
+      ? null
+      : File(_folderPrefix + _fileInfo.name).absolute.path;
 
   // COpenCallbackImp::GetStream
   @override

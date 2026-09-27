@@ -211,6 +211,7 @@ bool isDiskImageName(String name) => _diskImageExt.contains(extensionOf(name));
         'lha' ||
         'arj' ||
         'zpaq' ||
+        'zx' ||
         'jar' ||
         'apk' ||
         'deb' ||

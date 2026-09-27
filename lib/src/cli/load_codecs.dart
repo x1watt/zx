@@ -26,6 +26,8 @@ import 'arc_tar.dart';
 import 'arc_uimage.dart';
 import 'arc_zip.dart';
 import 'arc_zpaq.dart';
+import 'arc_zx.dart';
+import '../format/zx/zx_format.dart' show zxMagic;
 import '../format/zpaq/zpaq_handler.dart';
 import 'arc_handlers.dart';
 import 'arc_iso.dart';
@@ -294,6 +296,20 @@ class Codecs {
           [zpaqLocatorTag, Uint8List.fromList(const [0x7A, 0x50, 0x51])],
           isArcFunc: isArcZpaq,
           createInArchive: ZpaqArc.new,
+          updateEnabled: true),
+      // zx's own format (docs/zx-format.md): the magic at offset 0
+      ArcInfoEx(
+          'zx',
+          _exts('zx'),
+          ArcInfoFlags.symLinks |
+              ArcInfoFlags.hardLinks |
+              ArcInfoFlags.cTime |
+              ArcInfoFlags.aTime |
+              ArcInfoFlags.mTime |
+              ArcInfoFlags.mTimeDefault,
+          [zxMagic],
+          isArcFunc: isArcZx,
+          createInArchive: ZxArc.new,
           updateEnabled: true),
       // firmware and image formats (read only)
       ArcInfoEx(

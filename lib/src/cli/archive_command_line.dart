@@ -1045,6 +1045,10 @@ class ArcCmdLineParser {
         nop,
         thereAreSwitchIncludes,
         codePage);
+    // not in 7-Zip: "zx a -mcompact x.zx" (no names) only compacts
+    options.updateOptions.noFileNames = !isRename &&
+        nonSwitchStrings.length == curCommandIndex &&
+        !thereAreSwitchIncludes;
 
     options.passwordEnabled = parser[_K.password].thereIs;
     if (options.passwordEnabled) {

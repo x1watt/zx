@@ -56,7 +56,44 @@ export 'src/zx_api.dart'
         ZxExtractResult,
         ZxItemError,
         ZxVersion,
+        ZxFileVersion,
         ZxUpdateResult;
+
+// the .zx format (docs/zx-format.md): the synchronous building blocks
+export 'src/format/zx/zx_handler.dart'
+    show ZxHandler, ZxSeqReader, ZxTimelineVersion, ZxUpdateFileResult;
+export 'src/format/zx/zx_writer.dart'
+    show
+        ZxWriter,
+        ZxWriteOptions,
+        ZxWriteResult,
+        ZxSink,
+        ZxStreamSink,
+        ZxVolumeSink,
+        ZxVolumeDir,
+        zxCompact;
+export 'src/format/zx/zx_reader.dart'
+    show
+        ZxArchiveReader,
+        ZxOpenParams,
+        ZxGenerationSelector,
+        ZxMissingVolumeException,
+        ZxNeedPasswordException;
+export 'src/format/zx/zx_codecs.dart'
+    show
+        ZxCodecInfo,
+        ZxCodecId,
+        ZxCoderConfig,
+        ZxCoderSpec,
+        ZxEncoded,
+        registerZxCodec,
+        zxCodecById,
+        zxCodecByName,
+        zxCodecs;
+export 'src/format/zx/zx_format.dart'
+    show ZxEntry, ZxKind, ZxCheck, ZxIndex, ZxGeneration, ZxHeader;
+export 'src/util/tlsh.dart' show Tlsh, tlshDistance;
+export 'src/version.dart' show zxVersionString;
 
 // Streams and errors.
 export 'src/io/streams.dart'

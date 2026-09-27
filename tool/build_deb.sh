@@ -7,6 +7,7 @@
 #   /usr/bin/zx-gui                  the launcher of the app
 #   /usr/share/applications/zx.desktop
 #   /usr/share/icons/hicolor/*/apps/zx.{png,svg}
+#   /usr/share/mime/packages/zx-archive.xml   application/x-zx (.zx)
 #   /usr/lib/x86_64-linux-gnu/nautilus/extensions-4/libzx-nautilus.so
 #   /usr/share/doc/zx/               README, changelog, copyright
 #
@@ -84,6 +85,9 @@ chmod 755 "$STAGE/usr/bin/zx-gui"
 if command -v desktop-file-validate >/dev/null; then
   desktop-file-validate "$STAGE/usr/share/applications/zx.desktop"
 fi
+mkdir -p "$STAGE/usr/share/mime/packages"
+(cd app && dart tool/desktop_entry.dart --mime) \
+  > "$STAGE/usr/share/mime/packages/zx-archive.xml"
 
 ICONS="$ROOT/app/assets/icon"
 install -D -m 644 "$ICONS/zx.svg" "$STAGE/usr/share/icons/hicolor/scalable/apps/zx.svg"

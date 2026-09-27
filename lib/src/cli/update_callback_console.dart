@@ -401,6 +401,18 @@ class UpdateCallbackConsole extends UpdateCallbackUI2 with CallbackConsoleBaseMi
     if (base.so != null && deleteMessageWasShown) base.so!.endl();
   }
 
+  // not in 7-Zip
+  @override
+  void zxWarning(String message) {
+    base.closePercents2();
+    final se = base.se;
+    if (se != null) {
+      base.so?.flush();
+      se.write('\nWARNING: $message\n');
+      se.flush();
+    }
+  }
+
   @override
   void checkBreak() => checkBreak2();
 

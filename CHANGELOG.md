@@ -1,3 +1,53 @@
+## 0.5.0
+
+- **.zx**, the format of zx itself (`docs/zx-format.md`, format version 1),
+  read and written by the command line tool (format `zx`, `.zx`, the magic
+  `89 5A 58 0D 0A 1A 0A 00` at offset 0, found whatever the extension),
+  `ZxArchive` and the app, where it is the default format of new archives
+  (MIME type `application/x-zx`, installed with a shared-mime-info file by
+  the integration and the .deb).
+  - A container: each block names its coder chain from a registry
+    (`lib/src/format/zx/zx_codecs.dart`, `registerZxCodec`): store, LZMA2,
+    LZMA, PPMd (var.H), PPMd8 (var.I), BZip2, Deflate, zpaq, the branch
+    filters (BCJ, ARM, ARMT, ARM64, PPC, SPARC, IA64, RISCV) and Delta;
+    zstd, LZ4 and LZO1X are read. Every file states the oldest zx that
+    reads it and the features it needs; older readers refuse with a clear
+    message (a newer format or reader version, an unknown required
+    feature, an unknown critical record, an unknown codec).
+  - Solid blocks of 16 MiB (`-mbs`, `-ms=off`), coded in parallel by
+    worker isolates from the synchronous handler (`lib/src/sync_pool.dart`)
+    and decoded in parallel at extraction, with the same bytes as one
+    thread; block checks CRC-32C (new, `lib/src/util/crc32c.dart`),
+    xxHash64, SHA-256 or BLAKE2sp; a damaged block fails only its files.
+  - Every file has its SHA-256 (with a sorted lookup table) and a TLSH
+    digest (new, `lib/src/util/tlsh.dart`, identical to the reference
+    tool); `ZxArchive.findBySha256`, `findSimilar`.
+  - Updates append generations in place, with their UTC times: `-mversion=N`
+    or `-mversion=YYYY-MM-DD[ HH:MM[:SS]]` (also `ZxArchive.open(version:,
+    date:)`), `l -mgenerations`, `l -mtimeline=path` (`ZxArchive.timeline`),
+    `a -mcompact[=N]` (`ZxArchive.compact`), crash safety (the last valid
+    Footer is used, the next update overwrites a partial one).
+  - Encryption: scrypt keys, AES-256-CTR, HMAC-SHA-256, a password check
+    (a wrong password is refused at once), the names encrypted by default.
+  - Streamed files for pipes (`-so`, `-si`), with resynchronisation after
+    damage.
+  - Multi-volume sets: `-v` lists of sizes, `-mvdir=DIR[:SIZE|:full]`
+    destination folders, `-mvsearch=DIR` search folders; volumes are
+    recognized by their header; an update adds new volumes.
+- The zx version is `lib/src/version.dart` (`zxVersionString`).
+- The Split handler leaves `x.zx.001` to the zx handler.
+- **zcm** (experimental, `lib/src/codec/zcm`): a family of context mixing
+  codecs in nine levels, from a fast nibble model (about 0.6 MB/s) to
+  paq8px style model sets with text, x86 and byte history models (levels
+  6 to 8) and a level 9 that adds PPMd and an optional LSTM (after cmix).
+  Deterministic (integer models, IEEE-exact float code for the LSTM,
+  golden hashes in the tests), the memory budget stored in the stream,
+  independent segments coded on worker isolates
+  (`zcmCompressParallel`), automatic settings from the machine
+  (`zcm_auto.dart`), `tool/zcm_bench.dart`. Codec id 0x10000 for the .zx
+  registry (experimental range). Its sources are GNU GPL (paq8, paq8px,
+  cmix), see LICENSE.
+
 ## 0.4.0
 
 - Firmware and disk image formats, read only, in the command line tool

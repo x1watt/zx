@@ -57,6 +57,24 @@ void main() {
     expect(kArchiveMimeTypes, contains('application/x-zpaq'));
   });
 
+  test('zx: the default format, its extension and MIME type', () {
+    expect(kNewFormats.first.id, 'zx');
+    expect(newFormatById('nothing').id, 'zx');
+    final f = newFormatById('zx');
+    expect(f.createFormat, 'zx');
+    final o = (CompressionSettings(level: 7)..method = 'PPMd8').toOptions(f);
+    expect(o.level, 7);
+    expect(o.switches, {'m': 'PPMd8'});
+    expect(looksLikeArchive('backup.zx'), isTrue);
+    expect(looksLikeArchive('backup.zx.001'), isTrue);
+    expect(folderNameFor('backup.zx'), 'backup');
+    expect(folderNameFor('backup.zx.002'), 'backup');
+    expect(kArchiveMimeTypes, contains('application/x-zx'));
+    expect(kPrimaryMimeTypes, contains('application/x-zx'));
+    expect(kZxMimeXml, contains('<glob pattern="*.zx"/>'));
+    expect(kZxMimeXml, contains(r'\x89ZX\x0d\x0a\x1a\x0a\x00'));
+  });
+
   test('compression settings become ZxOptions', () {
     final s = CompressionSettings(level: 9)
       ..method = 'PPMd'

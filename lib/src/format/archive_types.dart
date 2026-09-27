@@ -127,12 +127,30 @@ abstract final class ZxKpid {
 
   /// zpaq: the number of versions in the archive.
   static const numVersions = Kpid.userDefined + 2;
+
+  /// zx: the TLSH digest of an item.
+  static const tlsh = Kpid.userDefined + 3;
+
+  /// zx: bytes of blocks that no item of the last generation uses (what a
+  /// compaction frees).
+  static const wasted = Kpid.userDefined + 4;
+
+  /// zx: the oldest zx release that can read the archive.
+  static const minReader = Kpid.userDefined + 5;
+
+  /// zx: the generation in which a version of an item was deleted (the
+  /// timeline listing).
+  static const deletedIn = Kpid.userDefined + 6;
 }
 
 /// The names of the [ZxKpid] properties in `l -slt`.
 const Map<int, String> kZxPropNames = {
   ZxKpid.version: 'Version',
   ZxKpid.numVersions: 'Versions',
+  ZxKpid.tlsh: 'TLSH',
+  ZxKpid.wasted: 'Wasted',
+  ZxKpid.minReader: 'Min reader',
+  ZxKpid.deletedIn: 'Deleted in',
 };
 
 /// kpv_ErrorFlags_* (PropID.h).

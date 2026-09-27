@@ -68,6 +68,25 @@ Without `-ms`, the level 5 block is 4 times the dictionary (128 MB), so an
 input under that size is one block and one thread: 38 MB took 16.8 s with
 `threads: 4`, as with one.
 
+### .zx, parallel blocks
+
+AOT build of `bin/zx.dart`, 40 MB of C sources (the LZMA SDK's C folder,
+zlib, bzip2, libarchive), LZMA2 level 5 in 2 MiB blocks (`-mbs=2m`), so
+that there are 20 blocks; `/usr/bin/time`, one run each:
+
+| | -mmt1 | -mmt4 |
+|---|---|---|
+| a | 8.69 s, 60 MB | 3.03 s, 183 MB |
+| t | 0.78 s, 53 MB | 0.43 s, 64 MB |
+
+The archive is 14.3 MB. Compression scales with the workers (2.9 times
+with 4); each worker holds its block, its output and an LZMA2 encoder with
+the dictionary reduced to the block. With the default 16 MiB blocks a
+worker needs about 230 MB at level 5, so the default number of workers is
+also bounded by 1 GiB of estimated memory (`zxWorkerMemory`); `-mmt`
+overrides it. The per file SHA-256 and TLSH are computed on the handler's
+isolate while the workers code.
+
 ### LZMA against the SDK itself
 
 The LZMA encoder is a port of LzmaEnc.c with the single thread match
@@ -123,6 +142,9 @@ the single thread output. On the small inputs of the tests it is.
 - 7z compression on several isolates (LZMA2 blocks inside a folder,
   independent folders), see section 6 of `docs/architecture.md`.
 - Multi-block xz decoding in parallel.
+- .zx: the block results cross isolates through files in a temporary
+  folder (`sync_pool.dart`); on a slow disk a tmpfs `TMPDIR` avoids the
+  write and read of each decoded block.
 - Phones: not measured yet. On a phone keep the levels at 5 or below and
   `threads` at 4 or below.
 

@@ -12,6 +12,8 @@ import '../io/streams.dart';
 import 'arc_compound.dart';
 import 'arc_handlers.dart';
 import 'arc_tar.dart';
+import 'arc_zx.dart';
+import '../format/zx/zx_format.dart' show ZxHeader;
 import 'archive_extract_callback.dart' show censorNodeCheckPath2, StdOutFileStream;
 import 'common.dart';
 import 'enum_dir_items.dart';
@@ -199,6 +201,10 @@ class UpdateOptions {
   List<RenamePair> renamePairs = [];
   List<int> volumesSizes = [];
 
+  /// No file names and no -i switches were given (the "*" of 7-Zip was
+  /// added): with -mcompact, a zx archive is only compacted.
+  bool noFileNames = false;
+
   /// A new compound archive (a tar inside this compressor, by the archive
   /// name or -ttar.gzip): the format index of the compressor, else -1.
   int compoundOuterIndex = -1;
@@ -214,6 +220,11 @@ class UpdateOptions {
       methodMode.type = OpenType();
       if (arcNameMode != ArcNameMode.add) {
         methodMode.type.formatIndex = codecs.findFormatForArchiveName(arcPath);
+        // not in 7-Zip: a volume of a zx set (x.zx.001) is a zx archive
+        final fi = methodMode.type.formatIndex;
+        if (fi >= 0 && codecs.formats[fi].isSplit && _zxFileAt(arcPath)) {
+          methodMode.type.formatIndex = codecs.findFormatForArchiveType('zx');
+        }
         if (methodMode.type.formatIndex >= 0) methodMode.typeDefined = true;
       }
     }
@@ -292,6 +303,10 @@ abstract class UpdateCallbackUI2 extends UpdateCallbackUI
   void finishArchive(FinishArchiveStat st);
   void deletingAfterArchiving(String path, bool isDir);
   void finishDeletingAfterArchiving();
+
+  /// Not in 7-Zip: a warning of the zx writer (an experimental codec, a
+  /// file that changed while it was read).
+  void zxWarning(String message) {}
   void moveArcStart(String srcTempPath, String destFinalPath, int size,
       bool updateMode);
   void moveArcProgress(int total, int current);
@@ -331,6 +346,13 @@ class _UpdateProduceCallbackImp implements UpdateProduceCallback {
     }
     _callback.showDeleteFile(ai.name, ai.isDir);
   }
+}
+
+/// The files and warnings of a zx update.
+class ZxUpdateFileResultLike {
+  final List<String> files;
+  final List<String> warnings;
+  const ZxUpdateFileResultLike(this.files, this.warnings);
 }
 
 /// An output file opened with Create_NEW (COutFileStream).
@@ -522,6 +544,49 @@ void _compress(
   if (!options.stdOutMode) {
     final (dirPrefix, _) = splitPathToParts2(archivePath.getFinalPath());
     if (dirPrefix.isNotEmpty) createComplexDir(dirPrefix);
+  }
+
+  // not in 7-Zip: a zx archive is written by its handler, in place (a new
+  // generation after the last one, new volumes for a set)
+  if (outArchive is ZxArc && !options.stdOutMode) {
+    final path = resolvePath(options.volumesSizes.isNotEmpty && arc == null
+        ? '${archivePath.getFinalVolPath()}.001'
+        : (arc?.path ?? archivePath.getFinalPath()));
+    final target = arc == null
+        ? path
+        : (outArchive.openedPath ?? resolvePath(arc.path));
+    ZxUpdateFileResultLike r;
+    try {
+      final res = outArchive.updateFile(
+          target, updatePairs2.length, updateCallbackSpec,
+          volumeSizes: options.volumesSizes,
+          onFile: (f) => tempFiles.paths.add(f));
+      r = ZxUpdateFileResultLike(res.files, res.warnings);
+    } on InvalidArgException {
+      throw const SystemException(HRes.eInvalidArg);
+    } on FileSystemException catch (e) {
+      throw SystemException(hresultOfFileSystemException(e));
+    }
+    for (final w in r.warnings) {
+      callback.zxWarning(w);
+    }
+    var size = 0;
+    final files = r.files.isNotEmpty ? r.files : [target];
+    for (final f in files) {
+      final fi = findFile(f);
+      if (fi != null) size += fi.size;
+    }
+    st.outArcFileSize = size;
+    if (r.files.length > 1 || options.volumesSizes.isNotEmpty) {
+      st.numVolumes = r.files.length;
+      st.isMultiVolMode = true;
+    }
+    if (!updateCallbackSpec.areAllFilesClosed()) {
+      errorInfo.message = 'There are unclosed input files:';
+      errorInfo.fileNames.addAll(updateCallbackSpec.openFilesPaths);
+      throw const SystemException(HRes.eFail);
+    }
+    return;
   }
 
   _OutArcFile? outStreamSpec;
@@ -852,6 +917,15 @@ void updateArchive(
       arcPath = rarVolumePath(options.archivePath.getPathWithoutExt(), 0, 1);
     }
   }
+  // not in 7-Zip: a zx archive is updated in place and handles its own
+  // volumes (a set gets new volumes)
+  final zxMode = _isZxTarget(codecs, options, arcPath);
+  if (zxMode &&
+      options.volumesSizes.isEmpty &&
+      findFileFollowLink(arcPath) == null &&
+      findFileFollowLink('$arcPath.001') != null) {
+    arcPath = '$arcPath.001';
+  }
 
   if (chainOuter >= 0) {
     options.compoundOuterIndex = chainOuter;
@@ -893,7 +967,7 @@ void updateArchive(
                 'The file is read-only', arcPath, Errno.eacces));
           }
         }
-        if (options.volumesSizes.isNotEmpty) {
+        if (options.volumesSizes.isNotEmpty && !zxMode) {
           errorInfo.fileNames.add(arcPath);
           errorInfo.message =
               'Updating for multivolume archives is not implemented';
@@ -924,10 +998,28 @@ void updateArchive(
         callback.openResult(codecs, arcLink, arcPath, result);
         if (result != HRes.sOk) throw SystemException(result);
 
-        if (arcLink.volumePaths.length > 1) {
+        if (arcLink.volumePaths.length > 1 &&
+            arcLink.arcs.last.archive is! ZxArc) {
           errorInfo.message =
               'Updating for multivolume archives is not implemented';
           throw const SystemException(HRes.eNotImpl);
+        }
+        // "zx a -mcompact[=N] x.zx" without names: only the compaction
+        final za = arcLink.arcs.last.archive;
+        if (za is ZxArc &&
+            options.noFileNames &&
+            za.h.options.compactKeep != null &&
+            !options.stdOutMode) {
+          callback.startArchive(arcPath, true);
+          final path = za.openedPath ?? resolvePath(arcPath);
+          za.compactFile(path, za.h.options.compactKeep!,
+              password: callback.cryptoGetTextPassword2());
+          arcLink.close();
+          final st = FinishArchiveStat();
+          final fi = findFile(path);
+          if (fi != null) st.outArcFileSize = fi.size;
+          callback.finishArchive(st);
+          return;
         }
         final arc = arcLink.arcs.last;
         arc.mTime.def = true;
@@ -1002,11 +1094,14 @@ void updateArchive(
     final tempFiles = _TempFiles();
     var createTempFile = false;
 
+    final zxInPlace = zxMode ||
+        (thereIsInArchive && arcLink.arcs.last.archive is ZxArc);
     if (!options.stdOutMode && options.updateArchiveItself) {
       final ap = options.archivePath.copy();
       options.commands[0].archivePath = ap;
       if ((thereIsInArchive || options.workingDir.isNotEmpty) &&
-          options.volumesSizes.isEmpty) {
+          options.volumesSizes.isEmpty &&
+          !zxInPlace) {
         createTempFile = true;
         ap.temp = true;
         ap.tempPrefix =
@@ -1031,7 +1126,9 @@ void updateArchive(
 
     for (var ci = 0; ci < options.commands.length; ci++) {
       final ap = options.commands[ci].archivePath;
-      if (!options.stdOutMode && (ci > 0 || !createTempFile)) {
+      if (!options.stdOutMode &&
+          (ci > 0 || !createTempFile) &&
+          !(ci == 0 && zxInPlace && thereIsInArchive)) {
         final path = ap.getFinalPath();
         if (doesFileOrDirExist(path)) {
           errorInfo.systemError = Errno.eexist;
@@ -1183,6 +1280,36 @@ void updateArchive(
     }
   } finally {
     arcLink.close();
+  }
+}
+
+// Not in 7-Zip: the update writes a zx archive (by -t, by the name of a
+// new archive, or by the magic of the existing file).
+bool _isZxTarget(Codecs codecs, UpdateOptions options, String arcPath) {
+  final zi = codecs.findFormatForArchiveType('zx');
+  if (zi < 0) return false;
+  if (options.methodMode.typeDefined) {
+    return options.methodMode.type.formatIndex == zi;
+  }
+  for (final p in [arcPath, '$arcPath.001']) {
+    if (File(resolvePath(p)).existsSync()) return _zxFileAt(p);
+  }
+  return options.methodMode.type.formatIndex == zi;
+}
+
+// the file at [path] starts with the zx magic
+bool _zxFileAt(String path) {
+  final f = File(resolvePath(path));
+  RandomAccessFile? raf;
+  try {
+    raf = f.openSync();
+    final b = Uint8List(8);
+    final n = raf.readIntoSync(b);
+    return n == 8 && ZxHeader.hasMagic(b);
+  } on FileSystemException {
+    return false;
+  } finally {
+    raf?.closeSync();
   }
 }
 

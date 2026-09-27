@@ -267,7 +267,24 @@ class LinuxIntegration implements DesktopIntegration {
     await Directory(applicationsDir).create(recursive: true);
     await _writeAtomic(desktopFile, desktopEntry());
     await _installIcons();
+    await _installMimeType();
     await _refreshDatabases();
+  }
+
+  /// The user's shared-mime-info folder and the file of application/x-zx
+  /// (.zx is not in the freedesktop database yet).
+  String get mimeDir => p.join(paths.dataHome, 'mime');
+  String get zxMimeFile => p.join(mimeDir, 'packages', kZxMimeFile);
+
+  Future<void> _installMimeType() async {
+    await _writeAtomic(zxMimeFile, kZxMimeXml);
+    await runner('update-mime-database', [mimeDir]);
+  }
+
+  Future<void> _removeMimeType() async {
+    if (!await File(zxMimeFile).exists()) return;
+    await _delete(zxMimeFile);
+    await runner('update-mime-database', [mimeDir]);
   }
 
   /// The contents of zx.desktop.
@@ -634,6 +651,7 @@ exec ${_shQuote(executable)} --extract-to-folder "\$@"
     await setAssociations(false);
     await _delete(desktopFile);
     await _removeIcons();
+    await _removeMimeType();
     // per user nothing is left; with the package the switch file keeps its
     // Nautilus extension off, as asked
     if (!packaged) await _delete(contextMenuDisabledFile);

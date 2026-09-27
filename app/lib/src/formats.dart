@@ -39,6 +39,18 @@ class NewFormat {
 }
 
 const kNewFormats = <NewFormat>[
+  // zx's own format (docs/zx-format.md), the default: any codec, updates
+  // append generations (history by date), SHA-256 and TLSH per file
+  NewFormat(
+    'zx',
+    'zx',
+    'zx',
+    'zx',
+    methods: ['LZMA2', 'PPMd8', 'PPMd', 'BZip2', 'Deflate', 'zpaq', 'store'],
+    password: true,
+    encryptNames: true,
+    solid: true,
+  ),
   NewFormat(
     '7z',
     '7z',
@@ -173,6 +185,7 @@ const kArchiveExtensions = <String>[
   'lha',
   'arj',
   'zpaq',
+  'zx',
   'cbz',
   'cbr',
   'epub',
@@ -276,6 +289,7 @@ const kArchiveMimeTypes = <String>[
   'application/x-lzh-compressed',
   'application/x-arj',
   'application/x-zpaq',
+  'application/x-zx',
 ];
 
 /// The types the association checks and sets as default (one per format,
@@ -296,6 +310,7 @@ const kPrimaryMimeTypes = <String>[
   'application/x-lha',
   'application/x-arj',
   'application/x-zpaq',
+  'application/x-zx',
 ];
 
 /// The extensions registered on Windows and matched by the file manager
@@ -319,5 +334,26 @@ const kIntegrationExtensions = <String>[
   'lha',
   'arj',
   'zpaq',
+  'zx',
   '001',
 ];
+
+/// The shared-mime-info definition of application/x-zx (not in the
+/// freedesktop database yet): the magic at offset 0 and the glob. The
+/// Linux integration installs it in the user's mime packages, the .deb in
+/// /usr/share/mime/packages.
+const kZxMimeXml = '''<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-zx">
+    <comment>zx archive</comment>
+    <generic-icon name="package-x-generic"/>
+    <magic priority="60">
+      <match type="string" offset="0" value="\\x89ZX\\x0d\\x0a\\x1a\\x0a\\x00"/>
+    </magic>
+    <glob pattern="*.zx"/>
+  </mime-type>
+</mime-info>
+''';
+
+/// The file name of [kZxMimeXml] in a mime/packages folder.
+const kZxMimeFile = 'zx-archive.xml';

@@ -15,6 +15,8 @@ import 'dart:typed_data';
 import 'api.dart';
 import 'cli/nest.dart' show NestNodeSpec;
 import 'io/streams.dart';
+import 'format/zx/zx_writer.dart' show ZxVolumeDir;
+import 'util/tlsh.dart' show tlshDistance;
 import 'zx_worker.dart';
 
 /// Progress of a [ZxArchive] operation (bytes done and total, current
@@ -178,6 +180,16 @@ class ZxItem {
   /// shows (the item itself is an image or an archive). null otherwise.
   final String? nestedFormat;
 
+  /// The SHA-256 of the content (hex), when the format stores it (.zx).
+  final String? sha256;
+
+  /// The TLSH digest of the content ("T1" and 70 hex digits), .zx only;
+  /// null for small or uniform files.
+  final String? tlsh;
+
+  /// The generation (.zx) or version (zpaq) that wrote this content.
+  final int? generation;
+
   const ZxItem({
     required this.index,
     required this.path,
@@ -198,6 +210,9 @@ class ZxItem {
     this.comment,
     this.nestChain,
     this.nestedFormat,
+    this.sha256,
+    this.tlsh,
+    this.generation,
   });
 
   /// The last component of [path].
@@ -341,6 +356,16 @@ class ZxOptions {
   /// the others `name.ext.001, .002...`, rar `name.part1.rar...`.
   final int? volumeSize;
 
+  /// .zx: the size of each volume, the last one repeating (for example
+  /// first 4 GiB, then 25 GiB each). A .zx set gets new volumes when it is
+  /// updated. Takes the place of [volumeSize].
+  final List<int> volumeSizes;
+
+  /// .zx: the folders the volumes are written to, in order: "DIR", or
+  /// "DIR:SIZE" (a budget such as 100g), or "DIR:full" (until the disk has
+  /// no room for the next volume).
+  final List<String> volumeDirs;
+
   /// Stores symbolic links as links (-snl). When false a link to a file is
   /// stored as the file, a link to a folder is skipped.
   final bool storeSymlinks;
@@ -356,9 +381,38 @@ class ZxOptions {
     this.password,
     this.encryptHeaders,
     this.volumeSize,
+    this.volumeSizes = const [],
+    this.volumeDirs = const [],
     this.storeSymlinks = false,
     this.switches = const {},
   });
+}
+
+/// One version of a path in a .zx archive ([ZxArchive.timeline]).
+class ZxFileVersion {
+  final String path;
+
+  /// The generation that wrote this version, and when.
+  final int generation;
+  final DateTime time;
+  final int size;
+
+  /// SHA-256 of the content (hex).
+  final String? sha256;
+
+  /// The generation in which the version was replaced or deleted (null
+  /// while it is the current one), and when.
+  final int? endGeneration;
+  final DateTime? endTime;
+
+  /// The path was deleted in [endGeneration] (not replaced).
+  final bool deleted;
+  const ZxFileVersion(this.path, this.generation, this.time, this.size,
+      this.sha256, this.endGeneration, this.endTime, this.deleted);
+
+  @override
+  String toString() => 'ZxFileVersion($path, gen $generation $time, $size'
+      '${endGeneration == null ? '' : deleted ? ', deleted in $endGeneration' : ', replaced in $endGeneration'})';
 }
 
 /// One version (update) of a journaling archive (zpaq): every update adds
@@ -481,6 +535,9 @@ class ZxArchive {
   // the version a journaling archive was opened at (null: the last one)
   final int? _version;
 
+  /// .zx: the folders searched for the volumes of a set.
+  final List<String> searchDirs;
+
   // where the operations open it: _base, then the items of _chain
   String _base;
   List<int> _chain;
@@ -500,7 +557,8 @@ class ZxArchive {
       List<int> chain = const [],
       List<NestNodeSpec>? layout,
       List<String> temps = const [],
-      int? version})
+      int? version,
+      this.searchDirs = const []})
       : _maxDepth = maxDepth,
         _version = version,
         _base = base ?? path,
@@ -531,26 +589,43 @@ class ZxArchive {
   /// wrong password, [SevenZipError.cancelled] when [onPassword] gave no
   /// password, [SevenZipError.io] when the file can not be read.
   ///
-  /// [version] opens a journaling archive (zpaq) as it was after that
-  /// version (1 for the first update): the listing, extract, test and
-  /// readBytes see the files of that version, and the handle is read only.
-  /// Without it the last version is shown. [versions] lists them. Other
-  /// formats ignore it.
+  /// [version] opens a journaling archive (zpaq, and the generations of
+  /// .zx) as it was after that version (1 for the first update): the
+  /// listing, extract, test and readBytes see the files of that version,
+  /// and the handle is read only. Without it the last version is shown.
+  /// [versions] lists them. Other formats ignore it. [date] opens a .zx
+  /// archive as of a date ("YYYY-MM-DD", "YYYY-MM-DD HH:MM" or
+  /// "YYYY-MM-DD HH:MM:SS", local time): the last generation written up
+  /// to the end of that day, minute or second.
+  ///
+  /// [searchDirs] are folders where the volumes of a .zx set may be,
+  /// besides the folder of [path] (volumes are recognized by their
+  /// header, whatever their names).
   static Future<ZxArchive> open(String path,
       {String? password,
       ZxPasswordCallback? onPassword,
       ZxCancelToken? cancel,
       bool flatten = false,
       int maxDepth = 4,
-      int? version}) async {
+      int? version,
+      String? date,
+      List<String> searchDirs = const []}) async {
     if (version != null && version < 1) {
       throw ArgumentError.value(version, 'version', 'must be 1 or more');
     }
     final full = File(path).absolute.path;
+    final dirs = [for (final d in searchDirs) Directory(d).absolute.path];
     final req = ZxOpenRequest(full, password, onPassword != null,
-        nest: flatten ? ZxNest(maxDepth) : null, version: version);
+        nest: flatten ? ZxNest(maxDepth) : null,
+        version: version,
+        versionDate: version == null ? date : null,
+        searchDirs: dirs);
     final r = await _zxRun<ZxOpenResult>((ops) => workerOpen(req, ops),
         cancel: cancel, onPassword: onPassword);
+    var v = version;
+    if (v == null && date != null && r.listing.versions.isNotEmpty) {
+      v = r.listing.versions.last.number;
+    }
     return ZxArchive._(full, r.listing, onPassword,
         flattened: flatten,
         maxDepth: maxDepth,
@@ -558,7 +633,8 @@ class ZxArchive {
         chain: r.chain,
         layout: r.layout,
         temps: r.temps,
-        version: version);
+        version: v,
+        searchDirs: dirs);
   }
 
   // the version for the requests: only while the operations start from
@@ -595,7 +671,8 @@ class ZxArchive {
         chain: r.chain,
         layout: r.layout,
         temps: r.temps,
-        version: _version);
+        version: _version,
+        searchDirs: searchDirs);
   }
 
   /// Deletes the temporary files of this handle (nested archives read
@@ -651,7 +728,11 @@ class ZxArchive {
         onProgress: onProgress,
         cancel: cancel);
     return ZxArchive._(
-        l.volumes.isNotEmpty ? l.volumes.first : full, l, onPassword);
+        l.volumes.isNotEmpty ? l.volumes.first : full, l, onPassword,
+        searchDirs: [
+          for (final d in options.volumeDirs)
+            Directory(ZxVolumeDir.parse(d).path).absolute.path
+        ]);
   }
 
   // ---- listing ----
@@ -674,11 +755,13 @@ class ZxArchive {
 
   /// The version shown ([open] with `version`, else the last one); null
   /// for the formats without versions.
-  int? get version =>
-      _listing.numVersions == 0 ? null : _listing.versions.length;
+  int? get version => _listing.numVersions == 0 || _listing.versions.isEmpty
+      ? null
+      : _listing.versions.last.number;
 
   /// The number of versions of a journaling archive, whatever version is
-  /// shown; 0 for the other formats.
+  /// shown (for .zx the number of the last generation: a compaction keeps
+  /// the numbers of the generations it keeps); 0 for the other formats.
   int get numVersions => _listing.numVersions;
   ZxCapabilities get capabilities => _listing.capabilities;
 
@@ -717,7 +800,8 @@ class ZxArchive {
         chain: _chain,
         nest: flattened ? ZxNest(_maxDepth) : null,
         readOnly: isNested || _temps.isNotEmpty,
-        version: _baseVersion);
+        version: _baseVersion,
+        searchDirs: searchDirs);
     final r = await _zxRun<ZxOpenResult>((ops) => workerOpen(req, ops),
         cancel: cancel, onPassword: onPassword);
     final old = _temps;
@@ -928,6 +1012,81 @@ class ZxArchive {
         comment: comment ?? '');
   }
 
+  // ---- .zx ----
+
+  /// .zx: rewrites the archive keeping only the data of the last [keep]
+  /// generations (the blocks are copied, not recompressed; a volume set is
+  /// written again with the same volume sizes). Returns the bytes freed.
+  /// The generations kept keep their numbers and times.
+  Future<int> compact({int keep = 1, ZxCancelToken? cancel}) async {
+    _needZx('compaction');
+    _need(capabilities.canAdd, 'compaction');
+    final req = ZxZxRequest(path, password, onPassword != null,
+        ZxZxOp.compact, '$keep', searchDirs);
+    final (l, freed) = await _zxRun<(ZxListing, int)>(
+        (ops) => workerZx(req, ops),
+        cancel: cancel,
+        onPassword: onPassword);
+    _set(l);
+    return freed;
+  }
+
+  /// .zx: every version of the file at [path] across the generations,
+  /// oldest first, with the generation (and date) that wrote it and the
+  /// one that replaced or deleted it.
+  Future<List<ZxFileVersion>> timeline(String path,
+      {ZxCancelToken? cancel}) async {
+    _needZx('timelines');
+    final req = ZxZxRequest(this.path, password, onPassword != null,
+        ZxZxOp.timeline, _norm(path), searchDirs);
+    return _zxRun<List<ZxFileVersion>>((ops) => workerZx(req, ops),
+        cancel: cancel, onPassword: onPassword);
+  }
+
+  /// .zx: the items (of the generation shown) whose content has the
+  /// SHA-256 [sha256] (hex), by the sorted lookup table of the archive.
+  List<ZxItem> findBySha256(String sha256) {
+    final h = sha256.toLowerCase();
+    return [
+      for (final i in items)
+        if (i.sha256 == h) i
+    ];
+  }
+
+  /// .zx: the items whose TLSH digest is within [maxDistance] of the
+  /// digest of [item] (a [ZxItem], a path or a TLSH digest), nearest
+  /// first, without [item] itself.
+  List<(ZxItem, int)> findSimilar(Object item, {int maxDistance = 100}) {
+    String? digest;
+    ZxItem? self;
+    if (item is ZxItem) {
+      self = item;
+      digest = item.tlsh;
+    } else if (item is String && item.startsWith('T1') && item.length == 72) {
+      digest = item;
+    } else if (item is String) {
+      self = this[item];
+      digest = self?.tlsh;
+    }
+    if (digest == null) return const [];
+    final out = <(ZxItem, int)>[];
+    for (final i in items) {
+      final t = i.tlsh;
+      if (t == null || identical(i, self)) continue;
+      final d = tlshDistance(digest, t);
+      if (d != null && d <= maxDistance) out.add((i, d));
+    }
+    out.sort((a, b) => a.$2.compareTo(b.$2));
+    return out;
+  }
+
+  void _needZx(String what) {
+    if (format != 'zx') {
+      throw SevenZipException(
+          '$format: $what are for .zx archives', SevenZipError.unsupported);
+    }
+  }
+
   // ---- helpers ----
 
   void _need(bool ok, String what) {
@@ -1032,7 +1191,8 @@ class ZxArchive {
         restoreModes: restoreModes,
         restoreSymlinks: restoreSymlinks,
         maxBytes: maxBytes,
-        version: _baseVersion);
+        version: _baseVersion,
+        searchDirs: searchDirs);
   }
 
   Future<ZxExtractResult> _extractRun(
@@ -1068,7 +1228,8 @@ class ZxArchive {
         sources: sources,
         paths: paths,
         newPath: newPath,
-        comment: comment);
+        comment: comment,
+        searchDirs: searchDirs);
     final (l, r) = await _zxRun<(ZxListing, ZxUpdateResult)>(
         (ops) => workerUpdate(req, ops),
         onProgress: onProgress,

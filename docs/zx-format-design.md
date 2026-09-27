@@ -1,6 +1,8 @@
 # The .zx format (design proposal, draft 0)
 
-Status: proposal for review. Nothing here is implemented yet.
+Status: implemented in zx 0.5.0. The normative specification is
+`docs/zx-format.md` (its section 15 lists what the implementation
+changed); the codec registry is its section 11.
 
 ## 1. Goals
 

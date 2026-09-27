@@ -19,14 +19,18 @@ No native code, no FFI, no plugins, no run-time dependencies: it works
 wherever `dart:io` does (Android, iOS, Linux, macOS, Windows). All heavy
 work happens in background isolates, so the UI isolate never blocks.
 
-Status: version 0.4.0, not published to pub.dev (`publish_to: none`).
+Status: version 0.5.0, not published to pub.dev (`publish_to: none`).
 Version 0.3.0 added **zx**, a desktop archive manager (Flutter, in `app/`),
 see Desktop app below. Version 0.4.0 reads firmware and disk images (pak,
 uImage, device trees, cpio, ISO, UDF, SquashFS, cramfs, JFFS2, UBI, UBIFS,
 MBR, GPT, FAT, ext) and opens the archives nested in them (see Nested
 archives below), and reads and writes zpaq journaling archives, every
 version of them (engine vendored from the author's zpaq-flutter port of
-libzpaq and zpaq 7.15).
+libzpaq and zpaq 7.15). Version 0.5.0 adds **.zx**, the format of zx
+itself (see The .zx format below): any codec inside one container,
+explicit compatibility, parallel blocks, appended generations with
+history by date, SHA-256 and TLSH per file, encryption and volumes spread
+over several disks. It is the default format of the app.
 
 ## Credits
 
@@ -48,7 +52,12 @@ function, and it would not exist without it.
 | **BLAKE2sp**, the RAR5 file hash | **Samuel Neves**, the BLAKE2 reference code. CC0 1.0. |
 | **zpaq**: the ZPAQ journaling format, libzpaq, the ZPAQL machine (`lib/src/zpaq`, vendored from the author's zpaq-flutter port) | **Matt Mahoney**: <http://mattmahoney.net/dc/zpaq.html>. Public domain. zpaq 7.15 is the specification. |
 | **zpaqfranz**: the per file attribute extension (hashes and CRC-32) and its tables | **Franco Corbelli**: <https://github.com/fcorbelli/zpaqfranz>. MIT. |
-| **divsufsort** (in libzpaq), **scrypt** (the zpaq `-key` derivation) | **Yuta Mori** (MIT) and **Colin Percival** (BSD 2-clause). |
+| **divsufsort** (in libzpaq), **scrypt** (the zpaq `-key` derivation, also the .zx key derivation) | **Yuta Mori** (MIT) and **Colin Percival** (BSD 2-clause). |
+| **TLSH**, the similarity digest of .zx entries (`lib/src/util/tlsh.dart`) | **Jonathan Oliver**, **Chun Cheng** and **Yanggui Chen** (Trend Micro): "TLSH: A Locality Sensitive Hash" (2013), <https://github.com/trendmicro/tlsh>. Apache 2.0 or BSD 3-clause; used under the BSD license. |
+| **zcm**, the experimental context mixing codecs (`lib/src/codec/zcm`): paq8 and lpaq (StateMap, APM, ContextMap, mixer, match, word, sparse, record, indirect, DMC and x86 models, the arithmetic coder) | **Matt Mahoney** (paq8, lpaq1: <http://mattmahoney.net/dc/>), with **Alexander Rhatushnyak** and **Serge Osnach** (paq8 exe and model work). GNU GPL. |
+| zcm: the paq8px state table, byte history context map, char group, indirect, E8/E9 transform and SSE designs | the **paq8px** authors: Jan Ondrus, **Marcio Pais**, **Andrew Epstein**, **Zoltan Gotthardt**, Simon Berger, Moises Cardona, Surya Kandau and others (<https://github.com/hxim/paq8px>). GNU GPL. |
+| zcm: the LSTM byte model, byte models turned into bit predictions | **Byron Knoll** (cmix, <https://github.com/byronknoll/cmix>, and lstm-compress). GNU GPL v3. |
+| zcm: PPMd var.H as a byte predictor | **Dmitry Shkarin** (PPMd), through the LZMA SDK port in `lib/src/codec/ppmd`. |
 
 The 7z, xz and lzma code comes only from the public domain LZMA SDK; the
 other formats come from the permissive sources above or were written from
@@ -57,7 +66,9 @@ pax, WinZip AES, the RAR5 and ARJ technotes, and for the RAR 1.5 method
 and the RAR 1.5 and 2.0 ciphers the format descriptions of rar-research,
 with black box tests against RAR 1.55, WinRAR 2.90 and unrar). No code from the GNU LGPL
 licensed parts of 7-Zip, from unRAR or from the GPL ARJ was read or used,
-which is why this package can be BSD licensed; each notice is in
+which is why this package can be BSD licensed (with one exception: the
+experimental zcm codecs in `lib/src/codec/zcm` draw on paq8, paq8px and
+cmix, which are GNU GPL, at the owner's decision; see LICENSE); each notice is in
 `LICENSE`. 7-Zip is a registered trademark of Igor Pavlov; this
 package is not affiliated with or endorsed by him.
 
@@ -131,6 +142,7 @@ dictionary; 7-Zip 23.01 used 16 MB).
 | Reolink pak (firmware) | the sections (loader, device tree, U-Boot, kernel, rootfs, app...) | no (extract only) | pakler |
 | uImage (U-Boot legacy image) | the payload, decompressed (gzip, bzip2, lzma, lzo, lz4, zstd) | no (extract only) | mkimage |
 | Device tree (`.dtb`) | the nodes and properties as files, plus the source (`.dts`) | no (extract only) | dtc |
+| zx (`.zx`, zx's own format) | every generation (`-mversion=N` or a date), every codec of the registry (zstd, LZ4 and LZO1X read only), encryption, volume sets, streamed files from a pipe (`-si`) | appends a generation per update (in place, a set gets new volumes); any chain (`-m0=`, `-mf=`), solid or not, encryption (`-p`, names too by default), volumes (`-v`, `-mvdir`), compaction (`-mcompact`) | the tests (it is zx's own) |
 | zpaq (`.zpaq`, journaling) | every version (`-mversion=N`, default the last), all methods, encryption (`-p`, zpaq `-key`), the zpaqfranz hashes and CRC-32 | appends a version per update: deduplicated fragments, deletions recorded, renames without recompression; methods 0 to 5 (`-mx`, default 1) or a zpaq method string (`-mm=`), encryption when created (`-p`) | zpaq 7.15, zpaqfranz |
 
 The RAR 1.5 method and the RAR 1.5 and 2.0 ciphers are independent
@@ -280,6 +292,8 @@ zx a old.lzh docs/ -mm=lh7
 zx t backup.arj
 zx a backup.zpaq docs/          # a new version of a zpaq backup
 zx l backup.zpaq -mversion=2    # as it was after version 2
+zx a backup.zx docs/            # a new generation of a .zx archive
+zx x backup.zx -mversion=2026-09-01 -oold   # as of a date
 ```
 
 The format comes from the extension (`-t` chooses it: `-tzip`, `-ttar`,
@@ -318,6 +332,66 @@ mode, scrypt); an encrypted archive has no signature and is recognized by
 its `.zpaq` extension (or `-tzpaq`). The update runs on one thread
 (`-mmt` is accepted and ignored). Archives stay readable and writable by
 zpaq 7.15 and zpaqfranz, in both directions.
+
+### The .zx format
+
+`.zx` is zx's own container (specification: `docs/zx-format.md`, design:
+`docs/zx-format-design.md`). The extension and the magic bytes
+(`89 5A 58 0D 0A 1A 0A 00`) only say "zx can read this": every block
+names its coder chain, so new codecs come without a new extension. Every
+file states the oldest zx release that can read it and the features it
+needs, and an older zx refuses cleanly ("needs zx 0.7.0 or later") before
+reading any data.
+
+- **Codecs**: LZMA2 (the default for now: the default chain will be
+  chosen by benchmarks), LZMA, PPMd (var.H), PPMd8 (var.I), BZip2,
+  Deflate, zpaq (context mixing, one zpaq block per zx block) and store,
+  after the filters BCJ, ARM, ARMT, ARM64, PPC, SPARC, IA64, RISCV and
+  Delta; zstd, LZ4 and LZO1X are read. Experimental codec families
+  register in their own id range (`registerZxCodec`).
+- **Blocks** of 16 MiB (`-mbs=4k..64m`), solid by default (`-ms=off`: a
+  file per block), coded in parallel by worker isolates (`-mmt`; by
+  default as many as half the processors and about 1 GiB of memory
+  allow). A damaged block fails only the files that use it; every block
+  has a check (`-mcheck=xxh64|crc32c|sha256|blake2sp|none`).
+- **Generations**: every `a`, `u`, `d` or `rn` appends a generation in
+  place, with its time; the old bytes are never rewritten, and an
+  interrupted update is ignored and overwritten by the next one. `l`, `x`,
+  `e`, `t` read any generation: `-mversion=3`, `-mversion=2026-09-01`,
+  `-mversion="2026-09-01 14:30"` (local time, the last generation up to
+  the end of that day or minute). `l -mgenerations` lists them, `l
+  -mtimeline=path` lists the versions of one file with the generation
+  (and date) that wrote each and the one that replaced or deleted it.
+  `a -mcompact[=N] x.zx` (without file names) rewrites the archive with
+  the data of the last N generations only (1 by default); `-mcompact`
+  with an update compacts after it. `l -slt` shows `Wasted`, the bytes a
+  compaction frees.
+- **Hashes**: every file has its SHA-256 (sorted in a lookup table) and a
+  TLSH digest (similar files, `ZxArchive.findSimilar`).
+- **Encryption**: `-p` (scrypt, AES-256-CTR, HMAC-SHA-256); the names are
+  encrypted too unless `-mhe=off`. A wrong password is refused at once.
+- **Streamed**: written to a pipe (`zx a -tzx -so x.zx dir | ...`) the
+  file has inline records, and `zx x -tzx -si` reads it in one pass.
+- **Volumes**: `-v` (repeat it for a list of sizes, the last one
+  repeating: `-v4g -v25g`), `-mvdir=DIR[:SIZE|:full]` (destination
+  folders in order, each with a budget or until its disk is full),
+  `-mvsearch=DIR` (folders where volumes are looked for when reading;
+  volumes are recognized by their header, whatever their names). An
+  update of a set adds new volumes and leaves the old ones as they are.
+
+```sh
+zx a -m0=PPMd8:o=8:mem=256m notes.zx notes/
+zx a -mf=ARM64 -m0=LZMA2:d=64m firmware.zx build/
+zx a -v4g -v25g -mvdir=/mnt/disk1:100g -mvdir=/mnt/disk2:full big.zx data/
+zx l -mvsearch=/mnt/disk2 /mnt/disk1/big.zx.001
+zx l -mtimeline=docs/plan.txt backup.zx
+```
+
+In the library: `ZxArchive.create`, `open(version:, date:,
+searchDirs:)`, `add`, `delete`, `rename`, `extract`, `test`, `compact`,
+`timeline`, `findBySha256`, `findSimilar`, and `ZxOptions.volumeSizes` and
+`volumeDirs`; the synchronous building blocks (`ZxWriter`,
+`ZxArchiveReader`, `ZxHandler`, `Tlsh`) are exported by `package:zx/zx.dart`.
 
 ### Nested archives
 
@@ -427,7 +501,7 @@ derivatives, amd64):
 
 ```sh
 tool/build_deb.sh                        # writes dist/zx_<version>_amd64.deb
-sudo apt install ./dist/zx_0.3.0_amd64.deb
+sudo apt install ./dist/zx_0.5.0_amd64.deb
 nautilus -q                              # once, so Nautilus loads the extension
 ```
 
@@ -437,6 +511,7 @@ nautilus -q                              # once, so Nautilus loads the extension
 | Launcher, command line tool | `/usr/bin/zx-gui`, `/usr/bin/zx` |
 | Desktop entry with the archive MIME types | `/usr/share/applications/zx.desktop` |
 | Icon (SVG and PNG sizes) | `/usr/share/icons/hicolor/*/apps/zx.*` |
+| The MIME type of .zx files (`application/x-zx`, magic and `*.zx`) | `/usr/share/mime/packages/zx-archive.xml` |
 | Nautilus: top level `Extract to "name/"` item on archives | `/usr/lib/x86_64-linux-gnu/nautilus/extensions-4/libzx-nautilus.so` |
 | Documentation, license | `/usr/share/doc/zx` |
 
@@ -464,6 +539,7 @@ tool/uninstall_linux.sh [--purge]
 | Launcher | `~/.local/bin/zx-gui` |
 | Desktop entry with the archive MIME types | `~/.local/share/applications/zx.desktop` |
 | Icon (SVG and PNG sizes) | `~/.local/share/icons/hicolor/*/apps/zx.*` |
+| The MIME type of .zx files | `~/.local/share/mime/packages/zx-archive.xml` |
 | Default application (when associated) | `~/.config/mimeapps.list` (the previous defaults are restored when switched off) |
 | Nautilus: "Extract to folder (zx)" under Scripts | `~/.local/share/nautilus/scripts/` |
 | Thunar custom action (merged, other actions kept) | `~/.config/Thunar/uca.xml` |
@@ -515,7 +591,11 @@ dart test
 
 Tests that compare with `/usr/bin/7z` or `xz` are skipped when those are
 not installed. The zpaq interop tests (`test/zpaq_test.dart`) look for
-`zpaq` and `zpaqfranz` on the PATH or in `ZPAQ_BIN` and `ZPAQFRANZ_BIN`. The desktop app has widget tests and end to end tests that
+`zpaq` and `zpaqfranz` on the PATH or in `ZPAQ_BIN` and `ZPAQFRANZ_BIN`.
+The .zx tests are `test/zx_format_test.dart`, `test/zx_generations_test.dart`
+and `test/zx_tlsh_test.dart` (TLSH vectors made with the reference
+`tlsh_unittest` tool; a zstd block is made with `zstd` when it is
+installed). The desktop app has widget tests and end to end tests that
 drive the real Linux app against real archives:
 
 ```sh
@@ -533,12 +613,15 @@ flutter test integration_test -d linux
 - `lib/src/crypto`: AES, SHA-256, 7zAES, SHA-1, ZipCrypto, WinZip AES,
   the RAR 3.x and RAR5 key derivations and BLAKE2sp.
 - `lib/src/format`: the 7z, xz, lzma and split handlers; gzip, bzip2, tar,
-  zip, LHA, ARJ, RAR and zpaq.
+  zip, LHA, ARJ, RAR and zpaq; `format/zx`: the .zx format (structures,
+  codec registry, reader, writer, handler).
 - `lib/src/zpaq`: the zpaq engine, vendored from zpaq-flutter (the
   upstream); `tool/sync_zpaq.sh` copies it again.
 - `lib/src/cli`, `bin/zx.dart`: the command line (`zx`).
 - `lib/src/api.dart`: the isolate based public API; `lib/src/pool.dart`
-  and `lib/src/parallel.dart`: worker isolates and the parallel xz encoder.
+  and `lib/src/parallel.dart`: worker isolates and the parallel xz encoder;
+  `lib/src/sync_pool.dart`: worker isolates for synchronous code (the .zx
+  blocks).
 - `app/`: the desktop archive manager (Flutter), `tool/build_deb.sh` (the
   Debian package), `tool/install_linux.sh` and `tool/uninstall_linux.sh`
   (per user install).
@@ -547,6 +630,8 @@ flutter test integration_test -d linux
 - `docs/architecture.md`: how the port is organised and the rules a change
   must keep.
 - `docs/performance.md`: measured numbers and how to measure.
+- `docs/zx-format.md`: the specification of .zx, and
+  `docs/zx-format-design.md`, its design.
 
 ## License
 

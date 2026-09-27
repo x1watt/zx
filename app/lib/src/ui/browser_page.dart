@@ -1541,7 +1541,7 @@ class BrowserPageState extends State<BrowserPage> {
               () => showAboutDialog(
                 context: context,
                 applicationName: 'zx',
-                applicationVersion: '0.4.0',
+                applicationVersion: '0.5.0',
                 applicationIcon: Image.asset(
                   'assets/icon/zx-64.png',
                   width: 48,
