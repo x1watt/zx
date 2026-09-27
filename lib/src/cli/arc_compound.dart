@@ -28,6 +28,7 @@ import 'dart:typed_data';
 
 import '../common/method_props.dart';
 import '../format/archive_types.dart';
+import '../format/tar/tar_header.dart';
 import '../io/streams.dart';
 import 'arc_handlers.dart';
 import 'arc_tar.dart';
@@ -79,6 +80,28 @@ bool looksLikeCompoundTar(String outerPath, String innerPath) {
   if (innerPath.toLowerCase().endsWith('.tar')) return true;
   final name = outerPath.replaceAll('\\', '/');
   return isCompoundTarName(name.substring(name.lastIndexOf('/') + 1));
+}
+
+/// True when the decoded data of the single item of the compressor [outer]
+/// starts with a valid tar header. Used when neither the archive name nor
+/// the stored name says "tar" (a tar compressed in a pipe, a wrong or
+/// missing extension): only the first 512 decoded bytes are read.
+bool sniffCompoundTar(InArchive outer) {
+  final InStream? s;
+  try {
+    s = outer.getSeqStream(0);
+  } on SevenZipException {
+    return false;
+  }
+  if (s == null) return false;
+  final b = Uint8List(512);
+  final int n;
+  try {
+    n = readFully(s, b, 0, b.length);
+  } on SevenZipException {
+    return false;
+  }
+  return n == b.length && isArcTar(b, n) == IsArcRes.yes;
 }
 
 // ---------------------------------------------------------------------------

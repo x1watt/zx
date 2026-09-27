@@ -386,9 +386,12 @@ void main() {
       expect(r.code, 0, reason: r.err);
       expect(File('${tmp.path}/g1/g.tar').existsSync(), isTrue);
 
-      // a gzip named without .tar: by the type only
+      // a gzip named without .tar: the decoded data is sniffed for a tar
+      // header, so it still opens as a tar (and -tgzip keeps one level)
       File('${tmp.path}/g.tar.gz').renameSync('${tmp.path}/g.bin');
       r = await _zx(tmp, ['l', 'g.bin']);
+      expect(r.out, contains('Type = tar'));
+      r = await _zx(tmp, ['l', '-tgzip', 'g.bin']);
       expect(r.out, isNot(contains('Type = tar')));
       r = await _zx(tmp, ['l', '-ttar', 'g.bin']);
       expect(r.code, 0, reason: r.err);

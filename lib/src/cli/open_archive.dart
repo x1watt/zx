@@ -1740,7 +1740,10 @@ class ArchiveLink {
     final innerPath = outer.getItemPath(0);
     if (!forced) {
       if (op.stdInMode) return HRes.sFalse;
-      if (!looksLikeCompoundTar(outer.path, innerPath)) return HRes.sFalse;
+      if (!looksLikeCompoundTar(outer.path, innerPath) &&
+          !sniffCompoundTar(outerArchive)) {
+        return HRes.sFalse;
+      }
     }
     final arc2 = Arc()
       ..path = innerPath

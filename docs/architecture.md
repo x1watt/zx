@@ -494,3 +494,31 @@ input differences, never by reading or disassembling their code.
   `tool/install_linux.sh` share it.
 - Same text rules as the library: plain ASCII in comments, docs and
   strings of the UI.
+
+## 12. Format detection
+
+A file's name is only a hint. `ArchiveLink` (`lib/src/cli/open_archive.dart`,
+the port of OpenArchive.cpp) opens every file in this order, for the CLI,
+`ZxArchive` and the desktop app alike:
+
+1. The format its extension names, if its signature or `IsArc` check agrees.
+2. Every format whose signature matches at the file start (or, for
+   formats with `findSignature`, anywhere in the first part of the file:
+   self-extracting and prefixed archives).
+3. The formats without a signature (lzma, lzma86, old v7 tar...) by
+   trying their `IsArc` check and `Open`.
+
+So a 7z named `.txt`, a rar with no extension or a zip behind an .exe stub
+all open as themselves (`test/detect_test.dart`).
+
+Compressed tars need one more step, because the outer layer (gzip, bzip2,
+xz, lzma) is a valid archive on its own. The tar level is opened when the
+archive name says so (`x.tar.gz`, `x.tgz`...), when the stored name ends in
+`.tar`, or, failing both, when the first 512 decoded bytes are a valid tar
+header (`sniffCompoundTar` in `arc_compound.dart`). The last case covers
+`tar czf - dir > file` and renamed files. `-tgzip` (and the other outer
+types) still opens only the outer level, as in 7-Zip.
+
+When adding to an existing file whose name has no extension, 7-Zip's rule
+applies: `zx a name files` creates `name.7z`. Use `-sae` (exact name) to
+update the file in place in whatever format it was detected as.
