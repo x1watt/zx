@@ -640,4 +640,121 @@ void main() {
     );
     expect(Directory(p.join(tmp.path, 'pack2')).listSync(), isEmpty);
   });
+
+  // The real firmware of a Reolink doorbell, opened read-only (skipped
+  // when the file is not on this machine): pak > rootfs (a UBI image with
+  // one UBIFS volume) > etc/init.d, a text preview, a folder extracted,
+  // the container details and the inner file systems view.
+  const pak =
+      '/home/brito/code/xprs/firmware/models/reolink-d340w/firmware/stock/'
+      'DB_566128M5MP_W.4662_2508071282.Reolink-Video-Doorbell-WiFi.OV05A10.'
+      '5MP.WIFI8812.REOLINK.pak';
+  testWidgets('real firmware: nested levels, preview, extract, flattened', (
+    tester,
+  ) async {
+    final st = await openWithDialog(tester, pak);
+    final root = st.model!;
+    expect(root.archive.format, 'Pak');
+    expect(
+      rows(tester),
+      containsAll(['loader', 'fdt', 'uboot', 'kernel', 'rootfs', 'app']),
+    );
+
+    // the container details: the MTD table of the pak
+    await tester.tap(find.byKey(const Key('tool-info')));
+    await pumpFor(tester, find.byKey(const Key('info-dialog')));
+    expect(find.text('Container details'), findsOneWidget);
+    expect(find.textContaining('mtd part rootfs'), findsWidgets);
+    await tester.tap(find.byKey(const Key('info-close')));
+    await pumpGone(tester, find.byKey(const Key('info-dialog')));
+
+    // rootfs: the UBI image shows the files of its UBIFS volume
+    await doubleClick(tester, row('rootfs'));
+    await pumpUntil(tester, () => st.model != root, what: 'rootfs');
+    final fs = st.model!;
+    expect(fs.parent, same(root));
+    expect(fs.formats, ['Ubi', 'UbiFs']);
+    expect(BrowserPageState.titleOf(fs), '${p.basename(pak)} > rootfs');
+    expect(rows(tester), containsAll(['bin', 'etc', 'lib', 'usr']));
+    expect(find.byKey(const Key('nest-boundary-1')), findsOneWidget);
+    final add = tester.widget<Tooltip>(
+      find
+          .ancestor(
+            of: find.byKey(const Key('tool-add')),
+            matching: find.byType(Tooltip),
+          )
+          .first,
+    );
+    expect(add.message, 'Inside a nested archive (read-only)');
+
+    await doubleClick(tester, row('etc'));
+    await pumpUntil(tester, () => fs.dir == 'etc');
+    await doubleClick(tester, row('etc/init.d'));
+    await pumpUntil(tester, () => fs.dir == 'etc/init.d');
+    expect(rows(tester), contains('rcS'));
+    expect(find.byKey(const Key('crumb:etc/init.d')), findsOneWidget);
+
+    // preview of a text file of the UBIFS volume
+    services.settings.showPreview = true;
+    await tester.pump();
+    await click(tester, row('etc/init.d/rcS'));
+    await pumpFor(tester, find.byKey(const Key('preview-text')));
+    final text =
+        tester
+            .widget<SelectableText>(find.byKey(const Key('preview-text')))
+            .data ??
+        '';
+    expect(text, contains('/'));
+    services.settings.showPreview = false;
+    await tester.pump();
+
+    // extract the folder init.d (relative to etc)
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.pump();
+    expect(fs.dir, 'etc');
+    await click(tester, row('etc/init.d'));
+    final out = p.join(tmp.path, 'fw_out');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyE);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await pumpFor(tester, find.byKey(const Key('extract-dialog')));
+    await tester.enterText(find.byKey(const Key('extract-dest')), out);
+    await tester.tap(find.byKey(const Key('extract-ok')));
+    await pumpUntil(
+      tester,
+      () => File(p.join(out, 'init.d', 'rcS')).existsSync(),
+      what: 'init.d extracted',
+    );
+    await pumpGone(tester, find.byKey(const Key('progress-dialog')));
+    expect(Directory(p.join(out, 'init.d')).listSync().length, greaterThan(3));
+
+    // up and out of the nested level, back to the pak with rootfs selected
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.pump();
+    expect(fs.dir, '');
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.pump();
+    expect(st.model, same(root));
+    expect(root.selection, {'rootfs'});
+
+    // the inner file systems as folders
+    await tester.tap(find.text('View'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('menu-show-inner')).last);
+    await pumpUntil(
+      tester,
+      () => st.model?.archive.flattened ?? false,
+      what: 'the flattened view',
+    );
+    final flat = st.model!;
+    expect(flat.archive['rootfs']!.isDir, isTrue);
+    expect(flat.archive['rootfs/etc/init.d/rcS'], isNotNull);
+    expect(flat.archive['app']!.isDir, isTrue);
+    await doubleClick(tester, row('rootfs'));
+    await pumpUntil(tester, () => flat.dir == 'rootfs');
+    expect(rows(tester), containsAll(['bin', 'etc']));
+    services.settings.showInnerFilesystems = false;
+    st.closeArchive();
+    await tester.pump();
+  }, skip: !File(pak).existsSync());
 }

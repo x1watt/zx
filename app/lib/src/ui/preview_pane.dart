@@ -182,19 +182,7 @@ class _PreviewPaneState extends State<PreviewPane> {
         ),
       ),
     );
-    const mono = TextStyle(
-      fontFamily: 'DejaVu Sans Mono',
-      fontFamilyFallback: [
-        'Noto Sans Mono',
-        'Liberation Mono',
-        'Ubuntu Mono',
-        'Menlo',
-        'Consolas',
-        'monospace',
-      ],
-      fontSize: 12,
-      height: 1.35,
-    );
+    const mono = kMonoStyle;
     Widget body;
     switch (_kind) {
       case _Kind.none:

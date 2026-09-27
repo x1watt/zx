@@ -5,6 +5,21 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:zx/zx.dart';
 
+/// The monospaced text of the preview and of the details of an archive.
+const kMonoStyle = TextStyle(
+  fontFamily: 'DejaVu Sans Mono',
+  fontFamilyFallback: [
+    'Noto Sans Mono',
+    'Liberation Mono',
+    'Ubuntu Mono',
+    'Menlo',
+    'Consolas',
+    'monospace',
+  ],
+  fontSize: 12,
+  height: 1.35,
+);
+
 String formatBytes(int? n, {bool exact = false}) {
   if (n == null) return '';
   if (exact) return '${_group(n)} bytes';
@@ -113,11 +128,57 @@ bool isTextName(String name) {
       (n == 'readme' || n == 'license' || n == 'makefile' || n == 'copying');
 }
 
-/// The icon and its color for a row.
-(IconData, Color) iconFor(ZxItem item, ColorScheme cs) {
-  if (item.isDir) return (Icons.folder_rounded, const Color(0xFFE0A526));
+/// The color of disk, firmware and file system images.
+const kImageColor = Color(0xFF5C6BC0);
+
+/// Extensions of disk, firmware and file system images.
+const _diskImageExt = {
+  'img',
+  'iso',
+  'udf',
+  'ubi',
+  'ubifs',
+  'squashfs',
+  'sqsh',
+  'sfs',
+  'cramfs',
+  'jffs2',
+  'ext2',
+  'ext3',
+  'ext4',
+  'fat',
+  'vfat',
+  'dtb',
+  'uimage',
+  'uimg',
+  'pak',
+  'vhd',
+  'raw',
+  'mbr',
+  'gpt',
+};
+
+bool isDiskImageName(String name) => _diskImageExt.contains(extensionOf(name));
+
+/// The icon and its color for a row. [inContainer]: the item is a section
+/// of a firmware or a partition of a disk image (its archive has the
+/// format of a container), shown as an image.
+(IconData, Color) iconFor(
+  ZxItem item,
+  ColorScheme cs, {
+  bool inContainer = false,
+}) {
+  if (item.isDir) {
+    // the folder of a nested archive (inner file systems shown)
+    if (item.isNested) return (Icons.snippet_folder_rounded, kImageColor);
+    return (Icons.folder_rounded, const Color(0xFFE0A526));
+  }
   if (item.isSymlink) return (Icons.link_rounded, cs.tertiary);
   final e = extensionOf(item.name);
+  if (e == 'iso' || e == 'udf') return (Icons.album_outlined, kImageColor);
+  if (inContainer || _diskImageExt.contains(e)) {
+    return (Icons.storage_rounded, kImageColor);
+  }
   switch (e) {
     case 'png' ||
         'jpg' ||
@@ -154,7 +215,8 @@ bool isTextName(String name) {
         'apk' ||
         'deb' ||
         'rpm' ||
-        'zst':
+        'zst' ||
+        'cpio':
       return (Icons.folder_zip_outlined, const Color(0xFF8D6E63));
     case 'exe' || 'msi' || 'bin' || 'so' || 'dll' || 'dylib' || 'appimage':
       return (Icons.memory_outlined, cs.onSurfaceVariant);

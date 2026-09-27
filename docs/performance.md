@@ -140,6 +140,14 @@ the single thread output. On the small inputs of the tests it is.
 - Opening a file with its program extracts only that file
   (`extractToTemp`); the temporary copies are deleted a day later, at the
   next start.
+- Opening a file item first asks `ZxArchive.probeNested` (one isolate
+  that opens the parent and reads the first 512 bytes of the item, plus
+  16 at 32 KiB when it is that long); only a match opens the nested
+  archive. On the D340W firmware (`dart run`, JIT, this
+  machine): probe of a section 40 to 150 ms, `openNested('rootfs')` (UBI)
+  90 ms, then its UBIFS volume 94 ms; the whole flattened pak (1883
+  items) 358 ms. A nested level on a 7z or rar parent copies the item to
+  a temporary file first (deleted when the level is left).
 
 ## 5. How to measure
 

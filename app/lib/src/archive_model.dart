@@ -14,8 +14,28 @@ class FolderStats {
   int packed = 0;
 }
 
+/// The formats whose items are images (firmware sections, partitions,
+/// volumes): their files get the image icon.
+const kContainerFormats = {'Pak', 'UImage', 'Ubi', 'MBR', 'GPT'};
+
 class ArchiveModel extends ChangeNotifier {
   ZxArchive _archive;
+
+  /// The level this nested archive was opened from (see
+  /// ZxArchive.openNested), null for an archive file.
+  final ArchiveModel? parent;
+
+  /// The item of [parent] that was opened as this level.
+  final ZxItem? entry;
+
+  /// Archives opened on the way to this one and shown as the same level
+  /// (a UBI image with one UBIFS volume shows the files of the volume);
+  /// closed with it.
+  final List<ZxArchive> passed;
+
+  /// The versions of a journaling archive (zpaq), all of them even when
+  /// an older one is shown.
+  final List<ZxVersion> allVersions;
   String _dir = '';
   final List<String> _back = [];
   final List<String> _forward = [];
@@ -30,9 +50,78 @@ class ArchiveModel extends ChangeNotifier {
   /// Bumped when the archive changes on disk (for the views that cache).
   int generation = 0;
 
-  ArchiveModel(this._archive);
+  ArchiveModel(
+    this._archive, {
+    this.parent,
+    this.entry,
+    this.passed = const [],
+    List<ZxVersion>? allVersions,
+  }) : allVersions = allVersions ?? _archive.versions;
 
   ZxArchive get archive => _archive;
+
+  /// The name of this level: the archive file, or the nested item.
+  String get displayName {
+    final e = entry;
+    if (e != null) return e.name;
+    final path = _archive.path;
+    final k = path.lastIndexOf(RegExp(r'[/\\]'));
+    return k < 0 ? path : path.substring(k + 1);
+  }
+
+  /// The levels from the archive file to this one.
+  List<ArchiveModel> get levels {
+    final l = <ArchiveModel>[];
+    for (ArchiveModel? m = this; m != null; m = m.parent) {
+      l.insert(0, m);
+    }
+    return l;
+  }
+
+  /// The archive file (the outermost level).
+  ArchiveModel get root => parent?.root ?? this;
+
+  /// The formats of this level, outermost first (Ubi, UbiFs).
+  List<String> get formats => [for (final a in passed) a.format, _archive.format];
+
+  /// The items of this archive are images (firmware sections, partitions).
+  bool get isContainer => kContainerFormats.contains(_archive.format);
+
+  /// [item] is an item of the container itself (not a file of a nested
+  /// archive shown as a folder).
+  bool inContainer(ZxItem item) {
+    if (!isContainer) return false;
+    final c = item.nestChain;
+    return c == null || c.length <= 1;
+  }
+
+  /// A zpaq archive shown at an older version.
+  bool get isOldVersion {
+    final v = _archive.version;
+    return v != null && v < _archive.numVersions;
+  }
+
+  /// Why this level can not be changed whatever its format, or null.
+  String? get readOnlyReason {
+    final w = readOnlyWhy;
+    return w == null ? null : '$w (read-only)';
+  }
+
+  /// [readOnlyReason] without the "(read-only)".
+  String? get readOnlyWhy {
+    if (parent != null) return 'Inside a nested archive';
+    if (_archive.flattened) return 'Inner filesystems are shown';
+    if (isOldVersion) return 'An older version is shown';
+    return null;
+  }
+
+  /// Deletes the temporary files of this level (not of its parents).
+  Future<void> closeHandles() async {
+    await _archive.close();
+    for (final a in passed.reversed) {
+      await a.close();
+    }
+  }
   String get dir => _dir;
   SortColumn get sortColumn => _sortColumn;
   bool get ascending => _ascending;

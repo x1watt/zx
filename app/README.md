@@ -4,7 +4,9 @@ An archive manager in the style of WinZip and the 7-Zip File Manager,
 written with Flutter on the `ZxArchive` API of the `zx` package (the
 parent folder). It reads every format of the `zx` command line tool (7z,
 zip and jar, rar 1.5 to 7, tar, tar.gz / tgz, tar.bz2, tar.xz, tar.lzma,
-gz, bz2, xz, lzma, lzh, arj, zpaq, split volumes) and writes 7z, zip,
+gz, bz2, xz, lzma, lzh, arj, zpaq, split volumes, cpio, ISO, UDF,
+SquashFS, cramfs, JFFS2, ext, FAT, MBR and GPT disk images, and firmware:
+Reolink pak, uImage, UBI, UBIFS, device trees) and writes 7z, zip,
 RAR5, tar and the compressed tars, lzh, arj, zpaq, gz, bz2 and xz.
 
 Every archive operation runs in a background isolate of `ZxArchive`; the
@@ -26,6 +28,23 @@ native code of its own besides the runners and uses three small packages:
   items, Ctrl+A all of them, the arrow keys, Page Up/Down, Home and End
   move the selection. A right click opens the context menu (Open, Extract
   to..., Extract here, Copy path, Rename, Delete, Properties).
+- **Archives in archives**: double click, Enter or "Open as archive"
+  (context menu) on a file that is itself an archive opens it as a new
+  level: a zip in a tar, an ISO, the sections of a firmware file (pak,
+  uImage, UBI), the partitions of a disk image (MBR, GPT, FAT, ext),
+  SquashFS and the other file system images. A level that holds a single
+  archive shows that one (a firmware's `rootfs` shows the files of its
+  UBIFS volume). The path bar shows the chain (`firmware.pak > rootfs >
+  etc > init.d`) with a mark and an image icon where a nested archive
+  starts, and so does the title bar; Back and Up at the top of a nested
+  level go back to its parent, at the item. Nested levels are read-only;
+  extract, test, the preview and "Open with default program" work in
+  them. A file that is no archive (and documents such as docx or epub)
+  opens with its program. View, **Show inner filesystems** (saved) opens
+  archives with every nested archive shown as a folder, read-only.
+- **Versions** (zpaq): the status bar shows "Version N of M"; click it
+  (or Archive, Show version) to list the versions with their dates and
+  open an older one, read-only.
 - **Extract** (Ctrl+E): destination (default: a folder named after the
   archive, next to it), all files or the selection (relative to the
   current folder), keep paths or not, what to do with existing files
@@ -38,8 +57,9 @@ native code of its own besides the runners and uses three small packages:
   one file), files and folders,
   settings; a password with encrypted names for 7z and rar.
 - **Delete** (Del), **Rename** (F2), **New folder**, **Test**, **Info**
-  (archive properties, comment of zip and RAR5 archives), **Properties**
-  of items (Alt+Enter).
+  (archive properties, comment of zip and RAR5 archives, the nesting
+  chain, the details of a container such as the MTD table of a pak),
+  **Properties** of items (Alt+Enter).
 - Actions a format does not allow (adding to a .xz file, changing a RAR 4
   or a multi-volume archive...) are disabled, with a tooltip that says why.
 - **Settings**: theme (system, light, dark), preview pane, default format

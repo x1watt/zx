@@ -8,6 +8,9 @@ import 'package:zx/zx.dart';
 import '../archive_model.dart';
 import '../ui/format_utils.dart';
 
+/// The formats whose comment is text a person wrote.
+const _kCommentFormats = {'zip', '7z', 'Rar', 'Rar5', 'Arj', 'Lzh', 'gzip'};
+
 Widget _table(BuildContext context, List<(String, String)> rows) {
   final cs = Theme.of(context).colorScheme;
   return Table(
@@ -64,9 +67,20 @@ class _ArchiveInfoDialog extends StatefulWidget {
 }
 
 class _ArchiveInfoDialogState extends State<_ArchiveInfoDialog> {
-  late final _comment = TextEditingController(
-    text: widget.model.archive.comment ?? '',
-  );
+  late final _comment = TextEditingController(text: _commentText());
+
+  /// The comment; for a level shown through others (a UBI image with one
+  /// UBIFS volume) the details of each, with their format.
+  String _commentText() {
+    final m = widget.model;
+    if (m.passed.isEmpty) return m.archive.comment ?? '';
+    return [
+      for (final a in [...m.passed, m.archive])
+        if (a.comment != null && a.comment!.trim().isNotEmpty)
+          '[${a.format}]\n${a.comment!.trim()}',
+    ].join('\n\n');
+  }
+
   bool _saving = false;
   String? _error;
 
@@ -78,7 +92,10 @@ class _ArchiveInfoDialogState extends State<_ArchiveInfoDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final a = widget.model.archive;
+    final m = widget.model;
+    final a = m.archive;
+    final levels = m.levels;
+    final root = m.root.archive;
     final st = widget.model.statsOf('');
     final folders = a.items.where((i) => i.isDir).length;
     final encrypted = a.items.where((i) => i.encrypted).length;
@@ -93,10 +110,23 @@ class _ArchiveInfoDialogState extends State<_ArchiveInfoDialog> {
       if (c.canEncryptHeaders) 'encrypted names',
     ];
     final canComment = widget.onSaveComment != null;
+    // what the archive tells about itself (the MTD table of a pak, the
+    // header of a uImage, the superblock of a file system), not a comment
+    // someone wrote
+    final details = !canComment && !_kCommentFormats.contains(a.format);
     return AlertDialog(
       key: const Key('info-dialog'),
       icon: const Icon(Icons.info_outline_rounded),
-      title: Text(p.basename(a.path)),
+      // a long name wraps instead of widening the dialog
+      title: SizedBox(
+        width: 560,
+        child: Text(
+          m.displayName,
+          textAlign: TextAlign.center,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
       content: SizedBox(
         width: 560,
         child: SingleChildScrollView(
@@ -106,7 +136,28 @@ class _ArchiveInfoDialogState extends State<_ArchiveInfoDialog> {
             children: [
               _table(context, [
                 ('Location', p.dirname(a.path)),
-                ('Format', formatDescription(a)),
+                if (levels.length > 1)
+                  (
+                    'Nested in',
+                    [
+                      for (final l in levels.take(levels.length - 1))
+                        '${l.displayName} (${l.parent == null ? formatDescription(l.archive) : l.formats.join(' > ')})',
+                    ].join('\n'),
+                  ),
+                (
+                  'Format',
+                  m.parent == null
+                      ? formatDescription(a)
+                      : m.formats.join(' > '),
+                ),
+                if (a.flattened)
+                  ('View', 'inner file systems shown as folders (read-only)'),
+                if (root.numVersions > 0)
+                  (
+                    'Version',
+                    '${root.version ?? root.numVersions} of '
+                        '${root.numVersions}',
+                  ),
                 ('Method', a.method ?? ''),
                 ('Solid', a.solid ? 'yes' : 'no'),
                 ('Encrypted names', a.encryptedHeaders ? 'yes' : 'no'),
@@ -121,21 +172,30 @@ class _ArchiveInfoDialogState extends State<_ArchiveInfoDialog> {
                   ('Volumes', a.volumes.map(p.basename).join('\n')),
                 (
                   'Changes allowed',
-                  caps.isEmpty ? 'none (read only)' : caps.join(', '),
+                  caps.isEmpty
+                      ? 'none, read-only'
+                            '${m.readOnlyWhy == null ? '' : ': ${m.readOnlyWhy!.toLowerCase()}'}'
+                      : caps.join(', '),
                 ),
                 if (a.errors.isNotEmpty) ('Errors', a.errors.join('\n')),
                 if (a.warnings.isNotEmpty) ('Warnings', a.warnings.join('\n')),
               ]),
               if (canComment || _comment.text.isNotEmpty) ...[
                 const SizedBox(height: 12),
-                Text('Comment', style: Theme.of(context).textTheme.labelLarge),
+                Text(
+                  details
+                      ? (m.isContainer ? 'Container details' : 'Details')
+                      : 'Comment',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
                 const SizedBox(height: 6),
                 TextField(
                   key: const Key('info-comment'),
                   controller: _comment,
                   readOnly: !canComment,
-                  minLines: 3,
-                  maxLines: 8,
+                  style: details ? kMonoStyle : null,
+                  minLines: details ? 1 : 3,
+                  maxLines: details ? 16 : 8,
                   decoration: InputDecoration(
                     border: const OutlineInputBorder(),
                     hintText: canComment
@@ -195,8 +255,13 @@ Future<void> showItemPropertiesDialog(
           ('Path', i.path),
           (
             'Type',
-            i.isDir ? (i.isImplied ? 'folder (implied)' : 'folder') : 'file',
+            i.isNested
+                ? 'nested archive'
+                : i.isDir
+                ? (i.isImplied ? 'folder (implied)' : 'folder')
+                : 'file',
           ),
+          if (i.nestedFormat != null) ('Archive format', i.nestedFormat!),
           ('Size', formatBytes(model.sizeOf(i), exact: true)),
           ('Packed', formatBytes(model.packedOf(i), exact: true)),
           ('Ratio', formatRatio(model.ratioOf(i))),
@@ -213,7 +278,7 @@ Future<void> showItemPropertiesDialog(
           if (i.symlinkTarget != null) ('Link to', i.symlinkTarget!),
           if (i.hardlinkTarget != null) ('Hard link to', i.hardlinkTarget!),
           if (i.comment != null && i.comment!.isNotEmpty)
-            ('Comment', i.comment!),
+            (model.isContainer ? 'Details' : 'Comment', i.comment!),
           if (i.index >= 0) ('Index', '${i.index}'),
         ];
       } else {

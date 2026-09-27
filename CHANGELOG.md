@@ -35,6 +35,28 @@
   (`-mm=`), encryption of new archives as zpaq `-key` (`-p`), the
   zpaqfranz hashes and CRC-32. Checked both ways against zpaq 7.15 and
   zpaqfranz.
+- `ZxArchive.probeNested(item)`: the format of an item as the signatures
+  at its start say (an item of a container is tried with the full
+  detection), read in the background isolate; `ZxVersion` is exported.
+- The app: nested archives. Double click, Enter or "Open as archive" on
+  a file that is an archive (a firmware section, a partition, an ISO in a
+  tar, a zip in a 7z...) opens it as a new level; a level that holds a
+  single archive shows that one (a pak's `rootfs` shows its UBIFS files).
+  The path bar shows the chain (`firmware.pak > rootfs > etc > init.d`)
+  with a mark at each archive boundary, the title bar too; Back and Up
+  leave the level at the item it was opened from. Nested levels are
+  read-only (the actions say why); extract, test, preview and "Open with
+  default program" work in them. Other files still open with their
+  program.
+- The app: View, "Show inner filesystems" (saved, off by default) opens
+  archives with their nested file systems as folders, read-only.
+- The app: a version selector for zpaq archives in the status bar and in
+  the Archive menu ("Show version"), with the date of each version; an
+  older version is shown read-only.
+- The app: icons for disk, firmware and file system images and for the
+  sections of containers; the Info dialog shows the nesting chain, the
+  formats and the container details (the MTD table of a pak, the uImage
+  header), the item properties the details of a section.
 
 ## 0.3.0
 

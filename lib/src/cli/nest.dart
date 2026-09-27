@@ -86,24 +86,30 @@ class NestSniffer {
 
   /// True when the start of [s] matches the signature of a registered
   /// format (with its IsArc check when it has one).
-  bool matches(SeekableInStream s) {
+  bool matches(SeekableInStream s) => formatOf(s) >= 0;
+
+  /// The index in [Codecs.formats] of the first format whose signature
+  /// (and IsArc check) matches the start of [s], or -1.
+  int formatOf(SeekableInStream s) {
     final len = s.length;
-    if (len <= 0) return false;
+    if (len <= 0) return -1;
     final head = Uint8List(len < _kHeadSize ? len : _kHeadSize);
     s.position = 0;
     final n = readFully(s, head, 0, head.length);
-    if (_matchHead(head, n)) return true;
+    final h = _matchHead(head, n);
+    if (h >= 0) return h;
     for (final off in _farOffsets) {
       if (len < off + _kFarWindow) continue;
       final w = Uint8List(_kFarWindow);
       s.position = off;
       final m = readFully(s, w, 0, w.length);
-      if (_matchFar(w, m, off)) return true;
+      final f = _matchFar(w, m, off);
+      if (f >= 0) return f;
     }
-    return false;
+    return -1;
   }
 
-  bool _matchHead(Uint8List head, int n) {
+  int _matchHead(Uint8List head, int n) {
     for (final fi in _formats) {
       final ai = codecs.formats[fi];
       for (final sig in ai.signatures) {
@@ -112,23 +118,23 @@ class NestSniffer {
         if (!_eq(sig, head, ai.signatureOffset)) continue;
         final f = ai.isArcFunc;
         if (f != null && f(head, n) == IsArcRes.no) continue;
-        return true;
+        return fi;
       }
     }
-    return false;
+    return -1;
   }
 
-  bool _matchFar(Uint8List w, int n, int off) {
+  int _matchFar(Uint8List w, int n, int off) {
     for (final fi in _formats) {
       final ai = codecs.formats[fi];
       if (ai.signatureOffset < off || ai.signatureOffset >= off + n) continue;
       for (final sig in ai.signatures) {
         final at = ai.signatureOffset - off;
         if (at + sig.length > n) continue;
-        if (_eq(sig, w, at)) return true;
+        if (_eq(sig, w, at)) return fi;
       }
     }
-    return false;
+    return -1;
   }
 
   static bool _eq(Uint8List sig, Uint8List data, int off) {
@@ -140,16 +146,19 @@ class NestSniffer {
 
   /// [matches] on data already in memory (the start of the item and, when
   /// it is long enough, everything up to the far signatures).
-  bool matchesBytes(Uint8List data, int n) {
-    if (_matchHead(data, n < _kHeadSize ? n : _kHeadSize)) return true;
+  bool matchesBytes(Uint8List data, int n) => formatOfBytes(data, n) >= 0;
+
+  /// [formatOf] on data already in memory.
+  int formatOfBytes(Uint8List data, int n) {
+    final h = _matchHead(data, n < _kHeadSize ? n : _kHeadSize);
+    if (h >= 0) return h;
     for (final off in _farOffsets) {
       if (n < off + _kFarWindow) continue;
-      if (_matchFar(Uint8List.sublistView(data, off, off + _kFarWindow),
-          _kFarWindow, off)) {
-        return true;
-      }
+      final f = _matchFar(Uint8List.sublistView(data, off, off + _kFarWindow),
+          _kFarWindow, off);
+      if (f >= 0) return f;
     }
-    return false;
+    return -1;
   }
 
   /// The bytes [matchesBytes] needs.

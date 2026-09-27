@@ -26,6 +26,23 @@ import 'panels.dart';
 import 'preview_pane.dart';
 import 'settings_page.dart';
 
+/// Files that are zip or similar inside but documents to the user: they
+/// open with their program ("Open as archive" still opens them here).
+const _kOpenOutside = {
+  'docx',
+  'xlsx',
+  'pptx',
+  'odt',
+  'ods',
+  'odp',
+  'odg',
+  'epub',
+  'jar',
+  'apk',
+  'appimage',
+  'pdf',
+};
+
 Widget _withTooltip(String? message, Widget child) =>
     message == null ? child : Tooltip(message: message, child: child);
 
@@ -89,6 +106,8 @@ class BrowserPageState extends State<BrowserPage> {
 
   @override
   void dispose() {
+    final m = _model;
+    if (m != null) _closeLevels(m);
     _model?.removeListener(_syncFilter);
     _listFocus.dispose();
     _filterFocus.dispose();
@@ -106,7 +125,45 @@ class BrowserPageState extends State<BrowserPage> {
     _model = m;
     m?.addListener(_syncFilter);
     _filter.text = '';
-    _setWindowTitle(m == null ? 'zx' : '${p.basename(m.archive.path)} - zx');
+    _setWindowTitle(m == null ? 'zx' : '${titleOf(m)} - zx');
+  }
+
+  /// The chain of archives of [m] for the title bar:
+  /// `firmware.pak > rootfs`, with the version of a zpaq archive shown at
+  /// an older one.
+  static String titleOf(ArchiveModel m) {
+    final names = m.levels.map((l) => l.displayName).join(' > ');
+    final a = m.root.archive;
+    return m.root.isOldVersion
+        ? '$names (version ${a.version} of ${a.numVersions})'
+        : names;
+  }
+
+  /// Closes the handles of [m] and of its parents up to [keep] (not
+  /// included); their temporary files are deleted in the background.
+  void _closeLevels(ArchiveModel m, {ArchiveModel? keep}) {
+    for (ArchiveModel? l = m; l != null && l != keep; l = l.parent) {
+      unawaited(l.closeHandles().catchError((Object _) {}));
+    }
+  }
+
+  /// Replaces the shown archive with [m], closing the levels of the old
+  /// one that [m] does not use.
+  void _replaceModel(ArchiveModel? m) {
+    final old = _model;
+    if (old != null && old != m) {
+      final keep = m == null ? null : _commonLevel(old, m);
+      _closeLevels(old, keep: keep);
+    }
+    setState(() => _setModel(m));
+  }
+
+  static ArchiveModel? _commonLevel(ArchiveModel a, ArchiveModel b) {
+    final bl = b.levels.toSet();
+    for (ArchiveModel? l = a; l != null; l = l.parent) {
+      if (bl.contains(l)) return l;
+    }
+    return null;
   }
 
   /// Shows the archive name in the title bar (the Linux runner handles the
@@ -176,7 +233,12 @@ class BrowserPageState extends State<BrowserPage> {
 
   // ---- open, new, close ----
 
-  Future<void> openArchive(String path) async {
+  Future<void> openArchive(
+    String path, {
+    int? version,
+    List<ZxVersion>? allVersions,
+    String? dir,
+  }) async {
     final full = p.absolute(path);
     if (!await File(full).exists()) {
       _s.settings.removeRecent(full);
@@ -194,20 +256,81 @@ class BrowserPageState extends State<BrowserPage> {
       return runWithProgress(
         context,
         'Opening ${p.basename(full)}',
-        (pr) =>
-            ZxArchive.open(full, onPassword: _askPassword, cancel: pr.cancel),
+        (pr) async {
+          final flat = _s.settings.showInnerFilesystems;
+          var a = await ZxArchive.open(
+            full,
+            onPassword: _askPassword,
+            cancel: pr.cancel,
+            flatten: flat,
+            version: version,
+          );
+          if (flat && !a.items.any((i) => i.isNested)) {
+            // nothing nested: the plain archive, which may be changed
+            await a.close();
+            a = await ZxArchive.open(
+              full,
+              password: a.password,
+              onPassword: _askPassword,
+              cancel: pr.cancel,
+              version: version,
+            );
+          }
+          return a;
+        },
       );
     });
     if (a == null || !mounted) return;
-    showArchive(a);
+    showArchive(a, allVersions: allVersions, dir: dir);
   }
 
-  /// Shows [a] (opened or created by the caller).
-  void showArchive(ZxArchive a) {
+  /// Shows [a] (opened or created by the caller), at the folder [dir] or
+  /// the nearest one above it that exists.
+  void showArchive(ZxArchive a, {List<ZxVersion>? allVersions, String? dir}) {
     a.onPassword ??= _askPassword;
     _s.settings.addRecent(a.path);
-    setState(() => _setModel(ArchiveModel(a)));
+    final all = allVersions != null && allVersions.length > a.versions.length
+        ? allVersions
+        : null;
+    final m = ArchiveModel(a, allVersions: all);
+    var d = dir ?? '';
+    while (d.isNotEmpty && !(a[d]?.isDir ?? false)) {
+      final k = d.lastIndexOf('/');
+      d = k < 0 ? '' : d.substring(0, k);
+    }
+    if (d.isNotEmpty) m.navigate(d, record: false);
+    _replaceModel(m);
     _listFocus.requestFocus();
+  }
+
+  /// Opens the archive again: with or without its inner file systems
+  /// (View, Show inner filesystems) or at another [version] (zpaq). The
+  /// folder shown stays when it exists in the new view.
+  Future<void> reopen({int? version, bool keepVersion = true}) async {
+    final m = _model;
+    if (m == null) return;
+    final root = m.root;
+    final a = root.archive;
+    // the folder in the tree of the archive file: the nested levels are
+    // folders there when the inner file systems are shown (else the
+    // nearest folder that exists is shown)
+    final dir = [
+      for (final l in m.levels.skip(1)) l.entry!.path,
+      if (m.dir.isNotEmpty) m.dir,
+    ].join('/');
+    final v = version ?? (keepVersion && root.isOldVersion ? a.version : null);
+    await openArchive(
+      a.path,
+      version: v == a.numVersions ? null : v,
+      allVersions: root.allVersions,
+      dir: dir,
+    );
+  }
+
+  Future<void> _setShowInner(bool on) async {
+    if (_s.settings.showInnerFilesystems == on) return;
+    _s.settings.showInnerFilesystems = on;
+    await reopen();
   }
 
   Future<void> _openDialog() async {
@@ -218,7 +341,7 @@ class BrowserPageState extends State<BrowserPage> {
     if (f != null) await openArchive(f);
   }
 
-  void closeArchive() => setState(() => _setModel(null));
+  void closeArchive() => _replaceModel(null);
 
   Future<void> newArchive({List<String> sources = const []}) async {
     final folder = sources.isNotEmpty
@@ -263,6 +386,17 @@ class BrowserPageState extends State<BrowserPage> {
     if (m == null) return 'Open an archive first';
     final a = m.archive;
     final c = a.capabilities;
+    final ro = m.readOnlyReason;
+    if (ro != null &&
+        const {
+          'add',
+          'delete',
+          'rename',
+          'folder',
+          'comment',
+        }.contains(action)) {
+      return ro;
+    }
     final ok = switch (action) {
       'add' => c.canAdd,
       'delete' => c.canDelete,
@@ -296,6 +430,10 @@ class BrowserPageState extends State<BrowserPage> {
 
   // ---- item actions ----
 
+  /// Opens [item]: a folder is entered, a file that is an archive (its
+  /// start matches a known format, or it is a section of a firmware or a
+  /// partition) opens as a nested level, any other file opens with its
+  /// default program.
   Future<void> openItem(ZxItem item) async {
     final m = _model;
     if (m == null) return;
@@ -303,6 +441,28 @@ class BrowserPageState extends State<BrowserPage> {
       m.navigate(item.path);
       return;
     }
+    if (!_kOpenOutside.contains(extensionOf(item.name))) {
+      final fmt = await _guard('Open ${item.name}', () {
+        return runWithProgress(
+          context,
+          'Opening ${item.name}',
+          (pr) => m.archive.probeNested(item, cancel: pr.cancel),
+        );
+      });
+      if (!mounted || _model != m) return;
+      if (fmt != null) {
+        final ok = await openAsArchive(item, quiet: true);
+        if (ok || !mounted) return;
+      }
+    }
+    await openOutside(item);
+  }
+
+  /// Opens the file [item] with its default program (it is extracted to a
+  /// temporary folder first).
+  Future<void> openOutside(ZxItem item) async {
+    final m = _model;
+    if (m == null || item.isDir) return;
     final tmp = _s.paths.openTempDir;
     final path = await _guard('Open ${item.name}', () async {
       await Directory(tmp).create(recursive: true);
@@ -330,6 +490,111 @@ class BrowserPageState extends State<BrowserPage> {
     }
   }
 
+  /// Opens the file [item] as a nested archive: a new level of the path
+  /// bar, read-only, left with Back or Up. [quiet]: when it is not an
+  /// archive, false is returned without an error dialog. A nested archive
+  /// that holds a single archive (a UBI image with one volume) shows the
+  /// files of that one directly.
+  Future<bool> openAsArchive(ZxItem item, {bool quiet = false}) async {
+    final m = _model;
+    if (m == null) return false;
+    var notArc = false;
+    final r = await _guard('Open ${item.name} as archive', () {
+      return runWithProgress(context, 'Opening ${item.name}', (pr) async {
+        ZxArchive a;
+        try {
+          a = await m.archive.openNested(item, cancel: pr.cancel);
+        } on SevenZipException catch (e) {
+          if (quiet && e.kind == SevenZipError.isNotArc) {
+            notArc = true;
+            return null;
+          }
+          rethrow;
+        }
+        final passed = <ZxArchive>[];
+        try {
+          while (passed.length < 3 &&
+              a.items.length == 1 &&
+              !a.items.first.isDir) {
+            final only = a.items.first;
+            final f = await a.probeNested(only, cancel: pr.cancel);
+            if (f == null) break;
+            final ZxArchive inner;
+            try {
+              inner = await a.openNested(only, cancel: pr.cancel);
+            } on SevenZipException catch (e) {
+              if (e.kind == SevenZipError.cancelled) rethrow;
+              break;
+            }
+            passed.add(a);
+            a = inner;
+          }
+        } catch (_) {
+          await a.close();
+          for (final x in passed) {
+            await x.close();
+          }
+          rethrow;
+        }
+        return (a, passed);
+      });
+    });
+    if (r == null) return !notArc;
+    final (a, passed) = r;
+    if (!mounted || _model != m) {
+      // the view changed meanwhile
+      await a.close();
+      for (final x in passed) {
+        await x.close();
+      }
+      return true;
+    }
+    a.onPassword ??= _askPassword;
+    final level = ArchiveModel(a, parent: m, entry: item, passed: passed);
+    setState(() => _setModel(level));
+    _listFocus.requestFocus();
+    return true;
+  }
+
+  /// Leaves the nested level shown, back to its parent with the item it
+  /// was opened from selected.
+  void leaveNested() {
+    final m = _model;
+    final parent = m?.parent;
+    if (m == null || parent == null) return;
+    _replaceModel(parent);
+    parent.selectPaths([m.entry!.path]);
+  }
+
+  /// Shows the folder [dir] of [level], one of the levels of the path
+  /// bar (the nested levels below it are closed).
+  void goToLevel(ArchiveModel level, String dir) {
+    if (level != _model) _replaceModel(level);
+    level.navigate(dir);
+  }
+
+  /// Back: the folder before, or out of a nested archive.
+  void back() {
+    final m = _model;
+    if (m == null) return;
+    if (m.canBack) {
+      m.back();
+    } else if (m.parent != null) {
+      leaveNested();
+    }
+  }
+
+  /// Up: the parent folder, or out of a nested archive at its top level.
+  void up() {
+    final m = _model;
+    if (m == null) return;
+    if (m.canUp) {
+      m.up();
+    } else if (m.parent != null) {
+      leaveNested();
+    }
+  }
+
   void _openSelection() {
     final m = _model;
     if (m == null) return;
@@ -343,7 +608,7 @@ class BrowserPageState extends State<BrowserPage> {
 
   String _defaultExtractDir(ArchiveModel m) {
     final a = m.archive.path;
-    return p.join(p.dirname(a), folderNameFor(a));
+    return p.join(p.dirname(a), folderNameFor(m.displayName));
   }
 
   Future<void> extract({bool selectionDefault = true}) async {
@@ -392,22 +657,18 @@ class BrowserPageState extends State<BrowserPage> {
     final r = await _guard('Extract', () async {
       await Directory(dest).create(recursive: true);
       if (!mounted) return null;
-      return runWithProgress(
-        context,
-        'Extracting ${p.basename(m.archive.path)}',
-        (pr) {
-          return m.archive.extract(
-            dest,
-            items: items,
-            keepPaths: keepPaths,
-            relativeTo: items != null && m.dir.isNotEmpty ? m.dir : null,
-            overwrite: overwrite,
-            onOverwrite: overwrite == ZxOverwrite.ask ? _askOverwrite : null,
-            onProgress: pr.update,
-            cancel: pr.cancel,
-          );
-        },
-      );
+      return runWithProgress(context, 'Extracting ${m.displayName}', (pr) {
+        return m.archive.extract(
+          dest,
+          items: items,
+          keepPaths: keepPaths,
+          relativeTo: items != null && m.dir.isNotEmpty ? m.dir : null,
+          overwrite: overwrite,
+          onOverwrite: overwrite == ZxOverwrite.ask ? _askOverwrite : null,
+          onProgress: pr.update,
+          cancel: pr.cancel,
+        );
+      });
     });
     if (r == null || !mounted) return;
     if (!r.ok) {
@@ -437,14 +698,14 @@ class BrowserPageState extends State<BrowserPage> {
     final r = await _guard('Test', () {
       return runWithProgress(
         context,
-        'Testing ${p.basename(m.archive.path)}',
+        'Testing ${m.displayName}',
         (pr) => m.archive.test(onProgress: pr.update, cancel: pr.cancel),
       );
     });
     if (r == null || !mounted) return;
     await showExtractResultDialog(
       context,
-      title: 'Test of ${p.basename(m.archive.path)}',
+      title: 'Test of ${m.displayName}',
       result: r,
       test: true,
     );
@@ -696,6 +957,14 @@ class BrowserPageState extends State<BrowserPage> {
           item.isDir ? 'Open folder' : 'Open',
           shortcut: 'Enter',
         ),
+      if (item != null && !item.isDir) ...[
+        entry('open-archive', Icons.folder_zip_outlined, 'Open as archive'),
+        entry(
+          'open-outside',
+          Icons.launch_rounded,
+          'Open with default program',
+        ),
+      ],
       if (hasSel) ...[
         entry(
           'extract-to',
@@ -756,6 +1025,10 @@ class BrowserPageState extends State<BrowserPage> {
     switch (v) {
       case 'open':
         if (item != null) await openItem(item);
+      case 'open-archive':
+        if (item != null) await openAsArchive(item);
+      case 'open-outside':
+        if (item != null) await openOutside(item);
       case 'extract-to':
         await extract(selectionDefault: hasSel);
       case 'extract-here':
@@ -810,11 +1083,11 @@ class BrowserPageState extends State<BrowserPage> {
     } else if (ctrl && k == LogicalKeyboardKey.keyQ) {
       exit(0);
     } else if (alt && k == LogicalKeyboardKey.arrowLeft && m != null) {
-      m.back();
+      back();
     } else if (alt && k == LogicalKeyboardKey.arrowRight && m != null) {
       m.forward();
     } else if (alt && k == LogicalKeyboardKey.arrowUp && m != null) {
-      m.up();
+      up();
     } else if (_textFocused || m == null) {
       handled = false;
     } else if (ctrl && k == LogicalKeyboardKey.keyA) {
@@ -827,7 +1100,7 @@ class BrowserPageState extends State<BrowserPage> {
         _openSelection();
       }
     } else if (k == LogicalKeyboardKey.backspace) {
-      m.up();
+      up();
     } else if (k == LogicalKeyboardKey.delete) {
       delete();
     } else if (k == LogicalKeyboardKey.f2) {
@@ -979,6 +1252,72 @@ class BrowserPageState extends State<BrowserPage> {
         openSettings,
       ),
     ];
+  }
+
+  /// Shows version [n] of the zpaq archive (read-only unless it is the
+  /// latest).
+  Future<void> showVersion(int n) async {
+    final m = _model;
+    if (m == null) return;
+    final a = m.root.archive;
+    if (n == (a.version ?? a.numVersions)) return;
+    await reopen(version: n, keepVersion: false);
+  }
+
+  static String versionLabel(ZxVersion v, int latest) =>
+      'Version ${v.number}   ${formatDate(v.time)}   '
+      '${v.added} added${v.deleted > 0 ? ', ${v.deleted} deleted' : ''}'
+      '${v.number == latest ? '   (latest)' : ''}';
+
+  /// The version selector of a zpaq archive in the status bar.
+  Widget? _versionPicker(ArchiveModel m) {
+    final root = m.root;
+    final a = root.archive;
+    if (a.numVersions == 0) return null;
+    final cur = a.version ?? a.numVersions;
+    final cs = Theme.of(context).colorScheme;
+    final style = TextStyle(
+      fontSize: 12,
+      color: root.isOldVersion ? cs.tertiary : cs.onSurfaceVariant,
+      fontWeight: root.isOldVersion ? FontWeight.w600 : FontWeight.normal,
+    );
+    return PopupMenuButton<int>(
+      key: const Key('version-picker'),
+      tooltip: 'Show another version of the archive',
+      onSelected: showVersion,
+      position: PopupMenuPosition.over,
+      // one line per version (the default menu width wraps them)
+      constraints: const BoxConstraints(minWidth: 280, maxWidth: 520),
+      itemBuilder: (_) => [
+        for (final v in root.allVersions.reversed)
+          CheckedPopupMenuItem<int>(
+            key: Key('version:${v.number}'),
+            value: v.number,
+            checked: v.number == cur,
+            height: 34,
+            child: Text(
+              versionLabel(v, a.numVersions),
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.history_rounded, size: 14, color: style.color),
+            const SizedBox(width: 4),
+            Text(
+              'Version $cur of ${a.numVersions}'
+              '${root.isOldVersion ? ' (read-only)' : ''}',
+              style: style,
+            ),
+            Icon(Icons.arrow_drop_up_rounded, size: 16, color: style.color),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _menuBar() {
@@ -1137,6 +1476,27 @@ class BrowserPageState extends State<BrowserPage> {
               m == null ? null : info,
               icon: Icons.info_outline_rounded,
             ),
+            if (m != null && m.root.archive.numVersions > 0)
+              SubmenuButton(
+                leadingIcon: const Icon(Icons.history_rounded, size: 18),
+                menuChildren: [
+                  for (final v in m.root.allVersions.reversed)
+                    RadioMenuButton<int>(
+                      value: v.number,
+                      groupValue:
+                          m.root.archive.version ?? m.root.archive.numVersions,
+                      onChanged: (n) => showVersion(n ?? v.number),
+                      child: Text(versionLabel(v, m.root.archive.numVersions)),
+                    ),
+                ],
+                child: const Text('Show version'),
+              ),
+            if (m != null && m.parent != null)
+              item(
+                'Leave the nested archive',
+                leaveNested,
+                icon: Icons.arrow_upward_rounded,
+              ),
           ],
           child: const Text('Archive'),
         ),
@@ -1146,6 +1506,12 @@ class BrowserPageState extends State<BrowserPage> {
               value: st.showPreview,
               onChanged: (v) => st.showPreview = v ?? true,
               child: const Text('Preview pane'),
+            ),
+            CheckboxMenuButton(
+              key: const Key('menu-show-inner'),
+              value: st.showInnerFilesystems,
+              onChanged: (v) => _setShowInner(v ?? false),
+              child: const Text('Show inner filesystems'),
             ),
             SubmenuButton(
               menuChildren: [
@@ -1175,15 +1541,15 @@ class BrowserPageState extends State<BrowserPage> {
               () => showAboutDialog(
                 context: context,
                 applicationName: 'zx',
-                applicationVersion: '0.3.0',
+                applicationVersion: '0.4.0',
                 applicationIcon: Image.asset(
                   'assets/icon/zx-64.png',
                   width: 48,
                 ),
                 applicationLegalese:
                     'BSD 3-clause. A pure Dart port of 7-Zip (the public '
-                    'domain LZMA SDK) with zip, rar, tar, gzip, bzip2, lzh '
-                    'and arj.',
+                    'domain LZMA SDK) with zip, rar, tar, gzip, bzip2, lzh, '
+                    'arj, zpaq, disc and file system images and firmware.',
               ),
               icon: Icons.info_outline_rounded,
             ),
@@ -1230,7 +1596,14 @@ class BrowserPageState extends State<BrowserPage> {
         } else {
           content = Column(
             children: [
-              PathBar(model: m, filter: _filter, filterFocus: _filterFocus),
+              PathBar(
+                model: m,
+                filter: _filter,
+                filterFocus: _filterFocus,
+                onBack: m.canBack || m.parent != null ? back : null,
+                onUp: m.canUp || m.parent != null ? up : null,
+                onLevel: goToLevel,
+              ),
               Divider(height: 1, color: cs.outlineVariant),
               Expanded(
                 child: Row(
@@ -1297,7 +1670,11 @@ class BrowserPageState extends State<BrowserPage> {
                       ),
                       Divider(height: 1, color: cs.outlineVariant),
                       Expanded(child: content),
-                      StatusBar(model: m, message: _busy ? 'Working...' : null),
+                      StatusBar(
+                        model: m,
+                        message: _busy ? 'Working...' : null,
+                        trailing: m == null ? null : _versionPicker(m),
+                      ),
                     ],
                   ),
                   if (_dragging)
@@ -1324,7 +1701,7 @@ class BrowserPageState extends State<BrowserPage> {
                               m == null
                                   ? 'Drop to open or to make a new archive'
                                   : _whyNot('add') == null
-                                  ? 'Drop to add to ${m.dir.isEmpty ? p.basename(m.archive.path) : m.dir}'
+                                  ? 'Drop to add to ${m.dir.isEmpty ? m.displayName : m.dir}'
                                   : 'Drop an archive to open it',
                               style: TextStyle(
                                 color: cs.onPrimary,

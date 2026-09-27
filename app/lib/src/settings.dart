@@ -79,6 +79,7 @@ class Settings extends ChangeNotifier {
   bool _confirmDelete = true;
   bool _showPreview = true;
   bool _openFolderAfterExtract = false;
+  bool _showInnerFilesystems = false;
   List<String> _recent = [];
 
   Settings({this.file});
@@ -89,6 +90,10 @@ class Settings extends ChangeNotifier {
   bool get confirmDelete => _confirmDelete;
   bool get showPreview => _showPreview;
   bool get openFolderAfterExtract => _openFolderAfterExtract;
+
+  /// Archives open with their nested file systems as folders (a firmware
+  /// section shows the files of its UBIFS volume), read-only.
+  bool get showInnerFilesystems => _showInnerFilesystems;
   List<String> get recent => List.unmodifiable(_recent);
 
   set theme(ThemeMode v) => _change(() => _theme = v);
@@ -98,6 +103,7 @@ class Settings extends ChangeNotifier {
   set showPreview(bool v) => _change(() => _showPreview = v);
   set openFolderAfterExtract(bool v) =>
       _change(() => _openFolderAfterExtract = v);
+  set showInnerFilesystems(bool v) => _change(() => _showInnerFilesystems = v);
 
   static const maxRecent = 12;
 
@@ -156,6 +162,7 @@ class Settings extends ChangeNotifier {
     'confirmDelete': _confirmDelete,
     'showPreview': _showPreview,
     'openFolderAfterExtract': _openFolderAfterExtract,
+    'showInnerFilesystems': _showInnerFilesystems,
     'recent': _recent,
   };
 
@@ -174,6 +181,8 @@ class Settings extends ChangeNotifier {
     if (s is bool) _showPreview = s;
     final o = j['openFolderAfterExtract'];
     if (o is bool) _openFolderAfterExtract = o;
+    final n = j['showInnerFilesystems'];
+    if (n is bool) _showInnerFilesystems = n;
     final r = j['recent'];
     if (r is List) {
       _recent = [

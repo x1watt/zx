@@ -55,6 +55,7 @@ export 'src/zx_api.dart'
         ZxPasswordCallback,
         ZxExtractResult,
         ZxItemError,
+        ZxVersion,
         ZxUpdateResult;
 
 // Streams and errors.

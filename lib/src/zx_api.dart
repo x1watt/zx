@@ -851,6 +851,25 @@ class ZxArchive {
     return bytes.materialize().asUint8List();
   }
 
+  /// Whether the file [item] (a [ZxItem], a path or an index) looks like
+  /// an archive that [openNested] can open: the name of its format as
+  /// the signatures at its start say (an item of a container format such
+  /// as pak or GPT is tried with the full detection), or null. Only the
+  /// start of the item is read, in the background isolate, so a UI can
+  /// ask before it decides between going into the item and opening it
+  /// with another program. A folder gives null.
+  Future<String?> probeNested(Object item, {ZxCancelToken? cancel}) async {
+    final it = _resolveFile(item, nested: true);
+    if (it.isDir) return it.nestedFormat;
+    final req = _extractRequest(ZxExtractMode.memory, [it.index]);
+    final (name, pw) = await _zxRun<(String?, String?)>(
+        (ops) => workerProbe(req, ops),
+        cancel: cancel,
+        onPassword: onPassword);
+    _rememberPassword(pw);
+    return name;
+  }
+
   // ---- writing ----
 
   /// Adds [sources] (files and folders with everything below them) into

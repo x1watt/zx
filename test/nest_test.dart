@@ -212,6 +212,17 @@ void main() {
       expect(File('$out2/x.iso/sq.img/d/r.bin').lengthSync(), 100000);
     });
 
+    test('flatten keeps the versions of a zpaq archive', () async {
+      final zp = '${tmp.path}/n.zpaq';
+      await ZxArchive.create(zp, [ZxSource(tarPath)], overwrite: true);
+      final z = await ZxArchive.open(zp, flatten: true);
+      addTearDown(z.close);
+      expect(z['t.tar']!.isNested, isTrue);
+      expect(z.numVersions, 1);
+      expect(z.versions, hasLength(1));
+      expect(await z.probeNested('t.tar'), 'tar');
+    });
+
     test('depth limit', () async {
       final z = await ZxArchive.open(tarPath, flatten: true, maxDepth: 1);
       addTearDown(z.close);
@@ -225,12 +236,15 @@ void main() {
     test('openNested goes in and back', () async {
       final z = await ZxArchive.open(tarPath);
       expect(z['x.iso']!.isDir, isFalse);
+      expect(await z.probeNested('x.iso'), 'Iso');
+      expect(await z.probeNested('src/a.txt'), isNull);
       final iso = await z.openNested('x.iso');
       addTearDown(iso.close);
       expect(iso.format, 'Iso');
       expect(iso.parent, same(z));
       expect(iso.nestPath, ['x.iso']);
       expect(iso.capabilities.canUpdate, isFalse);
+      expect(await iso.probeNested('sq.img'), 'SquashFS');
       final sq = await iso.openNested('sq.img');
       addTearDown(sq.close);
       expect(sq.format, 'SquashFS');
@@ -258,6 +272,7 @@ void main() {
         () async {
       final p7 = '${tmp.path}/t.7z';
       final seven = await ZxArchive.create(p7, [ZxSource(tarPath)]);
+      expect(await seven.probeNested('t.tar'), 'tar');
       final inner = await seven.openNested('t.tar');
       expect(inner.format, 'tar');
       expect(inner['x.iso']!.size, File('${tmp.path}/x.iso').lengthSync());

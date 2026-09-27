@@ -325,7 +325,11 @@ class _Row extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final (icon, color) = iconFor(item, cs);
+    final (icon, color) = iconFor(
+      item,
+      cs,
+      inContainer: model.inContainer(item),
+    );
     final base = Theme.of(context).textTheme.bodyMedium!.copyWith(fontSize: 13);
     final fg = selected ? cs.onSecondaryContainer : cs.onSurface;
     final dim = selected ? cs.onSecondaryContainer : cs.onSurfaceVariant;

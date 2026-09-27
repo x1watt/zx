@@ -33,7 +33,7 @@ import 'cli/common.dart';
 import 'cli/extracting_file_path.dart' show getCorrectFsFileName;
 import 'cli/fs_utils.dart';
 import 'cli/load_codecs.dart';
-import 'cli/nest.dart' show NestNodeSpec;
+import 'cli/nest.dart' show NestNodeSpec, NestSniffer;
 import 'cli/open_archive.dart';
 import 'cli/platform.dart';
 import 'cli/update.dart' show rarVolumePath;
@@ -691,13 +691,15 @@ ZxListing _readListing(_Opened o, {bool readOnly = false}) {
   // a journaling archive: its versions
   var versions = const <ZxVersion>[];
   var numVersions = 0;
-  if (a is ZpaqArc) {
+  // (of the archive itself when its nested archives are shown)
+  final za = flat?.inner ?? a;
+  if (za is ZpaqArc) {
     versions = [
-      for (final v in a.h.versions)
+      for (final v in za.h.versions)
         ZxVersion(v.number, fileTimeToDateTime(v.time).toUtc(), v.added,
             v.deleted, v.packSize)
     ];
-    numVersions = a.h.numVersions;
+    numVersions = za.h.numVersions;
   }
 
   final phy = a.getArchiveProperty(Kpid.phySize);
@@ -1403,6 +1405,83 @@ Future<Object?> workerReadBytes(ZxExtractRequest r, ZxOps ops) async {
         'Item not found in the archive', SevenZipError.unsupported);
   }
   return (TransferableTypedData.fromList([data]), pw);
+}
+
+/// [ZxArchive.probeNested]: (the format name of the item, or null; the
+/// password). The item is read through the handler's stream when it has
+/// one (only the start of it, for the signatures; an item of a container
+/// format that matches none is tried with the full detection), else the
+/// start of it is decoded into memory.
+Future<Object?> workerProbe(ZxExtractRequest r, ZxOps ops) async {
+  final codecs = Codecs.load();
+  final index = r.indices!.single;
+  final sniffer = NestSniffer(codecs);
+  final o = await _openAsk(codecs, r.archivePath, r.password, r.canAsk, ops,
+      chain: r.chain, nest: r.nest, version: r.version);
+  var pw = o.password;
+  try {
+    final a = o.archive;
+    if (index < 0 || index >= a.numberOfItems) {
+      throw SevenZipException(
+          'Item #$index not found in the archive', SevenZipError.unsupported);
+    }
+    if (archiveIsItemDir(a, index)) return (null, pw);
+    SeekableInStream? s;
+    try {
+      s = a.getStream(index);
+    } on Object {
+      s = null;
+    }
+    if (s != null) {
+      final f = sniffer.formatOf(s);
+      if (f >= 0) return (codecs.formats[f].name, pw);
+      final container =
+          r.nest == null && codecs.formats[o.arc.formatIndex].isContainer;
+      if (!container) return (null, pw);
+      // an item of a container: every format may hold it
+      s.position = 0;
+      final link = ArchiveLink();
+      final op = OpenOptions()
+        ..codecs = codecs
+        ..types = const []
+        ..excludedFormats = _excludedFormats(codecs)
+        ..stdInMode = false
+        ..filePath = extractFileNameFromPath(o.arc.getItemPath(index))
+        ..stream = s
+        ..compoundTempDir =
+            '${Directory.systemTemp.path}${Platform.pathSeparator}';
+      try {
+        final res = link.openStrict(op, _OpenUi(pw), null);
+        if (res == HRes.sOk) {
+          return (codecs.getFormatNamePtr(link.arcs.last.formatIndex), pw);
+        }
+      } on Object {
+        // not an archive
+      } finally {
+        link.close();
+        link.release();
+      }
+      return (null, pw);
+    }
+  } finally {
+    o.close();
+  }
+  // no random access: the start of the item, decoded
+  final req = ZxExtractRequest(
+      archivePath: r.archivePath,
+      password: pw,
+      canAsk: r.canAsk,
+      chain: r.chain,
+      nest: r.nest,
+      items: r.items,
+      mode: ZxExtractMode.memory,
+      indices: [index],
+      maxBytes: sniffer.bytesNeeded,
+      version: r.version);
+  final (ex, pw2) = await _extractAll(req, ops);
+  final data = ex.mem?.data.takeBytes() ?? Uint8List(0);
+  final f = sniffer.formatOfBytes(data, data.length);
+  return (f >= 0 ? codecs.formats[f].name : null, pw2);
 }
 
 Future<(_Extractor, String?)> _extractAll(ZxExtractRequest r, ZxOps ops) async {

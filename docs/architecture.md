@@ -503,6 +503,26 @@ input differences, never by reading or disassembling their code.
   changing it the first time. The settings switches, the
   `--install-integration` / `--remove-integration` flags and
   `tool/install_linux.sh` share it.
+- Nested archives (section 13): the app opens a file item as an archive
+  only after `ZxArchive.probeNested` (the worker reads the start of the
+  item and checks the registered signatures; an item of a container is
+  tried with the full detection), so a text file is never handed to the
+  formats without a signature and a document that is a zip inside
+  (docx, odt, epub, jar...) opens with its program unless "Open as
+  archive" is chosen. Each level is an `ArchiveModel` with `parent` (the
+  level it was opened from) and `entry` (the item); a nested archive
+  holding a single archive is shown as the same level (`passed`: a UBI
+  image with one UBIFS volume). The path bar and the title show the
+  chain, Back and Up leave a level, and a level's handles are closed
+  (`ZxArchive.close`, which deletes the temporary copies) when it is left
+  or replaced. Nested levels, the flattened view (View, "Show inner
+  filesystems", `ZxArchive.open(flatten: true)`) and an older zpaq
+  version are read-only: `ArchiveModel.readOnlyReason` is the tooltip of
+  the disabled actions.
+- zpaq versions: the status bar selector and the Archive menu open the
+  archive again with `ZxArchive.open(version:)`; the model keeps the list
+  of every version (`allVersions`), since a handle at version N lists
+  only the versions up to N.
 - Same text rules as the library: plain ASCII in comments, docs and
   strings of the UI.
 
@@ -595,7 +615,12 @@ kpidMainSubfile). zx adds, outside the 7-Zip code paths:
   that goes into it and back; it reads the item in place, or from a
   temporary copy when the parent has no random access. Nested and
   flattened handles are read only; `close()` deletes their temporary
-  files.
+  files. `ZxArchive.probeNested(item)` says, before that, whether an
+  item looks like an archive: the name of the format whose signature (and
+  IsArc check) matches its start (`NestSniffer.formatOf`), for an item of
+  a container the format the full detection finds, else null. It reads
+  only the start of the item (through `getStream`, or decoded into memory
+  when the handler has no random access).
 - Hard links: the CLI and the library create real hard links (`ln`, or
   `mklink /H` on Windows) and copy the file where the file system can not
   link.

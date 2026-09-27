@@ -41,7 +41,7 @@ class _FolderTreeState extends State<FolderTree> {
 
   List<(String path, String name, int depth)> _visible() {
     final m = widget.model;
-    final out = <(String, String, int)>[('', p.basename(m.archive.path), 0)];
+    final out = <(String, String, int)>[('', m.displayName, 0)];
     void walk(String dir, int depth) {
       if (!_expanded.contains(dir)) return;
       for (final f in m.folders(dir)) {
@@ -115,13 +115,19 @@ class _FolderTreeState extends State<FolderTree> {
                       ),
                       Icon(
                         path.isEmpty
-                            ? Icons.folder_zip_rounded
+                            ? (m.parent != null
+                                  ? Icons.storage_rounded
+                                  : Icons.folder_zip_rounded)
+                            : m.archive[path]?.isNested ?? false
+                            ? Icons.snippet_folder_rounded
                             : (current || open
                                   ? Icons.folder_open_rounded
                                   : Icons.folder_rounded),
                         size: 18,
                         color: path.isEmpty
-                            ? cs.primary
+                            ? (m.parent != null ? kImageColor : cs.primary)
+                            : m.archive[path]?.isNested ?? false
+                            ? kImageColor
                             : const Color(0xFFE0A526),
                       ),
                       const SizedBox(width: 6),
@@ -160,11 +166,22 @@ class PathBar extends StatelessWidget {
   final ArchiveModel model;
   final TextEditingController filter;
   final FocusNode filterFocus;
+
+  /// Back and Up (null: disabled); they also leave a nested archive.
+  final VoidCallback? onBack;
+  final VoidCallback? onUp;
+
+  /// A crumb of a level of the chain was clicked: show [dir] of [level].
+  final void Function(ArchiveModel level, String dir) onLevel;
+
   const PathBar({
     super.key,
     required this.model,
     required this.filter,
     required this.filterFocus,
+    required this.onBack,
+    required this.onUp,
+    required this.onLevel,
   });
 
   @override
@@ -173,48 +190,118 @@ class PathBar extends StatelessWidget {
     return ListenableBuilder(
       listenable: model,
       builder: (context, _) {
-        final parts = model.dir.isEmpty ? <String>[] : model.dir.split('/');
-        Widget crumb(String label, String path, {bool first = false}) {
-          final current = path == model.dir;
-          return InkWell(
-            key: Key('crumb:$path'),
+        final levels = model.levels;
+        final last = levels.length - 1;
+        Widget crumb(
+          int k,
+          String label,
+          String path, {
+          IconData? icon,
+          Color? iconColor,
+          String? tooltip,
+        }) {
+          final level = levels[k];
+          final current = k == last && path == model.dir;
+          // the folder of a nested archive (inner file systems shown)
+          if (icon == null && (level.archive[path]?.isNested ?? false)) {
+            icon = Icons.snippet_folder_rounded;
+            iconColor = kImageColor;
+          }
+          Widget w = InkWell(
+            // the crumbs of the level shown keep their plain keys
+            key: Key(k == last ? 'crumb:$path' : 'crumb$k:$path'),
             borderRadius: BorderRadius.circular(6),
-            onTap: current ? null : () => model.navigate(path),
+            onTap: current ? null : () => onLevel(level, path),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (first) ...[
-                    Icon(Icons.folder_zip_rounded, size: 16, color: cs.primary),
+                  if (icon != null) ...[
+                    Icon(icon, size: 16, color: iconColor),
                     const SizedBox(width: 4),
                   ],
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: current ? FontWeight.w600 : FontWeight.normal,
-                      color: current ? cs.onSurface : cs.onSurfaceVariant,
+                  ConstrainedBox(
+                    // a long archive name of an outer level is shortened
+                    constraints: BoxConstraints(
+                      maxWidth: k == last ? double.infinity : 280,
+                    ),
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: current
+                            ? FontWeight.w600
+                            : FontWeight.normal,
+                        color: current ? cs.onSurface : cs.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
           );
+          if (k != last && label.length > 36) {
+            tooltip = tooltip == null ? label : '$label ($tooltip)';
+          }
+          if (tooltip != null) w = Tooltip(message: tooltip, child: w);
+          return w;
         }
 
-        final crumbs = <Widget>[
-          crumb(p.basename(model.archive.path), '', first: true),
-        ];
-        for (var i = 0; i < parts.length; i++) {
-          crumbs.add(
-            Icon(
-              Icons.chevron_right_rounded,
-              size: 16,
-              color: cs.onSurfaceVariant,
-            ),
-          );
-          crumbs.add(crumb(parts[i], parts.sublist(0, i + 1).join('/')));
+        Widget sep() => Icon(
+          Icons.chevron_right_rounded,
+          size: 16,
+          color: cs.onSurfaceVariant,
+        );
+
+        final crumbs = <Widget>[];
+        for (var k = 0; k <= last; k++) {
+          final l = levels[k];
+          if (k == 0) {
+            crumbs.add(
+              crumb(
+                0,
+                l.displayName,
+                '',
+                icon: Icons.folder_zip_rounded,
+                iconColor: cs.primary,
+                tooltip: l.formats.join(' > '),
+              ),
+            );
+          } else {
+            // an archive boundary: a nested archive starts here
+            crumbs.add(
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: Icon(
+                  Icons.keyboard_double_arrow_right_rounded,
+                  key: Key('nest-boundary-$k'),
+                  size: 16,
+                  color: kImageColor,
+                ),
+              ),
+            );
+            crumbs.add(
+              crumb(
+                k,
+                l.displayName,
+                '',
+                icon: Icons.storage_rounded,
+                iconColor: kImageColor,
+                tooltip: '${l.formats.join(' > ')} (read-only)',
+              ),
+            );
+          }
+          // the folders of this level: down to the item of the next level,
+          // or to the folder shown
+          final dir = k == last ? l.dir : levels[k + 1].entry!.parent;
+          final parts = dir.isEmpty ? const <String>[] : dir.split('/');
+          for (var i = 0; i < parts.length; i++) {
+            crumbs.add(sep());
+            crumbs.add(crumb(k, parts[i], parts.sublist(0, i + 1).join('/')));
+          }
         }
         return Container(
           height: 44,
@@ -223,9 +310,11 @@ class PathBar extends StatelessWidget {
             children: [
               IconButton(
                 key: const Key('nav-back'),
-                tooltip: 'Back (Alt+Left)',
+                tooltip: model.canBack || model.parent == null
+                    ? 'Back (Alt+Left)'
+                    : 'Back out of ${model.displayName} (Alt+Left)',
                 visualDensity: VisualDensity.compact,
-                onPressed: model.canBack ? model.back : null,
+                onPressed: onBack,
                 icon: const Icon(Icons.arrow_back_rounded, size: 20),
               ),
               IconButton(
@@ -237,9 +326,11 @@ class PathBar extends StatelessWidget {
               ),
               IconButton(
                 key: const Key('nav-up'),
-                tooltip: 'Up one folder (Backspace)',
+                tooltip: model.canUp || model.parent == null
+                    ? 'Up one folder (Backspace)'
+                    : 'Up out of ${model.displayName} (Backspace)',
                 visualDensity: VisualDensity.compact,
-                onPressed: model.canUp ? model.up : null,
+                onPressed: onUp,
                 icon: const Icon(Icons.arrow_upward_rounded, size: 20),
               ),
               const SizedBox(width: 6),
@@ -399,7 +490,15 @@ class _ToolButton extends StatelessWidget {
 class StatusBar extends StatelessWidget {
   final ArchiveModel? model;
   final String? message;
-  const StatusBar({super.key, required this.model, this.message});
+
+  /// Shown at the right end (the version selector of a zpaq archive).
+  final Widget? trailing;
+  const StatusBar({
+    super.key,
+    required this.model,
+    this.message,
+    this.trailing,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -428,7 +527,12 @@ class StatusBar extends StatelessWidget {
               ? '${rows.length} item${rows.length == 1 ? '' : 's'}, ${formatBytes(total)}'
               : '${sel.length} of ${rows.length} selected, ${formatBytes(selSize)}';
           final info = [
-            formatDescription(a),
+            if (m.parent != null)
+              m.formats.join(' > ')
+            else
+              formatDescription(a),
+            // (an older version says so in its selector)
+            if (m.readOnlyReason != null && !m.isOldVersion) 'read-only',
             if (a.method != null && a.method!.isNotEmpty) a.method!,
             if (a.solid) 'solid',
             if (a.encryptedHeaders || a.items.any((i) => i.encrypted))
@@ -455,6 +559,7 @@ class StatusBar extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (trailing != null) ...[const SizedBox(width: 8), trailing!],
             ],
           );
         },
