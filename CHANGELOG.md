@@ -1,3 +1,41 @@
+## 0.4.0
+
+- Firmware and disk image formats, read only, in the command line tool
+  and `ZxArchive`: Reolink pak, U-Boot uImage (payload decompressed),
+  device trees (nodes, properties and a `.dts`), cpio, ISO 9660 (Joliet,
+  Rock Ridge, El Torito, zisofs), UDF, SquashFS, cramfs, JFFS2, UBI,
+  UBIFS, MBR and GPT disk images, FAT and ext2/3/4. New codecs for them:
+  LZO, LZ4, zstd and a zlib helper.
+- Nested archives (zx extension): container formats (pak, uImage, UBI,
+  MBR, GPT) mark their items as images. `-snest[N]` for `l`, `t`, `x`
+  and `e` shows an archive as one tree in which every item that is an
+  archive or an image (a container item, or any item whose first bytes
+  match a known signature) is a folder with its contents, down to N levels
+  (default 4); a folder whose archive holds a single archive shows that
+  one directly (a firmware's `rootfs/` holds the UBIFS files). Without the
+  switch nothing changes.
+- `ZxArchive.open(path, flatten: true, maxDepth: 4)`: the same tree in the
+  library (`ZxItem.nestedFormat`, `ZxItem.nestChain`), with extract,
+  test, readBytes and extractToTemp; `ZxArchive.openNested(item)` opens
+  an item as an archive (in place through the handler's item stream, or
+  from a temporary copy), with `parent` and `nestPath`; `close()` deletes
+  the temporary files. Nested and flattened archives are read only.
+- Hard links are extracted as hard links (`ln`, `mklink /H`), or as
+  copies where the file system has none, by the command line tool (which
+  printed "Cannot create hard link") and by the library (which copied).
+- zpaq journaling archives, read and write, in the command line tool,
+  `ZxArchive` and the app (format `zpaq`, `.zpaq`, `application/x-zpaq`),
+  with the engine vendored from zpaq-flutter (`lib/src/zpaq`,
+  `tool/sync_zpaq.sh`). Every update appends a version: deduplicated
+  fragments, deletions recorded, renames without recompression, the old
+  versions untouched. `-mversion=N` lists, extracts and tests the archive
+  as of version N (`l -slt` prints `Versions` and each item's `Version`);
+  `ZxArchive.open(path, version: N)`, `ZxArchive.versions` and
+  `ZxVersion`. Methods 0 to 5 (`-mx`, default 1) or a zpaq method string
+  (`-mm=`), encryption of new archives as zpaq `-key` (`-p`), the
+  zpaqfranz hashes and CRC-32. Checked both ways against zpaq 7.15 and
+  zpaqfranz.
+
 ## 0.3.0
 
 - zx, a desktop archive manager (Flutter, `app/`) for Linux, Windows and

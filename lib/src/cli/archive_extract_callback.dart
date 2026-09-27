@@ -1223,8 +1223,12 @@ class ArchiveExtractCallbackImpl extends ArchiveExtractCallback
     }
     _deleteLinkFileAlwaysOrRemoveEmptyDir(from, true);
     if (link.isHardLink) {
-      _sendMessageError2(0, 'Cannot create hard link', from, target);
-      return false;
+      // MyCreateHardLink: a copy when the file system can not link
+      if (!createHardLinkOrCopy(target, from)) {
+        _sendMessageError2(0, 'Cannot create hard link', from, target);
+        return false;
+      }
+      return true;
     }
     try {
       Link(resolvePath(from)).createSync(target);

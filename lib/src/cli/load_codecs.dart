@@ -11,14 +11,40 @@ import '../format/bzip2/bzip2_handler.dart';
 import '../format/lha/lha_handler.dart';
 import '../format/lzma_alone.dart';
 import '../format/tar/tar_header.dart';
+import '../format/cpio/cpio_handler.dart';
+import '../format/iso/iso_handler.dart';
+import '../format/udf/udf_handler.dart';
 import 'arc_arj.dart';
 import 'arc_bzip2.dart';
+import 'arc_cpio.dart';
+import 'arc_fdt.dart';
 import 'arc_gzip.dart';
 import 'arc_lzh.dart';
+import 'arc_pak.dart';
 import 'arc_rar.dart';
 import 'arc_tar.dart';
+import 'arc_uimage.dart';
 import 'arc_zip.dart';
+import 'arc_zpaq.dart';
+import '../format/zpaq/zpaq_handler.dart';
 import 'arc_handlers.dart';
+import 'arc_iso.dart';
+import 'arc_udf.dart';
+import '../format/ubi/ubi_handler.dart';
+import '../format/ubifs/ubifs_handler.dart';
+import 'arc_ubi.dart';
+import 'arc_ubifs.dart';
+import '../format/squashfs/squashfs_handler.dart';
+import '../format/cramfs/cramfs_handler.dart';
+import '../format/jffs2/jffs2_handler.dart';
+import 'arc_squashfs.dart';
+import 'arc_cramfs.dart';
+import 'arc_jffs2.dart';
+import '../format/disk/gpt_handler.dart';
+import '../format/disk/mbr_handler.dart';
+import '../format/ext/ext_handler.dart';
+import '../format/fat/fat_handler.dart';
+import 'arc_disk.dart';
 import 'platform.dart';
 
 /// NArcInfoFlags.
@@ -70,10 +96,15 @@ class ArcInfoEx {
   final InArchive Function()? createInArchive;
   final bool updateEnabled;
 
+  /// The items are images (firmware sections, volumes, partitions): each
+  /// one is tried as a nested archive (zx extension, see nest.dart).
+  final bool isContainer;
+
   const ArcInfoEx(this.name, this.exts, this.flags, this.signatures,
       {this.signatureOffset = 0,
       this.isArcFunc,
       this.createInArchive,
+      this.isContainer = false,
       this.updateEnabled = false});
 
   bool get flagsKeepName => (flags & ArcInfoFlags.keepName) != 0;
@@ -254,6 +285,143 @@ class Codecs {
           [rar5ArcSignature],
           createInArchive: Rar5Arc.new,
           updateEnabled: true),
+      // zpaq journaling archives (not in 7-Zip; engine vendored from
+      // zpaq-flutter): the locator tag zpaq writes before each block, or a
+      // block header without it. Encrypted archives have no signature and
+      // open by the extension.
+      ArcInfoEx('zpaq', _exts('zpaq'),
+          ArcInfoFlags.mTime | ArcInfoFlags.mTimeDefault,
+          [zpaqLocatorTag, Uint8List.fromList(const [0x7A, 0x50, 0x51])],
+          isArcFunc: isArcZpaq,
+          createInArchive: ZpaqArc.new,
+          updateEnabled: true),
+      // firmware and image formats (read only)
+      ArcInfoEx(
+          'Cpio',
+          _exts('cpio'),
+          ArcInfoFlags.symLinks | ArcInfoFlags.hardLinks | ArcInfoFlags.mTime,
+          [
+            Uint8List.fromList('070701'.codeUnits),
+            Uint8List.fromList('070702'.codeUnits),
+            Uint8List.fromList('070707'.codeUnits),
+            Uint8List.fromList('070727'.codeUnits),
+            Uint8List.fromList([0xC7, 0x71]),
+            Uint8List.fromList([0x71, 0xC7]),
+          ],
+          isArcFunc: isArcCpio,
+          createInArchive: CpioArc.new),
+      ArcInfoEx('Pak', _exts('pak'), 0, [
+        Uint8List.fromList([0x13, 0x59, 0x72, 0x32])
+      ], createInArchive: PakArc.new, isContainer: true),
+      ArcInfoEx('UImage', _exts('uimage uimg ub'), ArcInfoFlags.mTime, [
+        Uint8List.fromList([0x27, 0x05, 0x19, 0x56])
+      ], createInArchive: UImageArc.new, isContainer: true),
+      ArcInfoEx('Fdt', _exts('dtb dtbo'), 0, [
+        Uint8List.fromList([0xD0, 0x0D, 0xFE, 0xED])
+      ], createInArchive: FdtArc.new),
+      // disc images (read only); OpenStream2 tries Udf before Iso for a
+      // name whose extension both claim (ISO/UDF bridge discs)
+      ArcInfoEx('Iso', _exts('iso img'),
+          ArcInfoFlags.symLinks | ArcInfoFlags.mTime, [
+        Uint8List.fromList('CD001'.codeUnits)
+      ],
+          signatureOffset: kIsoVdOffset + 1,
+          isArcFunc: isArcIso,
+          createInArchive: IsoArc.new),
+      ArcInfoEx(
+          'Udf',
+          _exts('udf iso img'),
+          ArcInfoFlags.symLinks |
+              ArcInfoFlags.cTime |
+              ArcInfoFlags.aTime |
+              ArcInfoFlags.mTime,
+          [
+            Uint8List.fromList([0, 0x42, 0x45, 0x41, 0x30, 0x31, 1])
+          ],
+          signatureOffset: kIsoVdOffset,
+          isArcFunc: isArcUdf,
+          createInArchive: UdfArc.new),
+      // UBI images and UBIFS volumes (read only)
+      ArcInfoEx('Ubi', _exts('ubi'), 0, [
+        Uint8List.fromList([0x55, 0x42, 0x49, 0x23])
+      ], isArcFunc: isArcUbi, createInArchive: UbiArc.new, isContainer: true),
+      ArcInfoEx(
+          'UbiFs',
+          _exts('ubifs'),
+          ArcInfoFlags.symLinks |
+              ArcInfoFlags.hardLinks |
+              ArcInfoFlags.cTime |
+              ArcInfoFlags.aTime |
+              ArcInfoFlags.mTime,
+          [
+            Uint8List.fromList([0x31, 0x18, 0x10, 0x06])
+          ],
+          isArcFunc: isArcUbifs,
+          createInArchive: UbiFsArc.new),
+      // embedded file systems: SquashFS, cramfs, JFFS2 (read only)
+      ArcInfoEx(
+          'SquashFS',
+          _exts('squashfs sqsh sfs sqfs'),
+          ArcInfoFlags.symLinks | ArcInfoFlags.hardLinks | ArcInfoFlags.mTime,
+          [
+            Uint8List.fromList('hsqs'.codeUnits),
+            Uint8List.fromList('sqsh'.codeUnits),
+          ],
+          isArcFunc: isArcSquashfs,
+          createInArchive: SquashfsArc.new),
+      ArcInfoEx('CramFS', _exts('cramfs'), ArcInfoFlags.symLinks, [
+        Uint8List.fromList([0x45, 0x3D, 0xCD, 0x28]),
+        Uint8List.fromList([0x28, 0xCD, 0x3D, 0x45]),
+      ], isArcFunc: isArcCramfs, createInArchive: CramfsArc.new),
+      ArcInfoEx(
+          'Jffs2',
+          _exts('jffs2'),
+          ArcInfoFlags.symLinks |
+              ArcInfoFlags.hardLinks |
+              ArcInfoFlags.cTime |
+              ArcInfoFlags.aTime |
+              ArcInfoFlags.mTime,
+          [
+            Uint8List.fromList([0x85, 0x19]),
+            Uint8List.fromList([0x19, 0x85]),
+          ],
+          isArcFunc: isArcJffs2,
+          createInArchive: Jffs2Arc.new),
+      // disk images and their file systems: MBR, GPT, FAT, ext2/3/4 (read
+      // only); the MBR check defers to GPT (protective MBR), FAT boot
+      // sectors and ISO 9660 system areas
+      ArcInfoEx('MBR', _exts('mbr img'), 0, [
+        Uint8List.fromList([0x55, 0xAA])
+      ],
+          signatureOffset: 510,
+          isArcFunc: isArcMbr,
+          createInArchive: MbrArc.new,
+          isContainer: true),
+      ArcInfoEx('GPT', _exts('gpt mbr img'), 0, [
+        Uint8List.fromList('EFI PART'.codeUnits)
+      ],
+          signatureOffset: 512,
+          isArcFunc: isArcGpt,
+          createInArchive: GptArc.new,
+          isContainer: true),
+      ArcInfoEx('FAT', _exts('fat img vfd'),
+          ArcInfoFlags.cTime | ArcInfoFlags.aTime | ArcInfoFlags.mTime,
+          const [],
+          isArcFunc: isArcFat, createInArchive: FatArc.new),
+      ArcInfoEx(
+          'Ext',
+          _exts('ext ext2 ext3 ext4 img'),
+          ArcInfoFlags.symLinks |
+              ArcInfoFlags.hardLinks |
+              ArcInfoFlags.cTime |
+              ArcInfoFlags.aTime |
+              ArcInfoFlags.mTime,
+          [
+            Uint8List.fromList([0x53, 0xEF])
+          ],
+          signatureOffset: 1080,
+          isArcFunc: isArcExt,
+          createInArchive: ExtArc.new),
     ];
     // Formats.Sort(): by name, ordinal compare
     list.sort((a, b) => a.name.compareTo(b.name));

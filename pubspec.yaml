@@ -4,7 +4,7 @@ description: >-
   7z, xz and lzma archives with LZMA, LZMA2, PPMd, BCJ/BCJ2 and branch
   filters, Delta and AES-256. Usable as a library and as a command line
   tool with 7-Zip's switches.
-version: 0.3.0
+version: 0.4.0
 publish_to: none
 
 environment:

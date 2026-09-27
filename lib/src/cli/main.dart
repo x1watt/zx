@@ -32,7 +32,7 @@ import 'prop_id_utils.dart';
 import 'platform.dart';
 
 const String _kVersion = '26.01';
-const String _kZxVersion = '0.3.0';
+const String _kZxVersion = '0.4.0';
 
 String _cpuName() {
   final v = Platform.version;
@@ -98,6 +98,8 @@ const String _kHelpString = 'Usage: zx'
     '  -snl : store symbolic links as links\n'
     '  -sni : store NT security information\n'
     '  -sns[-] : store NTFS alternate streams\n'
+    '  -snest[N] : (zx) show nested archives and images as folders for l, t, x, e\n'
+    '    (N: depth, default 4)\n'
     '  -so : write data to stdout\n'
     '  -spd : disable wildcard matching for file names\n'
     '  -spe : eliminate duplication of root folder for extract command\n'
@@ -659,7 +661,8 @@ int _main2(List<String> commandStrings, CliIo io) {
         final lo = ListOptions()
           ..excludeDirItems = options.censor.excludeDirItems
           ..excludeFileItems = options.censor.excludeFileItems
-          ..disablePercents = options.disablePercents;
+          ..disablePercents = options.disablePercents
+          ..nestDepth = options.nestDepth;
         final (res, numErrors, numWarnings) = listArchives(
             lo,
             codecs,

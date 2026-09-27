@@ -28,13 +28,16 @@ import 'cli/arc_handlers.dart';
 import 'cli/arc_rar.dart';
 import 'cli/arc_tar.dart';
 import 'cli/arc_zip.dart';
+import 'cli/arc_zpaq.dart';
 import 'cli/common.dart';
 import 'cli/extracting_file_path.dart' show getCorrectFsFileName;
 import 'cli/fs_utils.dart';
 import 'cli/load_codecs.dart';
+import 'cli/nest.dart' show NestNodeSpec;
 import 'cli/open_archive.dart';
 import 'cli/platform.dart';
 import 'cli/update.dart' show rarVolumePath;
+import 'cli/wildcard.dart' show extractFileNameFromPath;
 import 'format/archive_types.dart';
 import 'format/split.dart';
 import 'io/streams.dart';
@@ -48,16 +51,62 @@ enum ZxExtractMode { extract, test, memory }
 enum ZxUpdateKind { create, add, delete, rename, createFolder, setComment }
 
 class ZxOpenRequest {
+  /// The file the [chain] starts from (the archive, or a temporary file
+  /// holding a nested archive).
   final String archivePath;
   final String? password;
   final bool canAsk;
-  const ZxOpenRequest(this.archivePath, this.password, this.canAsk);
+
+  /// Item indices from the archive at [archivePath] to the nested archive
+  /// to open (empty: that archive itself).
+  final List<int> chain;
+
+  /// Shows the archive as one tree with its nested archives.
+  final ZxNest? nest;
+
+  /// The listing is read only (a nested archive).
+  final bool readOnly;
+
+  /// A journaling archive (zpaq) is shown as of this version (the
+  /// listing is then read only); null: the last one.
+  final int? version;
+  const ZxOpenRequest(this.archivePath, this.password, this.canAsk,
+      {this.chain = const [], this.nest, this.readOnly = false, this.version});
+}
+
+/// The flattened tree of a request: its depth, and the nested archives
+/// found when it was opened (null: look for them).
+class ZxNest {
+  final int maxDepth;
+  final List<NestNodeSpec>? layout;
+  const ZxNest(this.maxDepth, [this.layout]);
+}
+
+/// The result of [workerOpen].
+class ZxOpenResult {
+  final ZxListing listing;
+
+  /// Where the operations open the archive: [base] then the items of
+  /// [chain] (a nested archive whose parent has no random access to its
+  /// items was copied to a temporary file, which becomes the base).
+  final String base;
+  final List<int> chain;
+  final List<NestNodeSpec>? layout;
+
+  /// Temporary folders the handle deletes when it is closed.
+  final List<String> temps;
+  const ZxOpenResult(
+      this.listing, this.base, this.chain, this.layout, this.temps);
 }
 
 class ZxExtractRequest {
   final String archivePath;
   final String? password;
   final bool canAsk;
+
+  /// See [ZxOpenRequest.chain] and [ZxOpenRequest.nest].
+  final List<int> chain;
+  final ZxNest? nest;
 
   /// The listing of the handle, for an archive read in one pass (listing
   /// it again means decoding it again); null: the worker reads it.
@@ -74,10 +123,15 @@ class ZxExtractRequest {
   final bool restoreSymlinks;
   final int? maxBytes;
 
+  /// See [ZxOpenRequest.version].
+  final int? version;
+
   const ZxExtractRequest({
     required this.archivePath,
     required this.password,
     required this.canAsk,
+    this.chain = const [],
+    this.nest,
     this.items,
     required this.mode,
     this.paths,
@@ -90,6 +144,7 @@ class ZxExtractRequest {
     this.restoreModes = false,
     this.restoreSymlinks = false,
     this.maxBytes,
+    this.version,
   });
 }
 
@@ -292,6 +347,13 @@ class _WrongPassword implements Exception {
   const _WrongPassword();
 }
 
+/// Item [level] of a chain has no stream (the handler has no random
+/// access to its items).
+class _NoStream implements Exception {
+  final int level;
+  const _NoStream(this.level);
+}
+
 // ---------------------------------------------------------------------------
 // Opening
 
@@ -315,7 +377,11 @@ class _Opened {
   final String path;
   final String? password;
   final bool passwordAsked;
-  _Opened(this.codecs, this.link, this.path, this.password, this.passwordAsked);
+
+  /// The archives around a nested one, outermost first.
+  final List<ArchiveLink> outer;
+  _Opened(this.codecs, this.link, this.path, this.password, this.passwordAsked,
+      [this.outer = const []]);
 
   Arc get arc => link.arcs.last;
   InArchive get archive => link.arcs.last.archive!;
@@ -323,6 +389,10 @@ class _Opened {
   void close() {
     link.close();
     link.release();
+    for (final l in outer.reversed) {
+      l.close();
+      l.release();
+    }
   }
 }
 
@@ -332,46 +402,100 @@ List<int> _excludedFormats(Codecs codecs) {
 }
 
 _Opened _openSync(Codecs codecs, String path, String? password,
-    {String? compoundTempDir}) {
+    {String? compoundTempDir,
+    List<int> chain = const [],
+    ZxNest? nest,
+    int? version}) {
   final ui = _OpenUi(password);
-  final link = ArchiveLink();
-  final op = OpenOptions()
-    ..codecs = codecs
-    ..types = const []
-    ..excludedFormats = _excludedFormats(codecs)
-    ..stdInMode = false
-    ..filePath = path
-    ..compoundTempDir = compoundTempDir;
-  int res;
-  try {
-    res = link.openStrict(op, ui, null);
-  } on SystemException catch (e) {
-    link.close();
-    throw _hresError(e.errorCode, path);
-  } catch (_) {
-    link.close();
-    rethrow;
+  final links = <ArchiveLink>[];
+  var asked = false;
+  void closeAll() {
+    for (final l in links.reversed) {
+      l.close();
+    }
   }
-  if (res != HRes.sOk) {
-    link.close();
-    if (ui.asked || link.passwordWasAsked) throw const _WrongPassword();
-    throw _hresError(res, path);
+
+  // the archive, then each nested archive of the chain from the stream of
+  // its item in the level before
+  for (var k = 0; k <= chain.length; k++) {
+    final link = ArchiveLink();
+    final op = OpenOptions()
+      ..codecs = codecs
+      ..types = const []
+      ..excludedFormats = _excludedFormats(codecs)
+      ..stdInMode = false
+      ..filePath = path
+      ..compoundTempDir = compoundTempDir
+      ..version = k == 0 ? version : null;
+    if (k > 0) {
+      final parent = links.last.arcs.last;
+      final index = chain[k - 1];
+      SeekableInStream? s;
+      try {
+        if (index >= 0 && index < parent.archive!.numberOfItems) {
+          s = parent.archive!.getStream(index);
+          op.filePath = extractFileNameFromPath(parent.getItemPath(index));
+        }
+      } on Object {
+        s = null;
+      }
+      if (s == null) {
+        closeAll();
+        throw _NoStream(k - 1);
+      }
+      op.stream = s;
+      op.compoundTempDir ??=
+          '${Directory.systemTemp.path}${Platform.pathSeparator}';
+    }
+    if (k == chain.length && nest != null) {
+      op
+        ..nestDepth = nest.maxDepth
+        ..nestLayout = nest.layout
+        ..nestKeepTemps = nest.layout == null;
+    }
+    int res;
+    try {
+      res = link.openStrict(op, ui, null);
+    } on SystemException catch (e) {
+      link.close();
+      closeAll();
+      throw _hresError(e.errorCode, path);
+    } catch (_) {
+      link.close();
+      closeAll();
+      rethrow;
+    }
+    if (res != HRes.sOk) {
+      link.close();
+      closeAll();
+      if (ui.asked || link.passwordWasAsked) throw const _WrongPassword();
+      throw _hresError(res, path);
+    }
+    asked = asked || link.passwordWasAsked;
+    links.add(link);
   }
-  return _Opened(
-      codecs, link, path, password, ui.asked || link.passwordWasAsked);
+  return _Opened(codecs, links.last, path, password, ui.asked || asked,
+      links.sublist(0, links.length - 1));
 }
 
 /// Opens [path], asking the caller's isolate for a password as long as
 /// the names can not be read.
 Future<_Opened> _openAsk(
     Codecs codecs, String path, String? password, bool canAsk, ZxOps ops,
-    {String? compoundTempDir}) async {
+    {String? compoundTempDir,
+    List<int> chain = const [],
+    ZxNest? nest,
+    int? version}) async {
   var attempt = 0;
   var retry = false;
   var pw = password;
   for (;;) {
     try {
-      return _openSync(codecs, path, pw, compoundTempDir: compoundTempDir);
+      return _openSync(codecs, path, pw,
+          compoundTempDir: compoundTempDir,
+          chain: chain,
+          nest: nest,
+          version: version);
     } on _NeedPassword {
       retry = false;
     } on _WrongPassword {
@@ -430,15 +554,17 @@ const Set<String> _kMultiItemFormats = {
   'tar',
   'Rar5',
   'Lzh',
-  'Arj'
+  'Arj',
+  'zpaq'
 };
 const Set<String> _kEncryptFormats = {'7z', 'zip', 'Rar5', 'Arj'};
 
-ZxListing _readListing(_Opened o) {
+ZxListing _readListing(_Opened o, {bool readOnly = false}) {
   final codecs = o.codecs;
   final link = o.link;
   final arc = o.arc;
   final a = o.archive;
+  final flat = link.flat;
   if (arc.isSeq) {
     // a compound tar read in one pass: every header is read now
     a.numberOfItems;
@@ -484,6 +610,8 @@ ZxListing _readListing(_Opened o) {
       symlinkTarget: str(Kpid.symLink),
       hardlinkTarget: str(Kpid.hardLink),
       comment: str(Kpid.comment),
+      nestChain: flat?.chainOf(i),
+      nestedFormat: flat?.nestedFormatOf(i),
     ));
     if (isDir) explicitDirs.add(path);
     all.add(path);
@@ -518,6 +646,18 @@ ZxListing _readListing(_Opened o) {
     warnings.addAll(_flagsText(ei.getWarningFlags()));
     if (ei.warningMessage.isNotEmpty) warnings.add(ei.warningMessage);
   }
+  if (flat != null) {
+    // the nested archives, with the folders that show them
+    for (final (prefix, ei) in flat.nestedErrors) {
+      final p = zxNormalizePath(kIsWin ? prefix.replaceAll('\\', '/') : prefix);
+      for (final m in _flagsText(ei.getWarningFlags())) {
+        warnings.add('$p: $m');
+      }
+      if (ei.warningMessage.isNotEmpty) {
+        warnings.add('$p: ${ei.warningMessage}');
+      }
+    }
+  }
 
   final multiVolume = link.volumePaths.isNotEmpty ||
       link.arcs.any((x) => codecs.getFormatNamePtr(x.formatIndex) == 'Split');
@@ -536,6 +676,7 @@ ZxListing _readListing(_Opened o) {
   } else if (link.arcs.length > 1) {
     canUpdate = false;
   }
+  if (readOnly || flat != null || o.outer.isNotEmpty) canUpdate = false;
   final multi = _kMultiItemFormats.contains(fmt);
   final caps = ZxCapabilities(
     canAdd: canUpdate && multi,
@@ -546,6 +687,18 @@ ZxListing _readListing(_Opened o) {
     canEncrypt: canUpdate && _kEncryptFormats.contains(fmt),
     canEncryptHeaders: canUpdate && (fmt == '7z' || fmt == 'Rar5'),
   );
+
+  // a journaling archive: its versions
+  var versions = const <ZxVersion>[];
+  var numVersions = 0;
+  if (a is ZpaqArc) {
+    versions = [
+      for (final v in a.h.versions)
+        ZxVersion(v.number, fileTimeToDateTime(v.time).toUtc(), v.added,
+            v.deleted, v.packSize)
+    ];
+    numVersions = a.h.numVersions;
+  }
 
   final phy = a.getArchiveProperty(Kpid.phySize);
   var physicalSize = phy is int ? phy : arc.fileSize;
@@ -572,6 +725,8 @@ ZxListing _readListing(_Opened o) {
     items: items,
     password: o.password,
     sequential: arc.isSeq,
+    versions: versions,
+    numVersions: numVersions,
   );
 }
 
@@ -589,15 +744,126 @@ List<String> _volumes(_Opened o) {
   ];
 }
 
-/// [ZxArchive.open].
+/// [ZxArchive.open], [ZxArchive.openNested], [ZxArchive.reload]:
+/// a [ZxOpenResult].
 Future<Object?> workerOpen(ZxOpenRequest r, ZxOps ops) async {
   final codecs = Codecs.load();
-  final o = await _openAsk(codecs, r.archivePath, r.password, r.canAsk, ops);
+  var base = r.archivePath;
+  var chain = r.chain;
+  var pw = r.password;
+  final temps = <String>[];
   try {
-    return _readListing(o);
+    for (;;) {
+      _Opened o;
+      try {
+        o = await _openAsk(codecs, base, pw, r.canAsk, ops,
+            chain: chain,
+            nest: r.nest,
+            version: base == r.archivePath ? r.version : null);
+      } on _NoStream catch (e) {
+        // no random access to the item: it is copied to a temporary
+        // file, which becomes the start of the chain
+        final (file, dir) = await _itemToTempFile(codecs, base,
+            chain.sublist(0, e.level), chain[e.level], pw, r.canAsk, ops,
+            version: base == r.archivePath ? r.version : null);
+        temps.add(dir);
+        base = file;
+        chain = chain.sublist(e.level + 1);
+        continue;
+      }
+      try {
+        pw = o.password;
+        final t = o.link.flat?.tempFolder;
+        if (t != null) {
+          ops.registerDir(t);
+          temps.add(t);
+        }
+        final l = _readListing(o,
+            readOnly: r.readOnly || temps.isNotEmpty || r.version != null);
+        for (final d in temps) {
+          ops.unregisterDir(d);
+        }
+        return ZxOpenResult(l, base, chain, o.link.flat?.layout, temps);
+      } finally {
+        o.close();
+      }
+    }
+  } catch (_) {
+    for (final d in temps) {
+      try {
+        Directory(d).deleteSync(recursive: true);
+      } on FileSystemException {
+        // ignore
+      }
+    }
+    rethrow;
+  }
+}
+
+/// Copies item [index] of the archive at [base] + [chain] into a new
+/// temporary folder: (the file, the folder).
+Future<(String, String)> _itemToTempFile(Codecs codecs, String base,
+    List<int> chain, int index, String? password, bool canAsk, ZxOps ops,
+    {int? version}) async {
+  final o = await _openAsk(codecs, base, password, canAsk, ops,
+      chain: chain, version: version);
+  try {
+    final a = o.archive;
+    if (index < 0 || index >= a.numberOfItems) {
+      throw SevenZipException(
+          'Item #$index not found in the archive', SevenZipError.unsupported);
+    }
+    var name = extractFileNameFromPath(o.arc.getItemPath(index));
+    if (kIsWin) name = getCorrectFsFileName(name);
+    if (name.isEmpty || name == '.' || name == '..') name = 'item';
+    final dir = Directory.systemTemp.createTempSync('zx_nest_').path;
+    ops.registerDir(dir);
+    final path = _join(dir, name);
+    final out = FileOutStream.create(path);
+    final cb = _ItemToFile(out, index, o.password);
+    try {
+      if (o.arc.isSeq) {
+        a.extract(null, false, cb);
+      } else {
+        a.extract([index], false, cb);
+      }
+      out.flush();
+    } finally {
+      out.close();
+    }
+    if (cb.result != OperationResult.ok) {
+      throw SevenZipException(
+          '${o.arc.getItemPath(index)}: can not be read', SevenZipError.data);
+    }
+    return (path, dir);
   } finally {
     o.close();
   }
+}
+
+class _ItemToFile extends ArchiveExtractCallback
+    implements CryptoGetTextPassword {
+  final OutStream out;
+  final int index;
+  final String? password;
+  int result = -1;
+  bool _cur = false;
+  _ItemToFile(this.out, this.index, this.password);
+
+  @override
+  OutStream? getStream(int index, int askMode) {
+    _cur = index == this.index && askMode == AskMode.extract;
+    return _cur ? out : null;
+  }
+
+  @override
+  void setOperationResult(int opRes) {
+    if (_cur) result = opRes;
+    _cur = false;
+  }
+
+  @override
+  String cryptoGetTextPassword() => password ?? '';
 }
 
 // ---------------------------------------------------------------------------
@@ -995,8 +1261,8 @@ class _Extractor extends ArchiveExtractCallback
     throw const _NeedPassword();
   }
 
-  /// Links, hard links (as copies), modes and folder times, after every
-  /// file.
+  /// Links, hard links (a copy where the file system can not link),
+  /// modes and folder times, after every file.
   void finish() {
     _closeCurrent(false);
     final outDir = _outDir;
@@ -1037,7 +1303,9 @@ class _Extractor extends ArchiveExtractCallback
               'The target of the hard link is missing', hard);
         }
         File(target).parent.createSync(recursive: true);
-        File(src).copySync(target);
+        if (!createHardLinkOrCopy(src, target)) {
+          throw FileSystemException('Cannot create hard link', target);
+        }
         _setFileProps(target, it);
       } on FileSystemException catch (e) {
         errors[-1 - errors.length] =
@@ -1142,7 +1410,8 @@ Future<(_Extractor, String?)> _extractAll(ZxExtractRequest r, ZxOps ops) async {
   var pw = r.password;
   var items = r.items;
   if (items == null) {
-    final o = await _openAsk(codecs, r.archivePath, pw, r.canAsk, ops);
+    final o = await _openAsk(codecs, r.archivePath, pw, r.canAsk, ops,
+        chain: r.chain, nest: r.nest, version: r.version);
     try {
       pw = o.password;
       items = _readListing(o).items;
@@ -1230,7 +1499,8 @@ Future<(_Extractor, String?)> _extractAll(ZxExtractRequest r, ZxOps ops) async {
   }
   try {
     for (;;) {
-      final o = await _openAsk(codecs, r.archivePath, pw, r.canAsk, ops);
+      final o = await _openAsk(codecs, r.archivePath, pw, r.canAsk, ops,
+          chain: r.chain, nest: r.nest, version: r.version);
       if (o.password != pw) pw = ex.password = o.password;
       var needPassword = false;
       try {
@@ -1607,6 +1877,7 @@ List<MapEntry<String, String>> _props(
   if (m != null && !compound) {
     if (fmt == '7z') r.add(MapEntry('0', m));
     if (fmt == 'zip') r.add(MapEntry('m', m));
+    if (fmt == 'zpaq') r.add(MapEntry('m', m));
   }
   final s = o.solid;
   if (s != null && (fmt == '7z' || fmt == 'Rar5' || fmt == 'Rar')) {

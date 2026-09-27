@@ -12,9 +12,11 @@ import '../format/archive_types.dart';
 import '../io/streams.dart';
 import 'arc_compound.dart';
 import 'arc_handlers.dart';
+import 'arc_zpaq.dart';
 import 'common.dart';
 import 'fs_utils.dart' show resolvePath;
 import 'load_codecs.dart';
+import 'nest.dart';
 import 'platform.dart';
 import 'wildcard.dart';
 
@@ -279,6 +281,25 @@ class OpenOptions {
   /// this folder (with its separator, empty for the current folder) and
   /// opened seekable, for an update. null: it is read in one pass.
   String? compoundTempDir;
+
+  /// zx extension (-snest, ZxArchive flatten): above 0 the last level is
+  /// shown as one tree with the archives nested in it, up to this depth
+  /// (nest.dart).
+  int nestDepth = 0;
+
+  /// The nested archives to open again (no item is tried).
+  List<NestNodeSpec>? nestLayout;
+
+  /// The temporary files of the nested archives stay on close.
+  bool nestKeepTemps = false;
+
+  /// Where they are made (default: the system temporary folder).
+  String? nestTempDir;
+
+  /// zx extension (ZxArchive.open version): a journaling archive (zpaq)
+  /// is shown as of this version instead of its last one (the CLI sets it
+  /// with -mversion=N, a handler property).
+  int? version;
 }
 
 /// CReadArcItem.
@@ -492,6 +513,8 @@ class Arc {
     if (props != null && props.isNotEmpty) {
       setArchiveProperties(archive, props);
     }
+    final v = op.version;
+    if (v != null && archive is ZpaqArc) archive.h.openVersion = v;
     return archive;
   }
 
@@ -702,6 +725,17 @@ class Arc {
           if (val != -1) orderIndices2.add(val);
         }
         orderIndices = orderIndices2;
+      }
+      // an ISO/UDF bridge disc opens as Udf when its extension matches
+      // both (x.iso), as in 7-Zip
+      if (orderIndices.length >= 2) {
+        final iIso = _findFormatInOrder(formats, orderIndices, 'iso');
+        final iUdf = _findFormatInOrder(formats, orderIndices, 'udf');
+        if (iUdf > iIso && iIso >= 0) {
+          final isoIndex = orderIndices[iIso];
+          orderIndices[iIso] = orderIndices[iUdf];
+          orderIndices[iUdf] = isoIndex;
+        }
       }
       numMainTypes = numFinded;
       isUnknownExt = numMainTypes == 0 || isPrearcExt;
@@ -1551,6 +1585,9 @@ class ArchiveLink {
   int volumesSize = 0;
   bool isOpen = false;
   bool passwordWasAsked = false;
+
+  /// The tree of the last level with its nested archives (-snest).
+  FlatArc? flat;
   String nonOpenArcPath = '';
   ArcErrorInfo nonOpenErrorInfo = ArcErrorInfo();
   OpenCallbackImp? _callbackImp;
@@ -1582,6 +1619,13 @@ class ArchiveLink {
 
     var forceCompound = op.forceCompound;
     final callerStream = op.stream;
+    if (op.nestDepth > 0 && op.compoundTempDir == null && !op.stdInMode) {
+      // a compressed tar is decoded to a temporary file: the nested
+      // archives need random access to its items
+      final t = op.nestTempDir ?? Directory.systemTemp.path;
+      op.compoundTempDir =
+          t.endsWith(Platform.pathSeparator) ? t : '$t${Platform.pathSeparator}';
+    }
     int resSpec;
     for (;;) {
       resSpec = HRes.sOk;
@@ -1694,6 +1738,21 @@ class ArchiveLink {
           nonOpenErrorInfo = ArcErrorInfo()..errorFormatIndex = tarIndex;
           return HRes.sFalse;
         }
+      }
+    }
+    if (op.nestDepth > 0 && arcs.isNotEmpty && arcs.last.archive != null) {
+      final last = arcs.last;
+      try {
+        final f = FlatArc.build(op.codecs, last,
+            maxDepth: op.nestDepth,
+            ui: op.callbackSpec?.callback,
+            layout: op.nestLayout,
+            keepTemps: op.nestKeepTemps,
+            tempDir: op.nestTempDir);
+        last.archive = f;
+        flat = f;
+      } on SystemException catch (e) {
+        return e.errorCode;
       }
     }
     isOpen = arcs.isNotEmpty;
@@ -2007,4 +2066,15 @@ List<OpenType>? parseOpenTypes(Codecs codecs, String s) {
     pos = pos2 + 1;
   }
   return types;
+}
+
+// FindFormatForArchiveType (OpenArchive.cpp): the position in
+// [orderIndices] of the format named [name], or -1
+int _findFormatInOrder(
+    List<ArcInfoEx> formats, List<int> orderIndices, String name) {
+  for (var i = 0; i < orderIndices.length; i++) {
+    final oi = orderIndices[i];
+    if (oi >= 0 && formats[oi].name.toLowerCase() == name) return i;
+  }
+  return -1;
 }

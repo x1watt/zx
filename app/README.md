@@ -4,8 +4,8 @@ An archive manager in the style of WinZip and the 7-Zip File Manager,
 written with Flutter on the `ZxArchive` API of the `zx` package (the
 parent folder). It reads every format of the `zx` command line tool (7z,
 zip and jar, rar 1.5 to 7, tar, tar.gz / tgz, tar.bz2, tar.xz, tar.lzma,
-gz, bz2, xz, lzma, lzh, arj, split volumes) and writes 7z, zip, RAR5,
-tar and the compressed tars, lzh, arj, gz, bz2 and xz.
+gz, bz2, xz, lzma, lzh, arj, zpaq, split volumes) and writes 7z, zip,
+RAR5, tar and the compressed tars, lzh, arj, zpaq, gz, bz2 and xz.
 
 Every archive operation runs in a background isolate of `ZxArchive`; the
 UI isolate only sends requests, draws the throttled progress and answers
@@ -34,7 +34,8 @@ native code of its own besides the runners and uses three small packages:
   current folder of the archive, with level, method, password (zip:
   AES-256 or ZipCrypto) and solid where the format has them.
 - **New archive** (Ctrl+N): name, format (7z, zip, tar.gz, tar.bz2, tar.xz,
-  rar, tar, lzh, arj, and gz, bz2, xz for one file), files and folders,
+  rar, tar, lzh, arj, zpaq with its methods 0 to 5, and gz, bz2, xz for
+  one file), files and folders,
   settings; a password with encrypted names for 7z and rar.
 - **Delete** (Del), **Rename** (F2), **New folder**, **Test**, **Info**
   (archive properties, comment of zip and RAR5 archives), **Properties**
@@ -84,7 +85,7 @@ The two switches of Settings run the same code (`lib/src/integration.dart`):
   shared-mime-info (`application/x-7z-compressed`, `application/zip`,
   `application/vnd.rar`, `application/x-compressed-tar`,
   `application/gzip`, `application/x-xz`, `application/x-lha`,
-  `application/x-arj` and the others, with their aliases); switching on
+  `application/x-arj`, `application/x-zpaq` and the others, with their aliases); switching on
   makes zx the default application of each in `~/.config/mimeapps.list`
   (and in the desktop specific `*-mimeapps.list` files that exist), after
   saving the previous defaults in `~/.config/zx/previous-defaults.json`;

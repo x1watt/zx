@@ -118,6 +118,23 @@ abstract final class Kpid {
   static const userDefined = 0x10000;
 }
 
+/// Properties of zx that 7-Zip does not have (user defined ids, see
+/// [kZxPropNames] for their names in listings).
+abstract final class ZxKpid {
+  /// zpaq: the version (update) that wrote the item, or for the archive
+  /// the version it is shown as of.
+  static const version = Kpid.userDefined + 1;
+
+  /// zpaq: the number of versions in the archive.
+  static const numVersions = Kpid.userDefined + 2;
+}
+
+/// The names of the [ZxKpid] properties in `l -slt`.
+const Map<int, String> kZxPropNames = {
+  ZxKpid.version: 'Version',
+  ZxKpid.numVersions: 'Versions',
+};
+
 /// kpv_ErrorFlags_* (PropID.h).
 abstract final class ErrorFlags {
   static const isNotArc = 1 << 0;

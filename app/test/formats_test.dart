@@ -45,6 +45,18 @@ void main() {
     }
   });
 
+  test('zpaq: methods instead of levels, the extension and MIME type', () {
+    final f = newFormatById('zpaq');
+    expect(f.createFormat, 'zpaq');
+    final o = (CompressionSettings(level: 9)..method = '3').toOptions(f);
+    expect(o.level, isNull);
+    expect(o.switches, {'m': '3'});
+    expect(methodLabel(f, '5'), contains('slow'));
+    expect(looksLikeArchive('backup.zpaq'), isTrue);
+    expect(folderNameFor('backup.zpaq'), 'backup');
+    expect(kArchiveMimeTypes, contains('application/x-zpaq'));
+  });
+
   test('compression settings become ZxOptions', () {
     final s = CompressionSettings(level: 9)
       ..method = 'PPMd'

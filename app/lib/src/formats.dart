@@ -79,6 +79,17 @@ const kNewFormats = <NewFormat>[
     methods: ['1', '2', '3', '4', '0'],
     password: true,
   ),
+  // zpaq: versioned, deduplicated backups (each update adds a version);
+  // the zpaq methods instead of the levels (5 is very slow)
+  NewFormat(
+    'zpaq',
+    'zpaq (versions)',
+    'zpaq',
+    'zpaq',
+    methods: ['1', '2', '3', '4', '5', '0'],
+    levels: false,
+    password: true,
+  ),
   NewFormat('gz', 'gz (one file)', 'gz', 'gzip', singleFile: true),
   NewFormat('bz2', 'bz2 (one file)', 'bz2', 'bzip2', singleFile: true),
   NewFormat('xz', 'xz (one file)', 'xz', 'xz', singleFile: true),
@@ -107,8 +118,16 @@ NewFormat? formatForArchive(String format, List<String> outer) {
   return null;
 }
 
-/// Labels of the arj methods.
+/// Labels of the arj and zpaq methods.
 String methodLabel(NewFormat f, String m) {
+  if (f.id == 'zpaq') {
+    return switch (m) {
+      '0' => 'Store (deduplication only)',
+      '1' => 'Method 1 (fast)',
+      '5' => 'Method 5 (best, slow)',
+      _ => 'Method $m',
+    };
+  }
   if (f.id == 'arj') {
     return switch (m) {
       '0' => 'Store',
@@ -153,6 +172,7 @@ const kArchiveExtensions = <String>[
   'lzh',
   'lha',
   'arj',
+  'zpaq',
   'cbz',
   'cbr',
   'epub',
@@ -255,6 +275,7 @@ const kArchiveMimeTypes = <String>[
   'application/x-lha',
   'application/x-lzh-compressed',
   'application/x-arj',
+  'application/x-zpaq',
 ];
 
 /// The types the association checks and sets as default (one per format,
@@ -274,6 +295,7 @@ const kPrimaryMimeTypes = <String>[
   'application/x-lzma-compressed-tar',
   'application/x-lha',
   'application/x-arj',
+  'application/x-zpaq',
 ];
 
 /// The extensions registered on Windows and matched by the file manager
@@ -296,5 +318,6 @@ const kIntegrationExtensions = <String>[
   'lzh',
   'lha',
   'arj',
+  'zpaq',
   '001',
 ];

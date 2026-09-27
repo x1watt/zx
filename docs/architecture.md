@@ -39,7 +39,9 @@ Read it together with `docs/performance.md`.
    `List<int>`. Dart ints are 64-bit: mask with `& 0xFFFFFFFF` where C
    relies on UInt32 wraparound. No `>>>` needed on masked values.
 4. Synchronous APIs only in `lib/src`, except `api.dart`, `zx_api.dart`,
-   `zx_worker.dart`, `parallel.dart` and `pool.dart`.
+   `zx_worker.dart`, `parallel.dart` and `pool.dart` (and the isolate
+   based API of the vendored zpaq engine, `lib/src/zpaq`, section 14,
+   which zx does not call).
    Streams are the interfaces in `lib/src/io/streams.dart`. Errors are
    `SevenZipException` (`InvalidArgException` for bad switches).
 5. Comments and docs: plain English, US keyboard characters only. No em or
@@ -129,11 +131,15 @@ Read it together with `docs/performance.md`.
   - `arj/`: the ARJ handler (ARJ technote; methods 0 to 4 both ways;
     garbled files both ways, multi-volume reading and UNIX links from
     black box study of arj 3.10, section 8).
+  - `zpaq/`: the zpaq journaling archive handler (`zpaq_handler.dart`,
+    `zpaq_update.dart`) over the vendored engine (section 14).
   - `rar/`: the RAR handlers ("Rar" for RAR 1.5 to 4.x archives, "Rar5"),
     reading after libarchive, RAR5 writing (`rar5_out.dart`, with volumes),
     volume names (`rar_volumes.dart`), encryption (`rar_crypto.dart`) and
     the RAR5 recovery record (`rar5_recovery.dart`, from black box study
     of rar 7.00, see section 10).
+- `lib/src/zpaq`: the zpaq engine (libzpaq and zpaq 7.15 in Dart),
+  vendored from zpaq-flutter (section 14).
 - `lib/src/cli`, `bin/zx.dart`: the command line tool, 7zr's commands and
   switches (ArchiveCommandLine.cpp, Main.cpp, List, Extract, Update...).
   `load_codecs.dart` registers the formats (7zr's plus gzip, bzip2, tar,
@@ -141,6 +147,8 @@ Read it together with `docs/performance.md`.
   `arc_handlers.dart` and the `arc_*.dart` files adapt each handler to the
   IInArchive / IOutArchive shape the UI code calls. `arc_compound.dart`
   makes a tar inside gzip, bzip2, xz or lzma one archive (section 8).
+  `nest.dart` opens nested archives and builds the flattened tree of
+  `-snest` and `ZxArchive.open(flatten: true)` (section 13).
   `platform.dart` holds the `_WIN32` switches (section 9), `file_link.dart`
   the reparse data of Windows links (Windows/FileLink.cpp).
 - `lib/src/pool.dart`: worker isolates for one operation.
@@ -154,7 +162,8 @@ Read it together with `docs/performance.md`.
   paths, overwrite policies with a question to the caller), extract to a
   temporary file, read bytes, test, add, delete, rename, create folder,
   set comment (zip, rar5) and create, with progress, cancellation and
-  password questions. `zx_worker.dart` is its worker side: it runs the
+  password questions; nested archives (`openNested`, `open(flatten:
+  true)`, section 13). `zx_worker.dart` is its worker side: it runs the
   handlers through the CLI's `InArchive` adapters with its own extract
   and update callbacks (part files, per item errors, links after every
   file, the update plan of kept, renamed and new items given to
@@ -444,11 +453,13 @@ license allows that, and the notice of each one goes into LICENSE:
 | `7zip-public-domain-c` (only the C files of 7-Zip whose header says public domain) | public domain | PPMd var.I (Ppmd8, zip method 98), HuffEnc, BwtSort |
 | `zlib-1.3.1` (including `contrib/infback9` for Deflate64) | zlib | Deflate, Deflate64, gzip |
 | `bzip2-1.0.8` | bzip2 (BSD style) | BZip2 |
-| `libarchive` | BSD 2-clause (check each file header) | tar, zip, RAR 2.9 to 4 and RAR5 reading, LHA |
+| `libarchive` | BSD 2-clause (check each file header) | tar, zip, RAR 2.9 to 4 and RAR5 reading, LHA, cpio reading |
+| pakler 0.2.0 (github.com/vmallet/pakler, the installed Python package) | MIT | the Reolink PAK layout, section count rule and checksum |
+| zpaq-flutter (the author's own port; libzpaq and zpaq 7.15 by Matt Mahoney, public domain; zpaqfranz by Franco Corbelli, MIT; divsufsort by Yuta Mori, MIT; scrypt after Colin Percival, BSD 2-clause) | BSD 3-clause here (same author), notices in LICENSE | zpaq (section 14) |
 | `rardecode` (github.com/nwaples/rardecode) | BSD 2-clause | RAR 2.0 decoder (unpack 20 and 26, audio blocks), RAR 3.x AES key derivation and encrypted headers, the CRC range of old comment blocks, RAR5 compression version 1 (RAR 7) |
 | `lhasa` | ISC | LHA decoders |
 | bitplane/rar-research (github.com/bitplane/rar-research), the prose, tables and cipher definitions of its `doc/` files only | format facts, no code taken | the RAR 1.5 method and the RAR 1.5 and 2.0 ciphers, written here as new code and checked black box (RAR 1.55, WinRAR 2.90, unrar) |
-| Public format documents: PKWARE APPNOTE, RFC 1951/1952, POSIX ustar/pax, WinZip AES (AE-1/AE-2), RAR5 technote, ARJ technote | documents | everything written from a specification |
+| Public format documents: PKWARE APPNOTE, RFC 1951/1952, POSIX ustar/pax, WinZip AES (AE-1/AE-2), RAR5 technote, ARJ technote, Devicetree Specification (devicetree.org), the U-Boot legacy image header layout and its os/arch/type/comp codes (format facts, checked black box with mkimage), the lzop file layout, the UEFI Specification (GPT), Microsoft's FAT specification (fatgen103), the Linux kernel's Documentation/filesystems/ext4, the SquashFS format write-up of dr-emann (dr-emann.github.io/squashfs), the cramfs README and documentation (Linux fs/cramfs, Documentation/filesystems/cramfs), the JFFS2 paper (David Woodhouse, "JFFS: The Journalling Flash File System", 2001) | documents | everything written from a specification |
 
 Never read or copy the LGPL parts of 7-Zip (its CPP handlers and coders for
 zip, gzip, bzip2, tar, rar, arj, lzh, deflate), the unRAR source (its
@@ -511,6 +522,18 @@ the port of OpenArchive.cpp) opens every file in this order, for the CLI,
 So a 7z named `.txt`, a rar with no extension or a zip behind an .exe stub
 all open as themselves (`test/detect_test.dart`).
 
+Nested archives (section 13) use the same detection on the stream of the
+item. An item of a container format is always tried with all of it; any
+other item first has its start compared with the registered signatures
+(and their `IsArc` checks), at the signature offsets (the tar magic at 257,
+ISO 9660 and UDF at 32 KiB); only a match is opened, so a text file never
+reaches the formats without a signature.
+
+Disc images follow 7-Zip's one exception to this order: when the
+extension names both Iso and Udf (`x.iso`, `x.img`), Udf is tried first,
+so an ISO/UDF bridge disc opens as UDF; without such an extension the
+signature pass finds Iso first, as 7-Zip does (`test/iso_test.dart`).
+
 Compressed tars need one more step, because the outer layer (gzip, bzip2,
 xz, lzma) is a valid archive on its own. The tar level is opened when the
 archive name says so (`x.tar.gz`, `x.tgz`...), when the stored name ends in
@@ -522,3 +545,124 @@ types) still opens only the outer level, as in 7-Zip.
 When adding to an existing file whose name has no extension, 7-Zip's rule
 applies: `zx a name files` creates `name.7z`. Use `-sae` (exact name) to
 update the file in place in whatever format it was detected as.
+
+## 13. Nested archives (zx extension)
+
+Firmware and disk images hold images: the sections of a Reolink pak are
+a loader, a device tree, U-Boot, a uImage kernel and UBI images whose
+volumes are UBIFS file systems; a disk image has partitions with FAT or
+ext file systems. 7-Zip opens one level (and a second one only through
+kpidMainSubfile). zx adds, outside the 7-Zip code paths:
+
+- `ArcInfoEx.isContainer`: formats whose items are images (Pak, UImage,
+  Ubi, MBR, GPT). Every file item of a container, and the item of a
+  compressor opened from one, is tried with the full detection of
+  `ArchiveLink` (section 12). Any other file item is tried when its first
+  bytes match a registered signature.
+- `lib/src/cli/nest.dart`: `FlatArc`, an `InArchive` over one virtual
+  read-only tree. Each item that opens as an archive, without errors,
+  becomes a folder holding the tree of its inner archive; the rest stay
+  files. The nested archive reads its item through the handler's
+  `getStream` (IInArchiveGetStream, random access without a copy: pak
+  sections, UBI volumes, partitions, tar, iso, the file systems); a
+  handler without it (7z, rar) is read in one pass that keeps the start
+  of each item and copies the ones that may be archives to temporary
+  files. Rules:
+  - A nested archive with one item that is itself an archive shows that
+    archive: `rootfs/` of the pak holds the UBIFS files, not
+    `rootfs/rootfs.ubifs/`. A UBI image with several volumes keeps a
+    folder per volume. The archive that was opened keeps its items.
+  - An item that opens only as a compressor or a device tree (gzip,
+    bzip2, xz, lzma, Fdt) inside a file system stays a file: `x.gz` and
+    `x.dtb` are data there. From a container they open (the fdt section
+    of the pak shows its nodes and `fdt.dts`).
+  - Depth limit (default 4) and a cycle guard: an archive with the format
+    and the size of one of its parents is not opened again.
+  - Extraction maps the items of the tree back to their archives, grouped
+    per archive, so each handler extracts in its own order; hard link
+    targets get the folder of their archive.
+- CLI: `-snest[N]` for `l`, `t`, `x` and `e` sets `OpenOptions.nestDepth`;
+  `ArchiveLink.open` then replaces the archive of the last level with a
+  `FlatArc`, so list, extract and test run unchanged. Without it nothing
+  changes (7-Zip's one level; `-t` chains as before). `h` hashes files on
+  disk, so the switch does not apply to it.
+- Library: `ZxArchive.open(path, flatten: true, maxDepth: 4)` lists the
+  tree (`ZxItem.nestedFormat` on the folders of nested archives,
+  `ZxItem.nestChain` on every item) and extracts, tests and reads through
+  it; the operations open the same nested archives again from the layout
+  found at open (no second search). `ZxArchive.openNested(item)` opens one
+  item as an archive of its own, with `parent` and `nestPath` for a UI
+  that goes into it and back; it reads the item in place, or from a
+  temporary copy when the parent has no random access. Nested and
+  flattened handles are read only; `close()` deletes their temporary
+  files.
+- Hard links: the CLI and the library create real hard links (`ln`, or
+  `mklink /H` on Windows) and copy the file where the file system can not
+  link.
+
+## 14. zpaq (zx extension)
+
+zpaq journaling archives are read and written with the zpaq engine of
+zpaq-flutter, the author's pure Dart port of libzpaq, zpaq 7.15 and the
+zpaqfranz attribute format (its own `docs/architecture.md` describes the
+format and the port).
+
+- **Vendored, not a dependency.** `lib/src/zpaq` is a copy of
+  zpaq-flutter's `lib/src` (same layout, `lib/zpaq.dart` as `zpaq.dart`),
+  and its small tests are `test/zpaq_*_test.dart`. zpaq-flutter stays the
+  upstream: changes are made there and copied with `tool/sync_zpaq.sh
+  [../zpaq-flutter]`, which gives each file the zx license header (the
+  third party notices are in LICENSE and, for divsufsort, in the file) and
+  rewrites the package imports. Do not edit the copies. The engine's
+  isolate based API (`api.dart`, `pool.dart`, the parallel paths of
+  `add.dart` and `extract.dart`) comes along but zx does not call it.
+- **Handler** (`lib/src/format/zpaq`, adapter `lib/src/cli/arc_zpaq.dart`,
+  format "zpaq", extension `.zpaq`). Signature: the 13 byte locator tag
+  zpaq writes before each block (`37 6B 53 74 A0 31 83 D3 8C B2 28 B0
+  D3`), or a block header without it (`zPQ`, level 1 or 2, type 1;
+  `isArcZpaq`). An encrypted archive starts with 32 random bytes of salt,
+  so it has no signature: it opens by its extension (or `-tzpaq`), after a
+  password; a file named `.zpaq` that starts with the magic of another
+  common format is not asked a password. Open reads the index through the
+  stream the UI gives (`ZpaqStreamInput`, decrypting by absolute offset),
+  not a file path, so nested archives work.
+- **Items and versions.** The items are the files and folders of the last
+  version (or of version N set before Open: `-mversion=N`,
+  `OpenOptions.version`, `ZxArchive.open(version:)`), sorted by name.
+  Properties: path, size, mTime (seconds, UTC), attributes (zpaq's `u`
+  POSIX mode as 7-Zip's unix extension, or `w` Windows attributes), the
+  CRC-32 of the zpaqfranz attributes when present, `Method` (what the
+  block header says: Store, LZ77 or CM; the zpaq method number is not
+  stored), and `Version` (ZxKpid.version: the version that wrote the
+  item). Archive properties: `Versions` (ZxKpid.numVersions), `Version`
+  (the one shown), the methods of its blocks, and a warning when the last
+  update was interrupted (it is ignored, like zpaq does, and the next
+  update overwrites it). Extraction decodes each data block once while
+  items still need it (at most 192 MiB of decoded blocks cached), checks
+  every fragment against its SHA-1 and each file against its CRC-32 when
+  stored; `getStream` gives random access by fragment.
+- **Update** (`zpaq_update.dart`) is zpaq's `add` for one thread, fed by
+  the update callback: the old archive is copied byte for byte into the
+  new file (zx writes every update to a new file and renames it, as
+  7-Zip does; an encrypted one too, since the key stream only depends on
+  the offset), then one version is appended: new and changed files are cut
+  by zpaq's rolling hash, fragments already in the archive are
+  deduplicated, blocks are built and compressed with zpaq's heuristics
+  (the data blocks are byte for byte the ones zpaq 7.15 writes with one
+  thread), kept items cost nothing, renamed items reuse their fragment
+  lists (no recompression) with a deletion of the old name, and the items
+  left out are written as deletions. No change, no version. `-mx=0..5`
+  (default 1), `-mm=<method>`, `-mfragment=N`, `-mhash=xxh64|sha1|off`;
+  `-p` encrypts only a new archive (an existing one keeps its key; a
+  different password is an error); an archive opened at an older version
+  is not updated.
+- **Not parallel.** UpdateItems and Extract are synchronous and run on the
+  operation's isolate (the CLI process, or the `ZxArchive` worker), block
+  after block; the engine's worker pools need `await`, which the handler
+  interfaces do not allow (section 6). `-mmt` is accepted and ignored.
+  Updating copies the old archive once per update (the price of the
+  temporary file and rename); appending in place would need an update
+  path that writes to the archive itself.
+- Not supported (as in zpaq-flutter): streaming format archives (zpaq
+  `-method s`, opened as "not an archive"), multi-part archives
+  (`name????.zpaq`) and index files, zpaqfranz's "franzen" encryption.

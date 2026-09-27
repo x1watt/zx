@@ -13,6 +13,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'api.dart';
+import 'cli/nest.dart' show NestNodeSpec;
 import 'io/streams.dart';
 import 'zx_worker.dart';
 
@@ -164,9 +165,18 @@ class ZxItem {
   /// Target of a symbolic link (tar, zip, rar, 7z with -snl...).
   final String? symlinkTarget;
 
-  /// Target of a hard link (tar).
+  /// Target of a hard link (tar, cpio, SquashFS...).
   final String? hardlinkTarget;
   final String? comment;
+
+  /// In a flattened archive (`ZxArchive.open(flatten: true)`): the item
+  /// indices from the archive to this item, one per nested archive on the
+  /// way, then the index in its own archive. null otherwise.
+  final List<int>? nestChain;
+
+  /// In a flattened archive: the format of the nested archive this folder
+  /// shows (the item itself is an image or an archive). null otherwise.
+  final String? nestedFormat;
 
   const ZxItem({
     required this.index,
@@ -186,6 +196,8 @@ class ZxItem {
     this.symlinkTarget,
     this.hardlinkTarget,
     this.comment,
+    this.nestChain,
+    this.nestedFormat,
   });
 
   /// The last component of [path].
@@ -196,6 +208,9 @@ class ZxItem {
     final i = path.lastIndexOf('/');
     return i < 0 ? '' : path.substring(0, i);
   }
+
+  /// The folder of a nested archive in a flattened archive.
+  bool get isNested => nestedFormat != null;
 
   bool get isSymlink =>
       symlinkTarget != null ||
@@ -303,11 +318,12 @@ class ZxUpdateResult {
 /// default (7z: LZMA2 level 5 solid, zip: Deflate level 5, rar: RAR5 level
 /// 3, the compressors: level 5).
 class ZxOptions {
-  /// 0 (store) to 9, -mx.
+  /// 0 (store) to 9, -mx (zpaq: 0 to 5, higher values are 5).
   final int? level;
 
   /// The method: 7z -m0 ('LZMA2', 'LZMA', 'PPMd', 'Copy', 'LZMA2:d=64m'...),
-  /// zip -mm ('Deflate', 'Deflate64', 'BZip2', 'LZMA', 'PPMd', 'Copy').
+  /// zip -mm ('Deflate', 'Deflate64', 'BZip2', 'LZMA', 'PPMd', 'Copy'),
+  /// zpaq -mm (a zpaq method: '0' to '5', '14', 'x4.3ci1'...).
   /// Ignored by the other formats (use [switches]).
   final String? method;
 
@@ -345,6 +361,31 @@ class ZxOptions {
   });
 }
 
+/// One version (update) of a journaling archive (zpaq): every update adds
+/// one, and the archive can be opened as of any of them
+/// ([ZxArchive.open] with `version`).
+class ZxVersion {
+  /// 1 for the first version.
+  final int number;
+
+  /// When the update was made (UTC).
+  final DateTime time;
+
+  /// Files and folders added or changed by the update.
+  final int added;
+
+  /// Files and folders it recorded as deleted.
+  final int deleted;
+
+  /// Compressed size of the data the update added.
+  final int packSize;
+  const ZxVersion(
+      this.number, this.time, this.added, this.deleted, this.packSize);
+
+  @override
+  String toString() => 'ZxVersion($number, $time, +$added -$deleted)';
+}
+
 /// The contents and properties of an archive, as read by [ZxArchive.open].
 class ZxListing {
   /// The format of the archive (7-Zip's names: '7z', 'zip', 'Rar',
@@ -379,6 +420,14 @@ class ZxListing {
   /// get the listing from the handle instead of decoding it again.
   final bool sequential;
 
+  /// The versions of a journaling archive (zpaq) up to the one shown;
+  /// empty for the other formats.
+  final List<ZxVersion> versions;
+
+  /// The number of versions in a journaling archive (zpaq), whatever
+  /// version is shown; 0 for the other formats.
+  final int numVersions;
+
   const ZxListing({
     required this.format,
     required this.outerFormats,
@@ -394,6 +443,8 @@ class ZxListing {
     required this.items,
     required this.password,
     this.sequential = false,
+    this.versions = const [],
+    this.numVersions = 0,
   });
 }
 
@@ -406,34 +457,167 @@ class ZxListing {
 /// the old one when it is complete, and read the listing again, so the
 /// handle always shows the archive on disk.
 class ZxArchive {
+  /// The archive file (for a nested archive: the file of the outermost
+  /// archive, see [nestPath]).
   final String path;
 
   /// Asked for passwords (see [ZxPasswordRequest]); may be set at any time.
   ZxPasswordCallback? onPassword;
 
+  /// The archive this nested archive was opened from ([openNested]), null
+  /// for an archive file.
+  final ZxArchive? parent;
+
+  /// The paths of the items from the outermost archive to this nested
+  /// archive (`['rootfs']` for the UBI image of a firmware section), empty
+  /// for an archive file.
+  final List<String> nestPath;
+
+  /// The archive is shown as one tree with its nested archives (see
+  /// [open]).
+  final bool flattened;
+  final int _maxDepth;
+
+  // the version a journaling archive was opened at (null: the last one)
+  final int? _version;
+
+  // where the operations open it: _base, then the items of _chain
+  String _base;
+  List<int> _chain;
+  List<NestNodeSpec>? _layout;
+  List<String> _temps;
+
   ZxListing _listing;
   Map<String, ZxItem>? _byPath;
   Map<String, List<ZxItem>>? _children;
 
-  ZxArchive._(this.path, this._listing, this.onPassword);
+  ZxArchive._(this.path, this._listing, this.onPassword,
+      {this.parent,
+      this.nestPath = const [],
+      this.flattened = false,
+      int maxDepth = 4,
+      String? base,
+      List<int> chain = const [],
+      List<NestNodeSpec>? layout,
+      List<String> temps = const [],
+      int? version})
+      : _maxDepth = maxDepth,
+        _version = version,
+        _base = base ?? path,
+        _chain = chain,
+        _layout = layout,
+        _temps = temps;
 
   /// Opens [path]: the format comes from the signature and the extension
   /// as the command line tool finds it (x.tar.gz and the other compressed
   /// tars are one archive, x.7z.001 and the RAR volumes open the set).
+  ///
+  /// With [flatten] the archive is shown as one read-only tree: each item
+  /// that is itself an archive or an image (the items of the container
+  /// formats pak, uImage, UBI, MBR and GPT, and any item whose first bytes
+  /// match the signature of a known format) becomes a folder holding the
+  /// tree of its inner archive (see [ZxItem.isNested]), down to
+  /// [maxDepth] levels. A nested archive holding one item that is an
+  /// archive too shows that archive directly: the UBI image of a firmware
+  /// section with one UBIFS volume shows the files of the volume. Items
+  /// that open only as a compressor or a device tree inside a file system
+  /// (`x.gz`, `x.dtb`) stay files. Extract, test, readBytes and
+  /// extractToTemp work on the tree; it can not be changed. Call [close]
+  /// when done: nested archives read from temporary files keep them until
+  /// then.
+  ///
   /// Throws [SevenZipException]: [SevenZipError.isNotArc] when no format
   /// matches, [SevenZipError.wrongPassword] for encrypted names with a
   /// wrong password, [SevenZipError.cancelled] when [onPassword] gave no
   /// password, [SevenZipError.io] when the file can not be read.
+  ///
+  /// [version] opens a journaling archive (zpaq) as it was after that
+  /// version (1 for the first update): the listing, extract, test and
+  /// readBytes see the files of that version, and the handle is read only.
+  /// Without it the last version is shown. [versions] lists them. Other
+  /// formats ignore it.
   static Future<ZxArchive> open(String path,
       {String? password,
       ZxPasswordCallback? onPassword,
-      ZxCancelToken? cancel}) async {
+      ZxCancelToken? cancel,
+      bool flatten = false,
+      int maxDepth = 4,
+      int? version}) async {
+    if (version != null && version < 1) {
+      throw ArgumentError.value(version, 'version', 'must be 1 or more');
+    }
     final full = File(path).absolute.path;
-    final req = ZxOpenRequest(full, password, onPassword != null);
-    final l = await _zxRun<ZxListing>((ops) => workerOpen(req, ops),
+    final req = ZxOpenRequest(full, password, onPassword != null,
+        nest: flatten ? ZxNest(maxDepth) : null, version: version);
+    final r = await _zxRun<ZxOpenResult>((ops) => workerOpen(req, ops),
         cancel: cancel, onPassword: onPassword);
-    return ZxArchive._(full, l, onPassword);
+    return ZxArchive._(full, r.listing, onPassword,
+        flattened: flatten,
+        maxDepth: maxDepth,
+        base: r.base,
+        chain: r.chain,
+        layout: r.layout,
+        temps: r.temps,
+        version: version);
   }
+
+  // the version for the requests: only while the operations start from
+  // the archive file itself (not from a temporary copy of a nested one)
+  int? get _baseVersion => _base == path ? _version : null;
+
+  /// Opens the file [item] (a [ZxItem], a path or an index) as an archive
+  /// of its own, for a UI that goes into it and back ([parent],
+  /// [nestPath]). The item is read in place when its format gives random
+  /// access to its data (tar, zip, iso, pak, UBI, the file systems...),
+  /// otherwise it is copied to a temporary file that [close] deletes.
+  /// [flatten] and [maxDepth] as for [open]. The nested archive can not be
+  /// changed. Throws [SevenZipException] ([SevenZipError.isNotArc] when
+  /// the item is not an archive).
+  Future<ZxArchive> openNested(Object item,
+      {bool flatten = false,
+      int maxDepth = 4,
+      ZxCancelToken? cancel}) async {
+    final it = _resolveFile(item, nested: true);
+    final chain = [..._chain, ...(it.nestChain ?? [it.index])];
+    final req = ZxOpenRequest(_base, password, onPassword != null,
+        chain: chain,
+        nest: flatten ? ZxNest(maxDepth) : null,
+        readOnly: true,
+        version: _baseVersion);
+    final r = await _zxRun<ZxOpenResult>((ops) => workerOpen(req, ops),
+        cancel: cancel, onPassword: onPassword);
+    return ZxArchive._(path, r.listing, onPassword,
+        parent: this,
+        nestPath: [...nestPath, it.path],
+        flattened: flatten,
+        maxDepth: maxDepth,
+        base: r.base,
+        chain: r.chain,
+        layout: r.layout,
+        temps: r.temps,
+        version: _version);
+  }
+
+  /// Deletes the temporary files of this handle (nested archives read
+  /// from copies, see [openNested] and [open] with flatten). The handle
+  /// must not be used after it. A nested archive has its own handle to
+  /// close.
+  Future<void> close() async {
+    final t = _temps;
+    _temps = const [];
+    for (final d in t) {
+      try {
+        await Directory(d).delete(recursive: true);
+      } on FileSystemException {
+        // already gone
+      }
+    }
+  }
+
+  /// True for an archive opened with [openNested].
+  bool get isNested => parent != null;
+
+  ZxNest? get _nest => flattened ? ZxNest(_maxDepth, _layout) : null;
 
   /// Creates a new archive at [path] from [sources]. The format comes from
   /// [format] (7-Zip's name: '7z', 'zip', 'tar', 'gzip', 'bzip2', 'xz',
@@ -483,6 +667,19 @@ class ZxArchive {
   List<String> get errors => _listing.errors;
   List<String> get warnings => _listing.warnings;
   List<String> get volumes => _listing.volumes;
+
+  /// The versions of a journaling archive (zpaq) up to the one shown
+  /// (see [open] with `version`); empty for the other formats.
+  List<ZxVersion> get versions => _listing.versions;
+
+  /// The version shown ([open] with `version`, else the last one); null
+  /// for the formats without versions.
+  int? get version =>
+      _listing.numVersions == 0 ? null : _listing.versions.length;
+
+  /// The number of versions of a journaling archive, whatever version is
+  /// shown; 0 for the other formats.
+  int get numVersions => _listing.numVersions;
   ZxCapabilities get capabilities => _listing.capabilities;
 
   /// Every item, then the implied folders (see [ZxItem.isImplied]).
@@ -513,11 +710,36 @@ class ZxArchive {
     _children = null;
   }
 
-  /// Reads the archive again.
+  /// Reads the archive again (a flattened one looks for its nested
+  /// archives again).
   Future<void> reload({ZxCancelToken? cancel}) async {
-    final req = ZxOpenRequest(path, password, onPassword != null);
-    _set(await _zxRun<ZxListing>((ops) => workerOpen(req, ops),
-        cancel: cancel, onPassword: onPassword));
+    final req = ZxOpenRequest(_base, password, onPassword != null,
+        chain: _chain,
+        nest: flattened ? ZxNest(_maxDepth) : null,
+        readOnly: isNested || _temps.isNotEmpty,
+        version: _baseVersion);
+    final r = await _zxRun<ZxOpenResult>((ops) => workerOpen(req, ops),
+        cancel: cancel, onPassword: onPassword);
+    final old = _temps;
+    _base = r.base;
+    _chain = r.chain;
+    _layout = r.layout;
+    // the temporary files of the old tree are no longer used
+    _temps = [
+      for (final d in old)
+        if (d == r.base || r.base.startsWith(d)) d,
+      ...r.temps
+    ];
+    for (final d in old) {
+      if (!_temps.contains(d)) {
+        try {
+          await Directory(d).delete(recursive: true);
+        } on FileSystemException {
+          // already gone
+        }
+      }
+    }
+    _set(r.listing);
   }
 
   // ---- reading ----
@@ -714,11 +936,13 @@ class ZxArchive {
           capabilities: l.capabilities,
           items: l.items,
           password: pw,
-          sequential: l.sequential));
+          sequential: l.sequential,
+          versions: l.versions,
+          numVersions: l.numVersions));
     }
   }
 
-  ZxItem _resolveFile(Object item) {
+  ZxItem _resolveFile(Object item, {bool nested = false}) {
     ZxItem? it;
     if (item is ZxItem) {
       it = item;
@@ -732,7 +956,7 @@ class ZxArchive {
         }
       }
     }
-    if (it == null || it.isDir || it.index < 0) {
+    if (it == null || (it.isDir && !(nested && it.isNested)) || it.index < 0) {
       throw SevenZipException(
           '$item: no such file in the archive', SevenZipError.unsupported);
     }
@@ -770,7 +994,9 @@ class ZxArchive {
       }
     }
     return ZxExtractRequest(
-        archivePath: path,
+        archivePath: _base,
+        chain: _chain,
+        nest: _nest,
         password: password,
         canAsk: onPassword != null,
         // copying the listing to the worker costs time on this isolate:
@@ -786,7 +1012,8 @@ class ZxArchive {
         restoreTimes: restoreTimes,
         restoreModes: restoreModes,
         restoreSymlinks: restoreSymlinks,
-        maxBytes: maxBytes);
+        maxBytes: maxBytes,
+        version: _baseVersion);
   }
 
   Future<ZxExtractResult> _extractRun(

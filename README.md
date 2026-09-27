@@ -19,9 +19,14 @@ No native code, no FFI, no plugins, no run-time dependencies: it works
 wherever `dart:io` does (Android, iOS, Linux, macOS, Windows). All heavy
 work happens in background isolates, so the UI isolate never blocks.
 
-Status: version 0.3.0, not published to pub.dev (`publish_to: none`).
-Version 0.3.0 adds **zx**, a desktop archive manager (Flutter, in `app/`),
-see Desktop app below.
+Status: version 0.4.0, not published to pub.dev (`publish_to: none`).
+Version 0.3.0 added **zx**, a desktop archive manager (Flutter, in `app/`),
+see Desktop app below. Version 0.4.0 reads firmware and disk images (pak,
+uImage, device trees, cpio, ISO, UDF, SquashFS, cramfs, JFFS2, UBI, UBIFS,
+MBR, GPT, FAT, ext) and opens the archives nested in them (see Nested
+archives below), and reads and writes zpaq journaling archives, every
+version of them (engine vendored from the author's zpaq-flutter port of
+libzpaq and zpaq 7.15).
 
 ## Credits
 
@@ -41,6 +46,9 @@ function, and it would not exist without it.
 | **lhasa**: the LHA decoders (`lib/src/codec/lzh`) | **Simon Howard**: <https://github.com/fragglet/lhasa>. ISC license. |
 | **PPMd var.I**, zip method 98 (`lib/src/codec/ppmd8`) | **Dmitry Shkarin** (2001), as ported to C by Igor Pavlov. Public domain. |
 | **BLAKE2sp**, the RAR5 file hash | **Samuel Neves**, the BLAKE2 reference code. CC0 1.0. |
+| **zpaq**: the ZPAQ journaling format, libzpaq, the ZPAQL machine (`lib/src/zpaq`, vendored from the author's zpaq-flutter port) | **Matt Mahoney**: <http://mattmahoney.net/dc/zpaq.html>. Public domain. zpaq 7.15 is the specification. |
+| **zpaqfranz**: the per file attribute extension (hashes and CRC-32) and its tables | **Franco Corbelli**: <https://github.com/fcorbelli/zpaqfranz>. MIT. |
+| **divsufsort** (in libzpaq), **scrypt** (the zpaq `-key` derivation) | **Yuta Mori** (MIT) and **Colin Percival** (BSD 2-clause). |
 
 The 7z, xz and lzma code comes only from the public domain LZMA SDK; the
 other formats come from the permissive sources above or were written from
@@ -110,6 +118,20 @@ dictionary; 7-Zip 23.01 used 16 MB).
 | LZH (`.lzh`, `.lha`) | every method lhasa decodes (lh0 to lh7, lzs, lz4, lz5, pm0 to pm2) | lh5 (default), lh6, lh7, lh0 (`-mm=`) | lhasa, jlha |
 | ARJ | methods 0 to 4, garbled files (`-p`), multi-volume archives (`x.arj`, `x.a01`...), UNIX links | methods 0 to 4 (`-mm=`, default 1), garbled files (`-p`), symbolic links (`-snl`) | arj 3.10 |
 | RAR (`.rar`) | RAR 1.5, 2.0 (with audio blocks), 2.9, 3.x, RAR5 and RAR 7 (compression version 1), volumes, the RAR 1.5, RAR 2.0, RAR 3.x and RAR5 encryption (data and headers) | RAR5: volumes (`-v`, `name.part1.rar`...), recovery record (`-mrr=<n>`), encryption (`-p`, `-mhe`) | unrar, rar 7.00; rar 3.93, RAR 2.90 and RAR 1.55 (DOSBox) for the fixtures |
+| cpio | newc, crc, odc, afio large ASCII, old binary (both byte orders), hard and symbolic links | no (extract only) | cpio |
+| ISO 9660 (`.iso`) | Joliet, Rock Ridge, El Torito boot images, zisofs, raw 2352 byte sector images | no (extract only) | xorriso, genisoimage, 7z |
+| UDF (`.iso`, `.udf`) | UDF volumes, ISO/UDF bridge discs | no (extract only) | mkudffs, 7z |
+| SquashFS | version 4.0, gzip, lzma, xz, lzo, lz4 and zstd | no (extract only) | mksquashfs, unsquashfs |
+| cramfs | both byte orders, holes, the extended block pointers | no (extract only) | mkfs.cramfs |
+| JFFS2 | both byte orders; none, zero, rtime, zlib, lzo and lzma nodes | no (extract only) | mkfs.jffs2 |
+| UBI, UBIFS | UBI volumes; UBIFS with lzo, zlib and zstd | no (extract only) | ubinize, mkfs.ubifs |
+| MBR, GPT (disk images) | partitions as items, named after their file system (`0.fat`, `1.ext`) | no (extract only) | sfdisk, sgdisk, 7z |
+| FAT | FAT12, FAT16, FAT32, long names | no (extract only) | mkfs.vfat, mtools |
+| ext2, ext3, ext4 | block maps and extents, inline data, links, devices (the journal is not replayed) | no (extract only) | mke2fs, debugfs |
+| Reolink pak (firmware) | the sections (loader, device tree, U-Boot, kernel, rootfs, app...) | no (extract only) | pakler |
+| uImage (U-Boot legacy image) | the payload, decompressed (gzip, bzip2, lzma, lzo, lz4, zstd) | no (extract only) | mkimage |
+| Device tree (`.dtb`) | the nodes and properties as files, plus the source (`.dts`) | no (extract only) | dtc |
+| zpaq (`.zpaq`, journaling) | every version (`-mversion=N`, default the last), all methods, encryption (`-p`, zpaq `-key`), the zpaqfranz hashes and CRC-32 | appends a version per update: deduplicated fragments, deletions recorded, renames without recompression; methods 0 to 5 (`-mx`, default 1) or a zpaq method string (`-mm=`), encryption when created (`-p`) | zpaq 7.15, zpaqfranz |
 
 The RAR 1.5 method and the RAR 1.5 and 2.0 ciphers are independent
 implementations, written from format descriptions and black box tests
@@ -117,7 +139,7 @@ with the old RAR programs and unrar, not from the code of any other
 decoder.
 
 Not supported: RAR recovery volumes (`.rev`), the ARJCRYPT ciphers of ARJ (`arj -hg`), ARJ
-volume creation, cab, iso, wim and the other
+volume creation, cab, wim and the other
 formats of the full 7-Zip, and the Deflate, Deflate64, BZip2 and ZSTD
 methods inside 7z (such archives list, and those items report
 `unsupportedMethod`). Also absent: SFX modules, NTFS alternate streams and
@@ -256,6 +278,8 @@ zx a src.tar.gz src/            # a tar written straight into gzip
 zx x release.tar.xz -oout
 zx a old.lzh docs/ -mm=lh7
 zx t backup.arj
+zx a backup.zpaq docs/          # a new version of a zpaq backup
+zx l backup.zpaq -mversion=2    # as it was after version 2
 ```
 
 The format comes from the extension (`-t` chooses it: `-tzip`, `-ttar`,
@@ -277,6 +301,73 @@ compressor (`-mx`, `-mmt`...), except `-mm=gnu|pax|posix`, `-mtm`, `-mtc`,
 tar this way, and so does the type chain `-ttar.gzip` (7-Zip's order:
 tar inside gzip). `-tgzip`, `-tbzip2`, `-txz` and `-tlzma` keep 7-Zip's
 view of one compressed file.
+
+**zpaq archives** are journals: every `a`, `u`, `d` or `rn` appends a new
+version and never rewrites the old ones (the new file is the old one plus
+the version). Files are cut into fragments and a fragment already stored
+in any version is not stored again; unchanged files cost nothing, a
+deleted file is recorded as a deletion, a renamed one reuses its
+fragments. `l`, `x`, `e` and `t` show the last version, or the version N
+with `-mversion=N` (`l -slt` prints `Versions` and each item's
+`Version`); an archive opened at an older version is not updated.
+Methods: `-mx=0` to `-mx=5` (zpaq's levels, default 1; higher values are
+5) or `-mm=<zpaq method>` (`14`, `x4.3ci1`...), `-mfragment=N` (zpaq
+`-fragment`), `-mhash=xxh64|sha1|off` (the zpaqfranz file hash, default
+XXHASH64). `-p` encrypts a new archive as zpaq `-key` does (AES-256 in CTR
+mode, scrypt); an encrypted archive has no signature and is recognized by
+its `.zpaq` extension (or `-tzpaq`). The update runs on one thread
+(`-mmt` is accepted and ignored). Archives stay readable and writable by
+zpaq 7.15 and zpaqfranz, in both directions.
+
+### Nested archives
+
+Firmware and disk images hold images inside images: a Reolink pak holds a
+uImage kernel and UBI images whose volumes are UBIFS file systems, a disk
+image holds FAT and ext partitions. By default `zx` behaves as 7-Zip and
+opens one level: `zx l firmware.pak` lists the sections. The zx switch
+`-snest[N]` (not in 7-Zip) shows the whole thing as one tree for `l`, `t`,
+`x` and `e`: every item that is itself an archive or an image becomes a
+folder holding its contents, down to N levels (default 4):
+
+```sh
+zx l -snest firmware.pak        # loader, fdt/..., kernel/..., rootfs/bin/...
+zx x -snest firmware.pak -oout  # out/rootfs/ holds the root file system
+zx t -snest disk.img
+```
+
+The items of the container formats (pak, uImage, UBI, MBR, GPT) are
+always tried; any other item is tried when its first bytes match the
+signature of a known format (so an ISO inside a tar opens, a text file
+never does). A folder whose archive holds a single archive shows that one
+directly (`rootfs/` holds the UBIFS files of the only UBI volume); a
+compressed file or a device tree inside a file system (`x.gz`, `x.dtb`)
+stays a file. `-t` chains work as before. Symbolic links of firmware file
+systems often point up (`../bin/busybox`) or are absolute, which 7-Zip
+refuses by default: add `-snld20` to create them.
+
+The library does the same: `ZxArchive.open(path, flatten: true)` lists,
+extracts, tests and reads the tree (`ZxItem.nestedFormat` marks the
+folders of nested archives), and `archive.openNested(item)` opens one
+item as an archive of its own, with `parent` and `nestPath` to go back.
+Both are read only; `close()` deletes the temporary copies made for
+formats without random access to their items (7z, rar).
+
+Hard links (tar, cpio, SquashFS, UBIFS, ext...) are extracted as hard
+links, or as copies where the file system has none.
+
+`ZxArchive` handles zpaq like the other formats (`ZxArchive.create(
+'backup.zpaq', sources)`, `add`, `delete`, `rename`, `extract`, `test`,
+`readBytes`; `ZxOptions.method` is the zpaq method, `password` encrypts a
+new archive). `archive.versions` lists the versions (`ZxVersion`: number,
+time, added, deleted, packed size) and `ZxArchive.open(path, version: 2)`
+opens the archive as it was after version 2, read only:
+
+```dart
+final a = await ZxArchive.open('backup.zpaq');
+print('${a.numVersions} versions');
+final old = await ZxArchive.open('backup.zpaq', version: 1);
+await old.extract('/restore-v1');
+```
 
 ### Installing
 
@@ -321,7 +412,8 @@ background isolates: the window never freezes).
 - Add files and folders (dialog or drag and drop, into the current folder
   of the archive) with level, method, password, encrypted names and solid;
   delete, rename, new folder, archive comment (zip, RAR5); new archives in
-  7z, zip, tar.gz, tar.bz2, tar.xz, rar (RAR5), tar, lzh, arj, gz, bz2, xz.
+  7z, zip, tar.gz, tar.bz2, tar.xz, rar (RAR5), tar, lzh, arj, zpaq, gz,
+  bz2, xz.
 - Passwords are asked when needed (show / hide, wrong password retry);
   long operations show percent, current file, speed and Cancel. Actions a
   format does not allow are disabled with a tooltip saying why.
@@ -422,7 +514,8 @@ dart test
 ```
 
 Tests that compare with `/usr/bin/7z` or `xz` are skipped when those are
-not installed. The desktop app has widget tests and end to end tests that
+not installed. The zpaq interop tests (`test/zpaq_test.dart`) look for
+`zpaq` and `zpaqfranz` on the PATH or in `ZPAQ_BIN` and `ZPAQFRANZ_BIN`. The desktop app has widget tests and end to end tests that
 drive the real Linux app against real archives:
 
 ```sh
@@ -440,7 +533,9 @@ flutter test integration_test -d linux
 - `lib/src/crypto`: AES, SHA-256, 7zAES, SHA-1, ZipCrypto, WinZip AES,
   the RAR 3.x and RAR5 key derivations and BLAKE2sp.
 - `lib/src/format`: the 7z, xz, lzma and split handlers; gzip, bzip2, tar,
-  zip, LHA, ARJ and RAR.
+  zip, LHA, ARJ, RAR and zpaq.
+- `lib/src/zpaq`: the zpaq engine, vendored from zpaq-flutter (the
+  upstream); `tool/sync_zpaq.sh` copies it again.
 - `lib/src/cli`, `bin/zx.dart`: the command line (`zx`).
 - `lib/src/api.dart`: the isolate based public API; `lib/src/pool.dart`
   and `lib/src/parallel.dart`: worker isolates and the parallel xz encoder.

@@ -149,6 +149,7 @@ bool isTextName(String name) {
         'lzh' ||
         'lha' ||
         'arj' ||
+        'zpaq' ||
         'jar' ||
         'apk' ||
         'deb' ||

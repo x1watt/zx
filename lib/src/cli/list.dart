@@ -307,7 +307,8 @@ bool _isPropIdForPathString(int propId) =>
 // GetPropName
 String _getPropName(int propId) {
   if (propId < kPropIdToName.length) return kPropIdToName[propId];
-  return '$propId';
+  // not in 7-Zip: the names of the zx properties
+  return kZxPropNames[propId] ?? '$propId';
 }
 
 /// CFieldPrinter.
@@ -643,6 +644,9 @@ class ListOptions {
   bool excludeDirItems = false;
   bool excludeFileItems = false;
   bool disablePercents = false;
+
+  /// -snest (zx extension): the depth of the nested archives, 0 when off.
+  int nestDepth = 0;
 }
 
 /// ListArchives: returns (hresult, numErrors, numWarnings).
@@ -731,7 +735,8 @@ class ListOptions {
       ..excludedFormats = excludedFormats
       ..stdInMode = stdInMode
       ..stream = null
-      ..filePath = arcPath;
+      ..filePath = arcPath
+      ..nestDepth = stdInMode ? 0 : listOptions.nestDepth;
 
     if (enableHeaders) {
       gStdOut.endl();

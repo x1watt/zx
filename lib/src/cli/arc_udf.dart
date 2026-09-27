@@ -1,0 +1,48 @@
+// The UDF handler seen through the CLI's IInArchive shape (see
+// arc_handlers.dart). Read only.
+
+import '../format/archive_types.dart';
+import '../format/udf/udf_handler.dart';
+import '../io/streams.dart';
+import 'arc_handlers.dart';
+import 'common.dart';
+
+/// The Udf handler.
+class UdfArc extends InArchive {
+  final UdfHandler h = UdfHandler();
+
+  @override
+  int open(SeekableInStream stream, int maxCheckStartPosition,
+      ArchiveOpenCallback? callback) {
+    callback?.setTotal(null, stream.length);
+    return h.open(stream) ? HRes.sOk : HRes.sFalse;
+  }
+
+  @override
+  void close() => h.close();
+
+  @override
+  int get numberOfItems => h.numberOfItems;
+
+  @override
+  Object? getProperty(int index, int propId) => h.getProperty(index, propId);
+
+  @override
+  Object? getArchiveProperty(int propId) => h.getArchiveProperty(propId);
+
+  @override
+  List<int> get itemPropIds => UdfHandler.itemPropIds;
+
+  @override
+  List<int> get archivePropIds => UdfHandler.archivePropIds;
+
+  @override
+  int get timePrec => 16 + 6; // k_PropVar_TimePrec_1us
+
+  @override
+  void extract(List<int>? indices, bool testMode, ArchiveExtractCallback cb) =>
+      h.extract(indices, testMode, cb);
+
+  @override
+  SeekableInStream? getStream(int index) => h.getStream(index);
+}

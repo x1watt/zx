@@ -38,6 +38,9 @@ class ExtractOptions {
   bool yesToAll = false;
   bool testMode = false;
   List<MapEntry<String, String>> properties = [];
+
+  /// -snest (zx extension): the depth of the nested archives, 0 when off.
+  int nestDepth = 0;
 }
 
 /// CDecompressStat.
@@ -297,7 +300,8 @@ void extract(
       ..excludedFormats = excludedFormats
       ..stdInMode = options.stdInMode
       ..stream = null
-      ..filePath = arcPath;
+      ..filePath = arcPath
+      ..nestDepth = options.stdInMode ? 0 : options.nestDepth;
 
     int result;
     try {

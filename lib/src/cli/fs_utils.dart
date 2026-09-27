@@ -743,3 +743,36 @@ bool setFileTimes(String path, int? mTime, int? aTime) {
     return false;
   }
 }
+
+/// Makes [path] a hard link to the existing file [target]: `ln` on POSIX
+/// systems, `mklink /H` on Windows (the system tools, as for the modes and
+/// times above). When the file system can not link (FAT, another volume),
+/// [path] becomes a copy of [target]. An existing file at [path] is
+/// replaced. Returns false when neither worked.
+bool createHardLinkOrCopy(String target, String path) {
+  final t = resolvePath(target);
+  final p = resolvePath(path);
+  try {
+    if (FileSystemEntity.typeSync(p, followLinks: false) ==
+        FileSystemEntityType.file) {
+      File(p).deleteSync();
+    }
+  } on FileSystemException {
+    // the tools report it
+  }
+  try {
+    final r = kIsWin
+        ? Process.runSync('cmd', ['/c', 'mklink', '/H', p, t])
+        : Process.runSync('ln', ['-f', '--', t, p],
+            environment: {'LC_ALL': 'C'});
+    if (r.exitCode == 0) return true;
+  } on ProcessException {
+    // no tool: copy
+  }
+  try {
+    File(t).copySync(p);
+    return true;
+  } on FileSystemException {
+    return false;
+  }
+}

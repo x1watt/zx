@@ -111,6 +111,14 @@ the single thread output. On the small inputs of the tests it is.
   would make previews of large archives faster.
 - `ZxArchive` restores folder times with one `touch` process per folder;
   archives with many thousands of folders spend time there.
+- Nested archives (`-snest`, `ZxArchive.open(flatten: true)`): the search
+  reads 512 bytes of each file item (and 16 at 32 KiB when the item is
+  that long) to compare signatures, so a large file system costs one
+  small read per file (the D340W firmware: about 0.5 s for 1500 files).
+  Each `ZxArchive` operation opens the nested archives again from the
+  layout found at open (no second search); a flattened compressed tar is
+  decoded to a temporary file per operation, and items of formats without
+  random access (7z, rar) are copied once at open.
 
 - 7z compression on several isolates (LZMA2 blocks inside a folder,
   independent folders), see section 6 of `docs/architecture.md`.

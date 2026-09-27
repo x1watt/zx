@@ -81,6 +81,7 @@ class SystemFilePicker implements FilePicker {
             'lzh',
             'lha',
             'arj',
+            'zpaq',
             '001',
           ],
         ),

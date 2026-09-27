@@ -11,6 +11,7 @@ import 'extract.dart';
 import 'extracting_file_path.dart';
 import 'fs_utils.dart' show resolvePath;
 import 'hash_calc.dart';
+import 'nest.dart' show kDefaultNestDepth;
 import 'open_archive.dart' show parseComplexSize;
 import 'prop_id_utils.dart';
 import 'update.dart';
@@ -77,6 +78,10 @@ class ArcCmdLineOptions {
   bool showDialog = false;
   bool techMode = false;
   bool showTime = false;
+
+  /// -snest[N] (zx extension): the depth of the nested archives shown in
+  /// one tree by l, t, x and e; 0 when off.
+  int nestDepth = 0;
   final BoolPair2 listPathSeparatorSlash = BoolPair2(true);
 
   BoolPair2 ntSecurity = BoolPair2();
@@ -184,6 +189,7 @@ abstract final class _K {
   static const deleteAfterCompressing = 62;
   static const setArcMTime = 63;
   static const password = 64;
+  static const nest = 65;
 }
 
 const String _kRecursedPostCharSet = '0-';
@@ -274,6 +280,8 @@ final List<SwitchForm> _kSwitchForms = [
   _simple('sdel'),
   _simple('stl'),
   _string('p'),
+  // zx extension: flatten nested archives (nest.dart)
+  _stringSingl('snest', 0),
 ];
 
 const String _kUniversalWildcard = '*';
@@ -794,6 +802,16 @@ class ArcCmdLineParser {
       gTimestampShowUtc = !parser[_K.listTimestampUTC].withMinus;
     }
     options.techMode = parser[_K.techMode].thereIs;
+    if (parser[_K.nest].thereIs) {
+      final s = parser[_K.nest].postStrings.isEmpty
+          ? ''
+          : parser[_K.nest].postStrings.first;
+      final n = s.isEmpty ? kDefaultNestDepth : _stringToUInt32(s);
+      if (n == null || n < 1 || n > 32) {
+        throw MessagePathException('Unsupported switch postfix -snest', s);
+      }
+      options.nestDepth = n;
+    }
     options.showTime = parser[_K.showTime].thereIs;
 
     if (parser[_K.disablePercents].thereIs) options.disablePercents = true;
@@ -1050,6 +1068,7 @@ class ArcCmdLineParser {
 
     if (isExtractOrList) {
       final eo = options.extractOptions;
+      eo.nestDepth = options.nestDepth;
       eo.excludeDirItems = options.censor.excludeDirItems;
       eo.excludeFileItems = options.censor.excludeFileItems;
       {

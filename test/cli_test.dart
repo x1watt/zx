@@ -68,7 +68,7 @@ void main() {
   test('help and banner', () async {
     final r = await _run(tmp, []);
     expect(r.code, 0);
-    expect(r.out, contains('zx 0.3.0'));
+    expect(r.out, contains('zx 0.4.0'));
     expect(r.out, contains('Usage: zx <command>'));
   });
 
