@@ -604,7 +604,7 @@ exec ${_shQuote(executable)} --extract-to-folder "\$@"
     final running =
         (r != null && r.exitCode == 0) || (r2 != null && r2.exitCode == 0);
     if (!running) return;
-    final daemon = await runner('pgrep', ['-f', '^/usr/bin/Thunar --daemon']);
+    final daemon = await runner('pgrep', ['-f', '^(/usr/bin/)?[Tt]hunar --daemon']);
     final wasDaemon = daemon != null && daemon.exitCode == 0;
     await runner('thunar', ['-q']);
     if (wasDaemon) {
