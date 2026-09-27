@@ -85,10 +85,11 @@ int zcmUsableBytes(ZcmMachine m) {
 }
 
 /// Encoding speed per level in KB/s (index 10: level 9 with the LSTM),
-/// measured with tool/zcm_bench.dart (AOT) on the corpus of
-/// docs/performance.md, Ryzen 7 3700X. Decoding runs at the same speed.
+/// measured with tool/zcm_bench.dart (AOT) on the two corpora of
+/// docs/performance.md (text, code, binaries, images and audio), Ryzen 7
+/// 3700X. Decoding runs at the same speed.
 const List<double> zcmNominalKBps = [
-  0, 600, 250, 120, 50, 38, 22, 14, 12, 12, 4 //
+  0, 1100, 260, 150, 85, 83, 26, 11, 9, 9, 3 //
 ];
 
 /// A chosen setting.

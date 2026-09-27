@@ -26,11 +26,13 @@
 //
 // Stream layout (all integers little endian, vint = unsigned LEB128):
 //   'z' 'c' 'm'           magic
-//   u8  version           1
+//   u8  version           2 (version 1, zx 0.5, is refused: its models
+//                         differ)
 //   u8  level             1..9
 //   u8  flags             bit 0: independent segments, bit 1: LSTM,
-//                         bit 2: block type detection, bit 3: x86 E8/E9
-//                         transform on exe blocks
+//                         bit 2: data type detection, bit 3: x86 E8/E9
+//                         transform on exe segments, bit 4: the English
+//                         dictionary transform on text segments
 //   vint memoryMiB        model memory budget (all table sizes follow it)
 //   vint segmentSize      bytes per independent segment (0 when solid)
 //   with the LSTM flag:   vint cells, u8 layers, vint horizon
@@ -39,10 +41,18 @@
 //     vint rawLen         0 ends the stream
 //     u32  crc32          of the raw bytes of the chunk
 //     vint packedLen
-//     packedLen bytes     arithmetic coded bits: for each 64 KiB block the
-//                         block type (2 bits, p = 1/2, when detection is
-//                         on), then the bits of the bytes, most significant
-//                         first, each coded with the model's probability.
+//     packedLen bytes     arithmetic coded bits (16 bit probabilities):
+//                         with detection, the chunk is a series of
+//                         segments (zcm_detect.dart), each introduced by
+//                         its type (4 bits), length (32 bits), info (32
+//                         bits, image and audio types only) and for text
+//                         with the dictionary flag one bit (1: the
+//                         segment is coded transformed, then its
+//                         transformed length in 32 bits), all with
+//                         p = 1/2; then the bits of the (transformed)
+//                         bytes, most significant first, each with the
+//                         model's probability. Without detection the
+//                         chunk is one binary segment with no header.
 // Solid streams keep one model across all chunks (chunks are framing, at
 // most 16 MiB each); with independent segments every chunk is a segment
 // with a fresh model, so segments can be coded in parallel.
@@ -58,18 +68,21 @@ import '../../io/streams.dart';
 import '../../sync_pool.dart';
 import '../../util/crc.dart';
 import '../codec.dart';
+import 'zcm_audio.dart';
 import 'zcm_coder.dart';
-import 'zcm_models.dart';
+import 'zcm_detect.dart';
+import 'zcm_dict.dart';
 import 'zcm_predictor.dart';
 
 /// Format version written by this code.
-const int zcmVersion = 1;
+const int zcmVersion = 2;
 
 /// Experimental codec id for the zx registry (section 11 of zx-format.md).
 const int zcmCodecId = 0x10000;
 
-/// Bytes per detection block.
-const int zcmBlockSize = 1 << 16;
+/// Bytes per detection block (and the segment size unit of the parallel
+/// coder).
+const int zcmBlockSize = zcmDetectBlockSize;
 
 /// Largest chunk of a solid stream.
 const int zcmSolidChunk = 1 << 24;
@@ -78,6 +91,7 @@ const int _fIndependent = 1;
 const int _fLstm = 2;
 const int _fDetect = 4;
 const int _fE8E9 = 8;
+const int _fDict = 16;
 
 /// Options of the zcm codec.
 final class ZcmOptions {
@@ -101,8 +115,12 @@ final class ZcmOptions {
   /// and let zcmCompressParallel use several isolates.
   final int segmentSize;
 
-  /// Detects text, binary and exe blocks to choose models.
+  /// Detects text, binary, exe, image and audio data to choose models.
   final bool detect;
+
+  /// Codes English text through the dictionary transform (zcm_dict.dart)
+  /// when that is smaller (with [detect] only).
+  final bool dictionary;
 
   const ZcmOptions(
       {this.level = 4,
@@ -112,7 +130,8 @@ final class ZcmOptions {
       this.lstmLayers = 1,
       this.lstmHorizon = 20,
       this.segmentSize = 0,
-      this.detect = true});
+      this.detect = true,
+      this.dictionary = true});
 
   /// Named levels: fast (2), normal (4), max (6), ultra (8), cmix (9).
   factory ZcmOptions.named(String name,
@@ -136,7 +155,8 @@ final class ZcmOptions {
           int? lstmLayers,
           int? lstmHorizon,
           int? segmentSize,
-          bool? detect}) =>
+          bool? detect,
+          bool? dictionary}) =>
       ZcmOptions(
           level: level ?? this.level,
           memoryMiB: memoryMiB ?? this.memoryMiB,
@@ -145,13 +165,14 @@ final class ZcmOptions {
           lstmLayers: lstmLayers ?? this.lstmLayers,
           lstmHorizon: lstmHorizon ?? this.lstmHorizon,
           segmentSize: segmentSize ?? this.segmentSize,
-          detect: detect ?? this.detect);
+          detect: detect ?? this.detect,
+          dictionary: dictionary ?? this.dictionary);
 
   @override
   String toString() =>
       'ZcmOptions(level: $level, memoryMiB: $memoryMiB, lstm: $lstm'
       '${lstm ? ' $lstmCells/$lstmLayers/$lstmHorizon' : ''}, '
-      'segmentSize: $segmentSize, detect: $detect)';
+      'segmentSize: $segmentSize, detect: $detect, dictionary: $dictionary)';
 }
 
 /// Level of a name (or of a digit string), null when unknown.
@@ -220,6 +241,7 @@ final class ZcmHeader {
   bool get lstm => (flags & _fLstm) != 0;
   bool get detect => (flags & _fDetect) != 0;
   bool get e8e9 => (flags & _fE8E9) != 0;
+  bool get dictionary => (flags & _fDict) != 0;
 
   ZcmHeader withOriginalSize(int? size) => ZcmHeader(
       version, level, flags, memoryMiB, segmentSize, size,
@@ -264,6 +286,7 @@ final class ZcmHeader {
     if (o.segmentSize > 0) flags |= _fIndependent;
     if (useLstm) flags |= _fLstm;
     if (o.detect) flags |= _fDetect | _fE8E9;
+    if (o.detect && o.dictionary) flags |= _fDict;
     return ZcmHeader(zcmVersion, o.level, flags,
         zcmEffectiveMemoryMiB(o, inputSize), o.segmentSize, inputSize,
         lstmCells: useLstm ? o.lstmCells : 0,
@@ -280,6 +303,15 @@ final class ZcmHeader {
     _putVint(b, originalSize == null ? 0 : originalSize! + 1);
   }
 }
+
+/// Named LSTM sizes (cells, layers, horizon): small is the default of
+/// [ZcmOptions], large is the configuration of cmix (Byron Knoll), about
+/// 30 times slower than small.
+const Map<String, List<int>> zcmLstmPresets = {
+  'small': [64, 1, 20],
+  'medium': [128, 2, 40],
+  'large': [200, 2, 100],
+};
 
 /// Limits of the LSTM size a stream may declare.
 const int zcmMaxLstmCells = 1024;
@@ -322,6 +354,12 @@ ZcmHeader zcmParseProps(Uint8List props) {
 ZcmHeader _readHeaderBody(InStream s, Uint8List one, int? originalSize) {
   if (s.read(one, 0, 1) != 1) throw _truncated();
   final version = one[0];
+  if (version == 1) {
+    throw const SevenZipException(
+        'zcm: stream version 1 (written by zx 0.5) is not supported, '
+        'its models changed; decode it with zx 0.5',
+        SevenZipError.unsupportedMethod);
+  }
   if (version != zcmVersion) {
     throw SevenZipException(
         'zcm: unsupported version $version', SevenZipError.unsupportedMethod);
@@ -332,7 +370,7 @@ ZcmHeader _readHeaderBody(InStream s, Uint8List one, int? originalSize) {
   final flags = one[0];
   final mem = _readVint(s, one);
   final seg = _readVint(s, one);
-  if (level < 1 || level > 9 || (flags & ~15) != 0) {
+  if (level < 1 || level > 9 || (flags & ~31) != 0) {
     throw _corrupt('bad header');
   }
   if (mem < zcmMinMemoryMiB || mem > zcmMaxMemoryMiB) {
@@ -362,31 +400,6 @@ ZcmHeader _readHeaderBody(InStream s, Uint8List one, int? originalSize) {
 
 // ---------------------------------------------------------------------
 // Block detection and the x86 transform.
-
-/// Detects the type of [len] bytes at [off] of [b].
-int zcmDetectBlock(Uint8List b, int off, int len) {
-  if (len < 64) return ZcmBlockType.binary;
-  var text = 0;
-  var e8 = 0;
-  var zeros = 0;
-  final end = off + len;
-  for (var i = off; i < end; i++) {
-    final c = b[i];
-    if ((c >= 32 && c < 127) || c == 9 || c == 10 || c == 13 || c >= 0xC2) {
-      text++;
-    } else if (c == 0) {
-      zeros++;
-    }
-    if ((c == 0xE8 || c == 0xE9) && i + 4 < end) {
-      final hi = b[i + 4];
-      if (hi == 0 || hi == 0xFF) e8++;
-    }
-  }
-  if (text * 100 >= len * 95) return ZcmBlockType.text;
-  // Calls and jumps with small displacements, and not mostly zeros.
-  if (e8 * 1000 >= len * 3 && zeros * 2 < len) return ZcmBlockType.exe;
-  return ZcmBlockType.binary;
-}
 
 /// E8/E9 forward transform of paq8px (ExeFilter): the relative targets of
 /// CALL, JMP and Jcc (E8/E9 xx xx xx 00/FF, 0F 8x xx xx xx 00/FF) become
@@ -437,7 +450,7 @@ void zcmE8E9Decode(Uint8List b, int off, int len, int base) {
 // Chunk coding.
 
 /// Builds the predictor a header asks for.
-ZcmPredictor zcmNewPredictor(ZcmHeader h) => ZcmPredictor(
+ZcmBitPredictor zcmNewPredictor(ZcmHeader h) => zcmCreatePredictor(
     h.level, h.memoryMiB << 20,
     lstmCells: h.lstm ? h.lstmCells : 0,
     lstmLayers: h.lstmLayers,
@@ -446,68 +459,125 @@ ZcmPredictor zcmNewPredictor(ZcmHeader h) => ZcmPredictor(
 /// Codes [len] bytes of [data] at [off] with [pred] (whose history is at
 /// stream position [base]) and returns the packed bytes. [data] is
 /// changed in place by the exe transform.
-Uint8List zcmEncodeChunk(ZcmPredictor pred, ZcmHeader h, Uint8List data,
+Uint8List zcmEncodeChunk(ZcmBitPredictor pred, ZcmHeader h, Uint8List data,
     int off, int len, int base,
     {ProgressCallback? progress, int progressBase = 0, int outBase = 0}) {
   final sink = ZcmByteSink(len ~/ 3 + 1024);
   final enc = ZcmEncoder(sink);
-  for (var bo = 0; bo < len; bo += zcmBlockSize) {
-    final bl = len - bo < zcmBlockSize ? len - bo : zcmBlockSize;
-    var type = ZcmBlockType.binary;
+  final segs = h.detect
+      ? zcmDetectSegments(data, off, len)
+      : [ZcmSegment(ZcmBlockType.binary, 0, len)];
+  var done = 0;
+  var nextReport = zcmBlockSize;
+  for (final seg in segs) {
+    final type = seg.type;
+    var bytes = data;
+    var bo = off + seg.off;
+    var bl = seg.len;
     if (h.detect) {
-      type = zcmDetectBlock(data, off + bo, bl);
-      enc.encodeDirect(type, 2);
+      enc.encodeDirect(type, 4);
+      enc.encodeDirect(bl, 32);
+      if (ZcmBlockType.hasInfo(type)) enc.encodeDirect(seg.info, 32);
       if (type == ZcmBlockType.exe && h.e8e9) {
-        zcmE8E9Encode(data, off + bo, bl, base + bo);
+        zcmE8E9Encode(data, bo, bl, base + seg.off);
+      }
+      if (_swapped(type, seg.info)) zcmSwap16(data, bo, bl);
+      if (type == ZcmBlockType.text && h.dictionary) {
+        final t = zcmDictEncode(data, bo, bl);
+        enc.encodeDirect(t == null ? 0 : 1, 1);
+        if (t != null) {
+          enc.encodeDirect(t.length, 32);
+          bytes = t;
+          bo = 0;
+          bl = t.length;
+        }
       }
     }
-    pred.s.blockType = type;
-    final end = off + bo + bl;
-    for (var i = off + bo; i < end; i++) {
-      final c = data[i];
+    pred.setSegment(type, seg.info);
+    final end = bo + bl;
+    for (var i = bo; i < end; i++) {
+      final c = bytes[i];
       for (var j = 7; j >= 0; j--) {
         final bit = (c >> j) & 1;
         enc.encode(bit, pred.p());
         pred.update(bit);
       }
+      if (progress != null && identical(bytes, data) && i - off >= nextReport) {
+        progress(progressBase + i - off, outBase + sink.length);
+        nextReport += zcmBlockSize;
+      }
     }
-    if (progress != null) {
-      progress(progressBase + bo + bl, outBase + sink.length);
-    }
+    done += seg.len;
+    if (progress != null) progress(progressBase + done, outBase + sink.length);
   }
   enc.flush();
   return Uint8List.fromList(sink.view());
 }
 
+// 16-bit little endian audio is coded most significant byte first.
+bool _swapped(int type, int info) =>
+    type == ZcmBlockType.audio && (info & 1) != 0 && (info & 4) == 0;
+
 /// Decodes [len] bytes from [packed] into [out] at [off] (the inverse of
 /// [zcmEncodeChunk]).
-void zcmDecodeChunk(ZcmPredictor pred, ZcmHeader h, Uint8List packed,
+void zcmDecodeChunk(ZcmBitPredictor pred, ZcmHeader h, Uint8List packed,
     Uint8List out, int off, int len, int base) {
   final dec = ZcmDecoder(packed);
-  for (var bo = 0; bo < len; bo += zcmBlockSize) {
-    final bl = len - bo < zcmBlockSize ? len - bo : zcmBlockSize;
+  var done = 0;
+  while (done < len) {
     var type = ZcmBlockType.binary;
+    var bl = len;
+    var info = 0;
+    Uint8List? t;
     if (h.detect) {
-      type = dec.decodeDirect(2);
-      if (type >= ZcmBlockType.count) throw _corrupt('bad block type');
+      type = dec.decodeDirect(4);
+      if (type >= ZcmBlockType.count) throw _corrupt('bad segment type');
+      bl = dec.decodeDirect(32);
+      if (bl < 1 || bl > len - done) throw _corrupt('bad segment length');
+      if (ZcmBlockType.hasInfo(type)) {
+        info = dec.decodeDirect(32);
+        final bad = type == ZcmBlockType.audio
+            ? info > 15
+            : (info >= (1 << 26) ||
+                (info & 0xFFFFFF) == 0 ||
+                (info & 0xFFFFFF) > zcmMaxImageStride);
+        if (info < 1 || bad) throw _corrupt('bad segment info');
+      }
+      if (type == ZcmBlockType.text &&
+          h.dictionary &&
+          dec.decodeDirect(1) != 0) {
+        final tl = dec.decodeDirect(32);
+        if (tl < 1 || tl > bl * 2 + 16) throw _corrupt('bad text length');
+        t = Uint8List(tl);
+      }
+      if (dec.overrun > 4) throw _truncated();
     }
-    pred.s.blockType = type;
-    final end = off + bo + bl;
-    for (var i = off + bo; i < end; i++) {
+    pred.setSegment(type, info);
+    final target = t ?? out;
+    final start = t == null ? off + done : 0;
+    final end = t == null ? start + bl : t.length;
+    for (var i = start; i < end; i++) {
       var c = 0;
       for (var j = 0; j < 8; j++) {
         final bit = dec.decode(pred.p());
         pred.update(bit);
         c = (c << 1) | bit;
       }
-      out[i] = c;
+      target[i] = c;
       if (dec.overrun > 4) throw _truncated();
     }
-    if (type == ZcmBlockType.exe && h.e8e9) {
-      zcmE8E9Decode(out, off + bo, bl, base + bo);
+    if (t != null) {
+      if (!zcmDictDecode(t, out, off + done, bl)) {
+        throw _corrupt('bad text transform');
+      }
     }
-    if (dec.overrun > 0) throw _truncated();
+    if (type == ZcmBlockType.exe && h.e8e9) {
+      zcmE8E9Decode(out, off + done, bl, base + done);
+    }
+    if (_swapped(type, info)) zcmSwap16(out, off + done, bl);
+    done += bl;
   }
+  if (dec.overrun > 0) throw _truncated();
 }
 
 /// Writes one chunk record.
@@ -554,7 +624,7 @@ final class ZcmCompressor implements Compressor {
         ? (inputSize! < 1 ? 1 : inputSize!)
         : chunkSize;
     var buf = Uint8List(bufSize);
-    ZcmPredictor? pred;
+    ZcmBitPredictor? pred;
     var total = 0;
     var pre = 0; // bytes already in buf (from the end probe)
     while (true) {
@@ -664,7 +734,7 @@ final class ZcmDecoderStream implements InStream {
   final int? _outSize;
   final Uint8List _one = Uint8List(1);
   ZcmHeader? _h;
-  ZcmPredictor? _pred;
+  ZcmBitPredictor? _pred;
   Uint8List _chunk = Uint8List(0);
   int _chunkLen = 0;
   int _chunkPos = 0;
@@ -860,9 +930,11 @@ void zcmDecodeSegment(ZcmHeader h, Uint8List packed, ZcmChunkRef c,
 ///                 level
 ///   `mem=N`       memory budget in MiB (`mem=2g`, `mem=512m` also work)
 ///   `lstm` or `lstm=C/L/H`  the LSTM (level 9) with C cells, L layers,
-///                 horizon H
+///                 horizon H; `lstm=small`, `lstm=medium`, `lstm=large`
+///                 are presets ([zcmLstmPresets])
 ///   `seg=N`       independent segments of N bytes (`4m`, `64k`)
-///   `nodetect`    no block type detection
+///   `nodetect`    no data type detection
+///   `nodict`      no dictionary transform of English text
 /// [level] is the default level (from -mx, for example).
 ZcmOptions zcmOptionsFromString(String spec, {int level = 4}) {
   var o = ZcmOptions(level: level, lstm: level == 9);
@@ -892,6 +964,13 @@ ZcmOptions zcmOptionsFromString(String spec, {int level = 4}) {
       case 'lstm':
         if (val.isEmpty) {
           o = o.copyWith(lstm: true);
+        } else if (zcmLstmPresets.containsKey(val)) {
+          final p = zcmLstmPresets[val]!;
+          o = o.copyWith(
+              lstm: true,
+              lstmCells: p[0],
+              lstmLayers: p[1],
+              lstmHorizon: p[2]);
         } else {
           final p = val.split('/').map(int.tryParse).toList();
           if (p.isEmpty || p.any((x) => x == null)) {
@@ -907,6 +986,8 @@ ZcmOptions zcmOptionsFromString(String spec, {int level = 4}) {
         o = o.copyWith(lstm: false);
       case 'nodetect':
         o = o.copyWith(detect: false);
+      case 'nodict':
+        o = o.copyWith(dictionary: false);
       default:
         throw InvalidArgException('zcm: unknown parameter "$raw"');
     }
@@ -939,6 +1020,7 @@ String zcmDescribe(Uint8List props) {
     if (h.lstm) b.write(':lstm${h.lstmCells}/${h.lstmLayers}/${h.lstmHorizon}');
     if (h.independent) b.write(':seg${h.segmentSize}');
     if (!h.detect) b.write(':nodetect');
+    if (h.detect && !h.dictionary) b.write(':nodict');
     return b.toString();
   } on SevenZipException {
     return 'zcm:?';

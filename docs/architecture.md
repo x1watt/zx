@@ -788,8 +788,11 @@ around one predictor, and the file headers name their sources.
   audio models from 3; 6: more orders, indirect, record, char groups,
   the full x86 parser, the full image and audio models; 7: byte history
   inputs, the paq8px word model, paq8px's mixer selectors and SSE
-  chains; 8: word contexts on binary data too; 9: PPMd and the chart
-  model, and the optional LSTM (`lstm=small|medium|large` or C/L/H).
+  chains; 8: word contexts on binary data too; 9: PPMd (its memory
+  beside the budget) and DMC, and the optional LSTM
+  (`lstm=small|medium|large` or C/L/H). The chart, nest and XML models
+  are ported but no level uses them (they did not pay on the benchmark
+  corpora, docs/performance.md).
 - **Determinism.** A stream must decode on every machine, so the model
   computes the same bits everywhere: integers for every paq style part
   (states, StateMaps, APMs, fixed point mixer weights; 32-bit wraparound
@@ -804,8 +807,9 @@ around one predictor, and the file headers name their sources.
   64-bit ints (the native VM; not for the web).
 - **Memory.** Every table takes its size from the budget in the header
   (`ZcmPredictor`): the history buffer, the match tables, the SSE chains,
-  then the context maps in proportion to their contexts, PPMd a quarter
-  at level 9 (DMC and PPMd only with 16 MiB or more); the sizes are
+  then the context maps in proportion to their contexts (DMC and PPMd
+  only with 16 MiB or more; PPMd gets a quarter of the budget on top of
+  it at level 9); the sizes are
   powers of two, so a model uses between half and all of the budget. The
   image and audio models are built on the first segment of their type and
   may add a quarter of the budget each. The encoder lowers the budget for

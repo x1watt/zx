@@ -11,15 +11,10 @@
 import 'dart:typed_data';
 
 import 'zcm_components.dart';
+import 'zcm_detect.dart';
 import 'zcm_tables.dart';
 
-/// Block types chosen by the detector (coded in the stream every block).
-abstract final class ZcmBlockType {
-  static const binary = 0;
-  static const text = 1;
-  static const exe = 2;
-  static const count = 3;
-}
+export 'zcm_detect.dart' show ZcmBlockType;
 
 /// History and bit state shared by all models.
 final class ZcmState {
@@ -43,8 +38,13 @@ final class ZcmState {
   final Uint8List buf;
   final int bufMask;
 
-  /// Type of the current block.
+  /// Type of the current segment and its info (row stride of an image,
+  /// sample layout of audio).
   int blockType = ZcmBlockType.binary;
+  int blockInfo = 0;
+
+  /// Bytes of the current segment seen so far.
+  int blockPos = 0;
 
   ZcmState(int bufBytes)
       : buf = Uint8List(floorPow2(bufBytes < 4096 ? 4096 : bufBytes)),
@@ -63,6 +63,7 @@ final class ZcmState {
       final b = c & 255;
       buf[pos & bufMask] = b;
       pos++;
+      blockPos++;
       c8 = ((c8 << 8) | (c4 >> 24)) & 0xFFFFFFFF;
       c4 = ((c4 << 8) | b) & 0xFFFFFFFF;
       c0 = 1;
@@ -83,6 +84,15 @@ abstract class ZcmModel {
   void mix(ZcmState s, Mixer m);
 }
 
+/// Models that add mixer weight set selectors of their own.
+abstract interface class ZcmMixerContexts {
+  /// Sizes of the selectors this model sets.
+  List<int> get mixerContextSizes;
+
+  /// Sets them (after the predictor's own selectors).
+  void setMixerContexts(ZcmState s, Mixer m);
+}
+
 /// An order-n model: also tells how many of its contexts have been seen.
 abstract class ZcmOrders implements ZcmModel {
   /// Contexts with statistics for the next bit.
@@ -98,14 +108,49 @@ final class OrderModel implements ZcmOrders {
   final DirectMap _o1 = DirectMap(8);
   final ContextMap _cm;
   final Int32List orders;
+  // paq8px NormalModel smOrder0 and smOrder1: a slow and a fast adaptive
+  // probability for orders 0 and 1 (with [pairs]).
+  final bool pairs;
+  final Uint32List _slow = Uint32List(256 + 65536)
+    ..fillRange(0, 256 + 65536, 2048 << 20);
+  final Uint32List _fast = Uint32List(256 + 65536)
+    ..fillRange(0, 256 + 65536, 2048 << 20);
+  int _i0 = 0, _i1 = 256;
 
   /// [orders] of the hashed contexts (2 and up), [bytes] of table.
-  OrderModel(List<int> orders, int bytes, {bool rich = true, bool bh = false})
+  OrderModel(List<int> orders, int bytes,
+      {bool rich = true, bool bh = false, this.pairs = false})
       : orders = Int32List.fromList(orders),
         _cm = ContextMap(bytes, orders.length, rich: rich, bh: bh);
 
   @override
-  int get inputs => 4 + _cm.nCtx * _cm.inputsPerContext;
+  int get inputs => 4 + (pairs ? 8 : 0) + _cm.nCtx * _cm.inputsPerContext;
+
+  @pragma('vm:unsafe:no-bounds-checks')
+  void _mixPairs(Mixer m, int y, int c0, int c1) {
+    final slow = _slow, fast = _fast;
+    final tx = m.tx;
+    var k = m.nx;
+    final str = kStretch;
+    for (var j = 0; j < 2; j++) {
+      final li = j == 0 ? _i0 : _i1;
+      slow[li] = adaptEntry(slow[li], y, 1023);
+      fast[li] = adaptEntry(fast[li], y, 16);
+      final ni = j == 0 ? c0 : 256 + (c1 << 8 | c0);
+      if (j == 0) {
+        _i0 = ni;
+      } else {
+        _i1 = ni;
+      }
+      final ps = slow[ni] >> 20, pf = fast[ni] >> 20;
+      tx[k] = (ps - 2048) >> 3;
+      tx[k + 1] = str[ps] >> 2;
+      tx[k + 2] = (pf - 2048) >> 3;
+      tx[k + 3] = str[pf] >> 2;
+      k += 4;
+    }
+    m.nx = k;
+  }
 
   @override
   void mix(ZcmState s, Mixer m) {
@@ -136,6 +181,7 @@ final class OrderModel implements ZcmOrders {
     final c0 = s.c0;
     _o0.mix(m, y, c0);
     _o1.mix(m, y, c0);
+    if (pairs) _mixPairs(m, y, c0, s.c4 & 255);
     _cm.mix(m, y, s.bpos, c0, s.c4 & 255);
   }
 }
@@ -281,9 +327,11 @@ final class WordModel implements ZcmModel {
   final Uint8List _brackets = Uint8List(64);
   int _depth = 0;
 
-  /// [contexts]: 10 (the word and line contexts) or 16 (all).
+  /// [contexts]: 5 (the main word contexts), 10 (the word and line
+  /// contexts) or 16 (all).
   WordModel(int bytes, {int contexts = 16})
-      : _cm = ContextMap(bytes, contexts < 10 ? 10 : (contexts > 16 ? 16 : contexts));
+      : _cm = ContextMap(
+            bytes, contexts <= 5 ? 5 : (contexts < 16 ? 10 : 16));
 
   @override
   int get inputs => _cm.nCtx * _cm.inputsPerContext;
@@ -344,6 +392,10 @@ final class WordModel implements ZcmModel {
       _cm.set(1, hash3(h, _w1, 2));
       _cm.set(2, hash4(h, _w1, _w2, 3));
       _cm.set(3, hash3(_w0, _punct, 4));
+      if (_cm.nCtx == 5) {
+        _cm.set(4, hash3(above, colQ, 7));
+        return _mixOnly(s, m);
+      }
       _cm.set(4, hash3(h, _w2, 5));
       _cm.set(5, hash3(h, _w3, 6));
       _cm.set(6, hash3(above, colQ, 7));
@@ -369,14 +421,24 @@ final class WordModel implements ZcmModel {
 final class SparseModel implements ZcmModel {
   final ContextMap _cm;
 
-  SparseModel(int bytes) : _cm = ContextMap(bytes, 10, rich: false);
+  /// [light]: 5 of the 10 contexts (faster).
+  SparseModel(int bytes, {bool light = false})
+      : _cm = ContextMap(bytes, light ? 5 : 10, rich: false);
 
   @override
   int get inputs => _cm.nCtx * _cm.inputsPerContext;
 
   @override
   void mix(ZcmState s, Mixer m) {
-    if (s.bpos == 0) {
+    if (s.bpos == 0 && _cm.nCtx == 5) {
+      final c4 = s.c4;
+      final lane = s.pos & 3;
+      _cm.set(0, c4 & 0xFF00);
+      _cm.set(1, c4 & 0xFF0000);
+      _cm.set(2, c4 & 0xFF00FF00);
+      _cm.set(3, hash2(c4 & 0xFFFF, s.c8 >> 16));
+      _cm.set(4, hash4(lane, c4 >> 24, s.c8 >> 24, 9));
+    } else if (s.bpos == 0) {
       final c4 = s.c4;
       _cm.set(0, c4 & 0xFF00);
       _cm.set(1, c4 & 0xFF0000);
@@ -656,7 +718,9 @@ final class RecordModel implements ZcmModel {
 final class ExeModel implements ZcmModel {
   final ContextMap _cm;
 
-  ExeModel(int bytes) : _cm = ContextMap(bytes, 8, rich: false);
+  /// [contexts]: 8 (paq8's execxt set) or fewer of them (faster).
+  ExeModel(int bytes, {int contexts = 8})
+      : _cm = ContextMap(bytes, contexts, rich: false);
 
   @override
   int get inputs => _cm.nCtx * _cm.inputsPerContext;
@@ -681,134 +745,14 @@ final class ExeModel implements ZcmModel {
   @override
   void mix(ZcmState s, Mixer m) {
     if (s.bpos == 0) {
-      for (var i = 0; i < 8; i++) {
+      final n = _cm.nCtx;
+      for (var k = 0; k < n; k++) {
+        final i = n == 8 ? k : const [0, 1, 2, 5, 4, 6, 3, 7][k];
         final j = i < 4 ? i + 1 : 5 + (i - 4) * (2 + (i > 6 ? 1 : 0));
-        _cm.set(i, hash3(i, _ctx(s, j, j > 6 ? (s.c4 & 255) : 0), s.pos & 3));
+        _cm.set(k, hash3(i, _ctx(s, j, j > 6 ? (s.c4 & 255) : 0), s.pos & 3));
       }
     }
     _cm.mix(m, s.y, s.bpos, s.c0, s.c4 & 255);
-  }
-}
-
-/// Fast order-n model for the lowest levels: per context one adaptive
-/// probability per bit (no bit histories, no checksums), 16 entries per
-/// nibble so each nibble of each context touches one cache line (the
-/// layout of lpaq's nibble tables and zpaq's CM component).
-final class FastOrderModel implements ZcmOrders {
-  @override
-  int get hits => 0;
-
-  final Int32List orders;
-  final Uint32List _t;
-  final int _mask;
-  final Int32List _ctx; // context hashes for this byte
-  final Int32List _base; // entry base per context for this nibble
-  final Int32List _idx; // entry used for the last bit per context
-  final Uint32List _o1 = Uint32List(1 << 16)..fillRange(0, 1 << 16, 2048 << 20);
-  int _o1i = 0;
-  final Int16List _str = kStretch;
-  final Int32List _dt = kDt;
-  final int limit;
-  final bool twoInputs;
-  final int _fastShift = 2;
-  static final Int32List _dt16 = () {
-    final t = Int32List(16);
-    for (var i = 0; i < 16; i++) {
-      t[i] = (65536 * 2) ~/ (2 * i + 3);
-    }
-    return t;
-  }();
-
-  FastOrderModel(List<int> orders, int bytes,
-      {this.limit = 14, this.twoInputs = false})
-      : orders = Int32List.fromList(orders),
-        _t = Uint32List(_entries(bytes))
-          ..fillRange(0, _entries(bytes), (2048 << 20) | (32768 << 4)),
-        _mask = _entries(bytes) - 1,
-        _ctx = Int32List(orders.length),
-        _base = Int32List(orders.length),
-        _idx = Int32List(orders.length);
-
-  static int _entries(int bytes) => floorPow2(bytes < 4096 ? 1024 : bytes ~/ 4);
-
-  @override
-  int get inputs => 1 + orders.length * (twoInputs ? 2 : 1);
-
-  @override
-  void mix(ZcmState s, Mixer m) {
-    final bpos = s.bpos;
-    final c0 = s.c0;
-    final n = orders.length;
-    if (bpos == 0) {
-      final c4 = s.c4;
-      final c8 = s.c8;
-      for (var i = 0; i < n; i++) {
-        final o = orders[i];
-        int h;
-        if (o == 1) {
-          h = c4 & 0xFF;
-        } else if (o == 2) {
-          h = c4 & 0xFFFF;
-        } else if (o == 3) {
-          h = c4 & 0xFFFFFF;
-        } else if (o == 4) {
-          h = c4;
-        } else if (o < 8) {
-          h = hash2(c4, c8 & ((1 << ((o - 4) * 8)) - 1));
-        } else {
-          h = hash2(c4, c8);
-        }
-        _ctx[i] = hash2(h, o);
-      }
-    }
-    if (bpos == 0 || bpos == 4) {
-      final nib = bpos == 0 ? 0 : (c0 & 15) + 1;
-      for (var i = 0; i < n; i++) {
-        _base[i] = (hash2(_ctx[i], nib) << 4) & _mask;
-      }
-    }
-    final t = _t;
-    final dt = _dt;
-    final str = _str;
-    final tx = m.tx;
-    var k = m.nx;
-    final target = s.y << 22;
-    final lim = limit;
-    final sub = bpos < 4
-        ? c0
-        : (1 << (bpos - 4)) | (c0 & ((1 << (bpos - 4)) - 1));
-    final yf = s.y << 12;
-    final ys = s.y << 16;
-    final dts = _dt16;
-    final fs = _fastShift;
-    for (var i = 0; i < n; i++) {
-      final li = _idx[i];
-      final e = t[li];
-      var pf = e >> 20;
-      var ps = (e >> 4) & 0xFFFF;
-      final c = e & 15;
-      pf += (yf - pf) >> fs;
-      ps += ((ys - ps) * dts[c]) >> 16;
-      t[li] = (pf << 20) | (ps << 4) | (c < lim ? c + 1 : c);
-      final ni = _base[i] + sub;
-      _idx[i] = ni;
-      final e2 = t[ni];
-      if (twoInputs) {
-        tx[k] = str[e2 >> 20];
-        tx[k + 1] = str[(e2 >> 8) & 0xFFF];
-        k += 2;
-      } else {
-        tx[k++] = (str[e2 >> 20] + str[(e2 >> 8) & 0xFFF]) >> 1;
-      }
-    }
-    // Order 1 direct.
-    final e = _o1[_o1i];
-    final en = e & 1023;
-    final ep = e >> 10;
-    _o1[_o1i] = ((ep + (((target - ep) * dt[en]) >> 31)) << 10) | (en < 1023 ? en + 1 : en);
-    _o1i = ((s.c4 & 255) << 8) | c0;
-    tx[k++] = str[_o1[_o1i] >> 20];
-    m.nx = k;
   }
 }
 

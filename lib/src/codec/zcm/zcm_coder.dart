@@ -2,9 +2,9 @@
 //
 // The 32-bit carryless coder of paq8 and lpaq1 (Matt Mahoney): the range
 // [x1, x2] is split at x1 + range * p / 4096 and leading bytes are shifted
-// out as soon as x1 and x2 agree on them. Probabilities are 12 bits (the
-// probability that the next bit is 1, 1..4095). The split uses a 64-bit
-// product, which is exact.
+// out as soon as x1 and x2 agree on them. Probabilities are 16 bits (the
+// probability that the next bit is 1, 1..65535; stream version 1 used 12
+// bits). The split uses a 64-bit product, which is exact.
 
 import 'dart:typed_data';
 
@@ -52,10 +52,10 @@ final class ZcmEncoder {
 
   ZcmEncoder(this.out);
 
-  /// Codes [bit] with probability [p] (of a 1, 12 bits, 1..4095).
+  /// Codes [bit] with probability [p] (of a 1, 16 bits, 1..65535).
   @pragma('vm:prefer-inline')
   void encode(int bit, int p) {
-    final xmid = _x1 + (((_x2 - _x1) * p) >> 12);
+    final xmid = _x1 + (((_x2 - _x1) * p) >> 16);
     if (bit != 0) {
       _x2 = xmid;
     } else {
@@ -71,7 +71,7 @@ final class ZcmEncoder {
   /// Codes [n] bits of [v] (high first) with p = 1/2.
   void encodeDirect(int v, int n) {
     for (var i = n - 1; i >= 0; i--) {
-      encode((v >> i) & 1, 2048);
+      encode((v >> i) & 1, 32768);
     }
   }
 
@@ -109,9 +109,10 @@ final class ZcmDecoder {
   /// Bytes consumed beyond the end of the input (a sign of truncation).
   int get overrun => _pos > _end ? _pos - _end : 0;
 
+  /// Decodes a bit coded with probability [p] (16 bits).
   @pragma('vm:prefer-inline')
   int decode(int p) {
-    final xmid = _x1 + (((_x2 - _x1) * p) >> 12);
+    final xmid = _x1 + (((_x2 - _x1) * p) >> 16);
     int y;
     if (_x <= xmid) {
       y = 1;
@@ -131,7 +132,7 @@ final class ZcmDecoder {
   int decodeDirect(int n) {
     var v = 0;
     for (var i = 0; i < n; i++) {
-      v = (v << 1) | decode(2048);
+      v = (v << 1) | decode(32768);
     }
     return v;
   }

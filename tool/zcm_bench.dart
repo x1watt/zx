@@ -2,7 +2,7 @@
 //
 //   dart compile exe tool/zcm_bench.dart -o /tmp/zcm_bench
 //   /tmp/zcm_bench [-l 1,2,3] [-m MiB] [-nodec] [-seg BYTES] [-par THREADS]
-//       [-lstm cells,layers,horizon] file...
+//       [-lstm cells,layers,horizon] [-nodict] [-nodetect] file...
 //
 // Prints, per file and level: packed size, encode and decode KB/s (input
 // KB per second of wall time) and whether the round trip matched.
@@ -19,6 +19,8 @@ Future<void> main(List<String> args) async {
   var dec = true;
   var seg = 0;
   var par = 0;
+  var dict = true;
+  var detect = true;
   List<int>? lstm;
   final files = <String>[];
 
@@ -36,6 +38,10 @@ Future<void> main(List<String> args) async {
       lstm = args[++i].split(',').map(int.parse).toList();
     } else if (a == '-nodec') {
       dec = false;
+    } else if (a == '-nodict') {
+      dict = false;
+    } else if (a == '-nodetect') {
+      detect = false;
     } else {
       files.add(a);
     }
@@ -52,7 +58,9 @@ Future<void> main(List<String> args) async {
           lstm: lstm != null,
           lstmCells: lstm?[0] ?? 32,
           lstmLayers: lstm?[1] ?? 1,
-          lstmHorizon: lstm?[2] ?? 10);
+          lstmHorizon: lstm?[2] ?? 10,
+          dictionary: dict,
+          detect: detect);
       final sw = Stopwatch()..start();
       final packed = par > 0
           ? await zcmCompressParallel(data, opts, threads: par)
@@ -82,6 +90,7 @@ Future<void> main(List<String> args) async {
         '${totalOut.toString().padLeft(8)}  enc ${_kbs(totalIn, encUs)} KB/s'
         '  dec ${dec ? _kbs(totalIn, decUs) : '-'} KB/s');
   }
+  print('peak RSS ${ProcessInfo.maxRss >> 20} MiB');
 }
 
 String _kbs(int bytes, int us) =>

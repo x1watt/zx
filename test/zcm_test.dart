@@ -12,6 +12,8 @@ import 'package:zx/src/cli/main.dart';
 import 'package:zx/src/codec/codec.dart';
 import 'package:zx/src/codec/zcm/zcm.dart';
 import 'package:zx/src/codec/zcm/zcm_auto.dart';
+import 'package:zx/src/codec/zcm/zcm_detect.dart';
+import 'package:zx/src/codec/zcm/zcm_dict.dart';
 import 'package:zx/src/codec/zcm/zcm_math.dart';
 import 'package:zx/src/codec/zcm/zcm_parallel.dart';
 import 'package:zx/src/codec/zcm/zcm_predictor.dart';
@@ -48,6 +50,101 @@ Uint8List _exeLike(int n, int seed) {
   }
   return out;
 }
+
+
+// A 24-bit BMP of [w] x [h] pixels (rows padded to 4 bytes).
+Uint8List _bmp24(int w, int h, int seed) {
+  final stride = (w * 3 + 3) & ~3;
+  final size = 54 + stride * h;
+  final b = Uint8List(size);
+  final d = ByteData.sublistView(b);
+  b[0] = 0x42;
+  b[1] = 0x4D;
+  d.setUint32(2, size, Endian.little);
+  d.setUint32(10, 54, Endian.little);
+  d.setUint32(14, 40, Endian.little);
+  d.setInt32(18, w, Endian.little);
+  d.setInt32(22, h, Endian.little);
+  d.setUint16(26, 1, Endian.little);
+  d.setUint16(28, 24, Endian.little);
+  final r = _random(w * h * 3, seed);
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      for (var c = 0; c < 3; c++) {
+        b[54 + y * stride + x * 3 + c] =
+            (x * (c + 1) + y * 2 + (r[(y * w + x) * 3 + c] & 7)) & 255;
+      }
+    }
+  }
+  return b;
+}
+
+// A binary PGM of [w] x [h] pixels.
+Uint8List _pgm(int w, int h, int seed) {
+  final head = ascii.encode('P5\n# zcm test\n$w $h\n255\n');
+  final b = Uint8List(head.length + w * h);
+  b.setAll(0, head);
+  final r = _random(w * h, seed);
+  for (var i = 0; i < w * h; i++) {
+    b[head.length + i] = ((i % w) + (i ~/ w) * 3 + (r[i] & 3)) & 255;
+  }
+  return b;
+}
+
+// A 16-bit stereo PCM WAV of [frames] frames.
+Uint8List _wav16(int frames, int seed) {
+  final data = frames * 4;
+  final b = Uint8List(44 + data);
+  final d = ByteData.sublistView(b);
+  b.setAll(0, ascii.encode('RIFF'));
+  d.setUint32(4, 36 + data, Endian.little);
+  b.setAll(8, ascii.encode('WAVEfmt '));
+  d.setUint32(16, 16, Endian.little);
+  d.setUint16(20, 1, Endian.little);
+  d.setUint16(22, 2, Endian.little);
+  d.setUint32(24, 44100, Endian.little);
+  d.setUint32(28, 44100 * 4, Endian.little);
+  d.setUint16(32, 4, Endian.little);
+  d.setUint16(34, 16, Endian.little);
+  b.setAll(36, ascii.encode('data'));
+  d.setUint32(40, data, Endian.little);
+  final r = _random(frames, seed);
+  var a = 0, v = 0;
+  for (var i = 0; i < frames; i++) {
+    v += ((i >> 5) & 1) == 0 ? 97 : -97;
+    a = v * 20 + (r[i] & 31) - 16;
+    d.setInt16(44 + i * 4, a, Endian.little);
+    d.setInt16(46 + i * 4, (a >> 1) + 5, Endian.little);
+  }
+  return b;
+}
+
+// An 8-bit mono AIFF of [frames] frames.
+Uint8List _aiff8(int frames, int seed) {
+  final b = Uint8List(12 + 26 + 16 + frames);
+  final d = ByteData.sublistView(b);
+  b.setAll(0, ascii.encode('FORM'));
+  d.setUint32(4, b.length - 8);
+  b.setAll(8, ascii.encode('AIFFCOMM'));
+  d.setUint32(16, 18);
+  d.setUint16(20, 1);
+  d.setUint32(22, frames);
+  d.setUint16(26, 8);
+  b.setAll(38, ascii.encode('SSND'));
+  d.setUint32(42, frames + 8);
+  final r = _random(frames, seed);
+  for (var i = 0; i < frames; i++) {
+    b[54 + i] = ((i * 3) & 63) + (r[i] & 3);
+  }
+  return b;
+}
+
+const String _english =
+    'The quick brown fox jumps over the lazy dog. However, ANOTHER dog was '
+    'sleeping under the tree; it did not see anything at all, and "NASA" '
+    'said so: the Committee reported its results on Monday, together with '
+    'the Government and the University of London. Something unusual '
+    'happened with &quot;quotes&quot; and @mentions, xYz, ABCdef, IBMs.\n';
 
 String _hex(Uint8List b) =>
     b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
@@ -144,12 +241,120 @@ void main() {
       expect(zcmOptionsFromString('', level: 7).level, 7);
       expect(zcmOptionsFromString('9').lstm, isFalse);
       expect(zcmOptionsFromString('3,nodetect').detect, isFalse);
+      expect(zcmOptionsFromString('5:nodict').dictionary, isFalse);
+      final big = zcmOptionsFromString('cmix:lstm=large');
+      expect([big.lstmCells, big.lstmLayers, big.lstmHorizon], [200, 2, 100]);
       expect(() => zcmOptionsFromString('bogus'),
           throwsA(isA<SevenZipException>()));
       final h = ZcmHeader.fromOptions(o, 1 << 30);
       // The budget is capped by the segment size (64 bytes per byte + 8 MiB).
       expect(zcmDescribe(h.props), 'zcm:9:m264:lstm32/2/15:seg4194304');
       expect(zcmParseProps(h.props).lstmHorizon, 15);
+    });
+  });
+
+  group('data types', () {
+    final media = BytesBuilder()
+      ..add(genData(3000, 1))
+      ..add(_bmp24(61, 40, 2))
+      ..add(_random(500, 3))
+      ..add(_pgm(64, 48, 4))
+      ..add(_wav16(3000, 5))
+      ..add(genData(700, 6))
+      ..add(_aiff8(3000, 7));
+    final data = media.toBytes();
+
+    test('images and audio are found by their headers', () {
+      final segs = zcmDetectSegments(data, 0, data.length);
+      final types = segs.map((e) => e.type).toList();
+      expect(types, contains(ZcmBlockType.image24));
+      expect(types, contains(ZcmBlockType.image8));
+      expect(types.where((t) => t == ZcmBlockType.audio).length, 2);
+      final bmp = segs.firstWhere((e) => e.type == ZcmBlockType.image24);
+      expect(bmp.off, 3000 + 54);
+      expect(bmp.len, 184 * 40);
+      expect(bmp.info & 0xFFFFFF, 184);
+      expect(bmp.info >> 24, 1); // one padding byte per row
+      var end = 0;
+      for (final e in segs) {
+        expect(e.off, end);
+        end += e.len;
+      }
+      expect(end, data.length);
+    });
+
+    for (final level in [1, 3, 5, 7]) {
+      test('round trip with images and audio, level $level', () {
+        _roundTrip(data, ZcmOptions(level: level));
+      });
+    }
+
+    test('corrupt media streams fail cleanly', () {
+      final packed = zcmCompressBytes(data, const ZcmOptions(level: 3));
+      var st = 5;
+      for (var round = 0; round < 12; round++) {
+        st = (st * 1103515245 + 12345) & 0x7FFFFFFF;
+        final i = 16 + (st >> 4) % (packed.length - 16);
+        final bad = Uint8List.fromList(packed)..[i] ^= 1 + (st & 0x7F);
+        try {
+          expect(zcmDecompressBytes(bad), data);
+        } on SevenZipException {
+          // expected
+        }
+      }
+    });
+
+    test('the models of a type make the data smaller', () {
+      final img = _bmp24(120, 80, 9);
+      final a = zcmCompressBytes(img, const ZcmOptions(level: 6)).length;
+      final b = zcmCompressBytes(img, const ZcmOptions(level: 6, detect: false))
+          .length;
+      expect(a < b, isTrue, reason: '$a vs $b');
+    });
+  });
+
+  group('dictionary transform', () {
+    test('English text is transformed and restored', () {
+      final text = Uint8List.fromList(
+          ascii.encode(List.filled(20, _english).join()));
+      final t = zcmDictEncode(text, 0, text.length);
+      expect(t, isNotNull);
+      expect(t!.length < text.length * 3 ~/ 4, isTrue);
+      final back = Uint8List(text.length);
+      expect(zcmDictDecode(t, back, 0, text.length), isTrue);
+      expect(back, text);
+      _roundTrip(text, const ZcmOptions(level: 3));
+      final plain = zcmCompressBytes(
+          text, const ZcmOptions(level: 3, dictionary: false));
+      expect(zcmDecompressBytes(plain), text);
+    });
+
+    test('random mixtures of words and bytes stay exact', () {
+      const words = [
+        'the', 'The', 'THE', 'house', 'HOUSEs', 'Houses', 'xq', 'Q', 'a',
+        'information', 'INFORMATIONAL', 'internationalization', '&quot;',
+        '@', '\u0006', '\u0007', '\u0008', '\u000c', ' ', '\n', '. ', ','
+      ];
+      var st = 77;
+      for (var round = 0; round < 40; round++) {
+        final sb = StringBuffer();
+        for (var i = 0; i < 400; i++) {
+          st = (st * 1103515245 + 12345) & 0x7FFFFFFF;
+          sb.write(words[(st >> 8) % words.length]);
+          if ((st & 7) == 0) sb.write(' ');
+        }
+        final b = Uint8List.fromList(latin1.encode(sb.toString()));
+        final t = zcmDictTransform(b, 0, b.length);
+        final back = Uint8List(b.length);
+        final ok = zcmDictDecode(t, back, 0, b.length);
+        final e = zcmDictEncode(b, 0, b.length);
+        if (e != null) {
+          final back2 = Uint8List(b.length);
+          expect(zcmDictDecode(e, back2, 0, b.length), isTrue);
+          expect(back2, b);
+        }
+        if (ok) expect(back, b, reason: 'round $round');
+      }
     });
   });
 
@@ -254,17 +459,19 @@ void main() {
     // here means streams written before do not decode any more: bump
     // zcmVersion, or undo the change.
     const golden = <String, String>{
-      'L1': '4087:c7feb4e5c2af65d6',
-      'L2': '4013:0639bbaf5715f835',
-      'L3': '3966:76ed576b7de7d8a6',
-      'L4': '3898:d87c30b4755ff96b',
-      'L5': '3865:52a73427401bde19',
-      'L6': '3692:6809f4fb74bcd322',
-      'L7': '3668:e0ab9e15441d53a9',
-      'L8': '3691:3142f78bf8da91d1',
-      'L9': '3692:37915c344e4accb4',
-      'L9+lstm': '3697:a0f5f4aeaef60e8f',
-      'seg': '4119:94e2821f9925f93e',
+      'L1': '4091:14b6fba4856c9d7d',
+      'L2': '4013:7b1bb95c3f649ae3',
+      'L3': '3980:0724f544c202ad29',
+      'L4': '3938:32c2d6c2f5b4ffa4',
+      'L5': '3933:d4cadf3a273e82f0',
+      'L6': '3704:3bd956ac1978bb3c',
+      'L7': '3688:4fb243e908d58858',
+      'L8': '3649:db6f2c28d9342833',
+      'L9': '3649:99db14a68bb31ae6',
+      'L9+lstm': '3652:4ebfd67d935e7e86',
+      'seg': '4139:aa2c58ea3777e71d',
+      'media3': '4893:89a61a6884fa5da3',
+      'media7': '4348:445007e417178a33',
     };
     final inputs = BytesBuilder()
       ..add(genData(6000, 21, randomPercent: 3))
@@ -283,6 +490,26 @@ void main() {
         }
       });
     }
+    // Images, audio and English text (the dictionary transform).
+    final mixed = BytesBuilder()
+      ..add(_bmp24(40, 30, 31))
+      ..add(_wav16(1500, 32))
+      ..add(ascii.encode(List.filled(8, _english).join()))
+      ..add(_pgm(32, 24, 33));
+    final mixedData = mixed.toBytes();
+    for (final level in [3, 7]) {
+      test('golden media$level', () {
+        final packed = zcmCompressBytes(mixedData, ZcmOptions(level: level));
+        final v = '${packed.length}:${_sha(packed)}';
+        if (_printGolden) {
+          stdout.writeln("      'media$level': '$v',");
+        } else {
+          expect(v, golden['media$level']);
+          expect(zcmDecompressBytes(packed), mixedData);
+        }
+      });
+    }
+
     test('golden seg', () {
       final packed =
           zcmCompressBytes(data, const ZcmOptions(level: 3, segmentSize: 4096));
@@ -365,12 +592,27 @@ void main() {
       }
     });
 
-    test('changed bytes throw', () {
+    test('changed bytes throw or decode the same data', () {
+      // The last bytes the arithmetic coder flushes are not all needed:
+      // a change there may leave the data intact, which is fine.
+      var thrown = 0;
       for (var i = 0; i < packed.length; i += 1 + packed.length ~/ 60) {
         final bad = Uint8List.fromList(packed)..[i] ^= 0x5A;
-        expect(() => zcmDecompressBytes(bad), throwsA(isA<SevenZipException>()),
-            reason: 'byte $i changed');
+        try {
+          expect(zcmDecompressBytes(bad), text, reason: 'byte $i changed');
+        } on SevenZipException {
+          thrown++;
+        }
       }
+      expect(thrown > 50, isTrue);
+    });
+
+    test('version 1 streams are refused with a clear message', () {
+      final v1 = Uint8List.fromList(packed)..[3] = 1;
+      expect(
+          () => zcmDecompressBytes(v1),
+          throwsA(isA<SevenZipException>().having(
+              (e) => e.toString(), 'message', contains('version 1'))));
     });
 
     test('bad headers throw', () {

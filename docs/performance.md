@@ -128,68 +128,129 @@ the single thread output. On the small inputs of the tests it is.
 
 ### zcm (context mixing, experimental)
 
-`tool/zcm_bench.dart` compiled AOT (`dart compile exe`), one run per case,
-in memory (no isolate), on the benchmark corpus: `text.md` (96,530 bytes
-of English prose), `source.dart` (200,000 bytes of Dart), `x86.bin`
-(142,312 bytes, an x86-64 ELF executable) and `kernel.bin` (262,144 bytes
-of an ARM zImage, mostly already compressed). The machine was shared with
-other work (load average 1.3 to 3), so speeds vary by about 15%. KB/s is
-input KB per second of wall time; decoding runs at the same speed as
-encoding (the same model runs). Sizes in bytes; every round trip was
-checked.
+`tool/zcm_bench.dart` compiled AOT (`dart compile exe`), in memory (no
+isolate), one process per level (peak RSS is the process maximum), on two
+corpora. The small one: `text.md` (96,530 bytes of English prose),
+`source.dart` (200,000 bytes of Dart), `x86.bin` (142,312 bytes, an
+x86-64 ELF executable) and `kernel.bin` (262,144 bytes of an ARM zImage,
+mostly already compressed). The large one, in `ref/zcm-corpus` (not in
+git; see below): `book.txt` (Pride and Prejudice, Project Gutenberg),
+`source.cpp` (the first 837,756 bytes of paq8px's sources), `x86_64.elf`
+(/usr/bin/gpg), `firmware.bin` (1 MiB of a router firmware image),
+`photo.ppm` and `photo.bmp` (640x480 and 512x384 24-bit photos),
+`gray.pgm` (640x480 gray), `music.wav` (6 s of synthesized 16-bit stereo
+music with reverb) and `voice8.wav` (3 s of 8-bit mono noise). Sizes in
+bytes, stream version 2; every round trip was checked (levels 7 to 9 of
+the large corpus were encoded only; decoding runs at the same speed).
+KB/s is input KB per second of wall time; up to four levels ran at the
+same time on the 16 core machine, so the speeds are 10 to 20% below a
+quiet machine (alone: level 1 1,278 KB/s, level 3 209 KB/s, level 5 89
+KB/s on the small corpus).
 
-| Level | text.md | source.dart | x86.bin | kernel.bin | total | enc KB/s |
-|---|---|---|---|---|---|---|
-| 1 (fast nibble model) | 30,302 | 38,338 | 52,726 | 250,950 | 372,316 | 609 |
-| 2 (lean orders 2-6) | 27,881 | 34,175 | 48,684 | 249,305 | 360,045 | 254 |
-| 3 (+ words, x86 contexts) | 26,248 | 31,469 | 45,572 | 249,281 | 352,570 | 122 |
-| 4 (+ orders 5, 8, sparse, x86 parser) | 26,313 | 31,054 | 39,516 | 248,068 | 344,951 | 51 |
-| 5 (+ indirect, 16 word contexts) | 26,110 | 30,186 | 39,269 | 247,942 | 343,507 | 39 |
-| 6 (+ orders 7, 12, record, char groups, full x86) | 25,791 | 29,582 | 38,848 | 247,638 | 341,859 | 22 |
-| 7 (+ byte histories, paq8px indirect, 6 mixer sets) | 25,817 | 29,473 | 38,740 | 247,574 | 341,604 | 14 |
-| 8 (+ orders 16, 24, DMC) | 25,860 | 29,527 | 38,543 | 247,517 | 341,447 | 12 |
-| 9 (+ PPMd var.H order 16) | 25,784 | 29,457 | 38,399 | 247,532 | 341,172 | 11 |
-| 9 + LSTM 64x1, horizon 20 | 25,773 | | 38,306 | | | 3 to 5 |
-| xz -9e | 33,440 | 43,268 | 54,520 | 250,012 | 381,240 | |
-| 7z PPMd | 29,552 | 40,201 | 56,148 | 258,556 | 384,457 | |
-| zpaq -m5 | 27,780 | 33,862 | 49,191 | 249,504 | 360,337 | |
-| paq8px v216 -5 | 23,494 | 25,686 | 35,029 | 246,744 | 330,953 | 4 to 7.5 |
-| paq8px v216 -8 | 23,481 | 25,611 | 34,961 | 246,748 | 330,801 | 3.5 to 7 |
+Small corpus:
+
+| Level | text.md | source.dart | x86.bin | kernel.bin | total | enc KB/s | dec KB/s | peak RSS MiB |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 26,632 | 36,163 | 52,805 | 250,952 | 366,552 | 1,091 | 1,138 | 38 |
+| 2 | 25,291 | 32,400 | 48,676 | 249,474 | 355,841 | 266 | 269 | 37 |
+| 3 | 24,730 | 30,923 | 45,767 | 249,515 | 350,935 | 179 | 180 | 34 |
+| 4 | 24,353 | 29,810 | 39,558 | 248,646 | 342,367 | 90 | 89 | 34 |
+| 5 | 24,202 | 29,138 | 39,474 | 248,392 | 341,206 | 82 | 82 | 36 |
+| 6 | 23,569 | 28,224 | 38,430 | 248,675 | 338,898 | 29 | 29 | 85 |
+| 7 | 23,110 | 27,107 | 38,004 | 248,123 | 336,344 | 12 | 12 | 116 |
+| 8 | 23,110 | 27,113 | 37,541 | 247,850 | 335,614 | 8 | 8 | 180 |
+| 9 | 23,110 | 26,676 | 37,192 | 247,896 | 334,874 | 8 | 8 | 187 |
+| zx 0.5 (version 1) level 3 | 26,248 | 31,469 | 45,572 | 249,281 | 352,570 | 122 | | |
+| zx 0.5 (version 1) level 5 | 26,110 | 30,186 | 39,269 | 247,942 | 343,507 | 39 | | |
+| zx 0.5 (version 1) level 9 | 25,784 | 29,457 | 38,399 | 247,532 | 341,172 | 11 | | |
+| xz -9e | 33,440 | 43,268 | 54,520 | 250,012 | 381,240 | | | |
+| 7z PPMd -mx9 (archive) | 29,544 | 40,193 | 56,140 | 258,556 | 384,433 | | | |
+| zpaq method 5 (`lib/src/zpaq`) | 27,071 | 33,169 | 48,341 | 248,579 | 357,160 | | | |
+| paq8px v216 -5 | 23,494 | 25,686 | 35,029 | 246,744 | 330,953 | 4 to 7.5 | | 600 to 900 |
+| paq8px v216 -8 | 23,481 | 25,611 | 34,961 | 246,748 | 330,801 | 3.5 to 7 | | 1,800 to 2,300 |
+
+Large corpus (6,758,876 bytes):
+
+| Level | book.txt | source.cpp | x86_64.elf | firmware.bin | photo.ppm | photo.bmp | gray.pgm | music.wav | voice8.wav | total | enc KB/s | peak RSS MiB |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 166,577 | 124,764 | 423,438 | 581,076 | 174,186 | 216,372 | 51,242 | 806,642 | 17,377 | 2,561,674 | 1,141 | 53 |
+| 2 | 158,892 | 112,611 | 386,164 | 563,185 | 154,995 | 190,727 | 48,307 | 651,110 | 16,846 | 2,282,837 | 261 | 62 |
+| 3 | 155,524 | 106,330 | 364,087 | 563,028 | 104,885 | 141,775 | 34,028 | 411,593 | 15,617 | 1,896,867 | 121 | 62 |
+| 4 | 153,840 | 102,018 | 308,929 | 548,147 | 104,882 | 139,445 | 34,025 | 411,693 | 15,617 | 1,818,596 | 85 | 66 |
+| 5 | 153,022 | 99,012 | 308,155 | 546,483 | 104,448 | 139,230 | 33,872 | 410,820 | 15,651 | 1,810,693 | 83 | 74 |
+| 6 | 151,255 | 93,271 | 296,357 | 535,823 | 96,466 | 139,943 | 31,295 | 380,542 | 15,483 | 1,740,435 | 21 | 125 |
+| 7 | 150,136 | 88,949 | 296,160 | 533,537 | 95,020 | 136,866 | 30,699 | 379,679 | 15,424 | 1,726,470 | 11 | 118 |
+| 8 | 150,139 | 88,966 | 291,832 | 529,940 | 95,017 | 136,646 | 30,701 | 379,686 | 15,424 | 1,718,351 | 9 | 143 |
+| 9 | 148,830 | 88,714 | 289,481 | 527,057 | 95,018 | 136,644 | 30,701 | 379,683 | 15,424 | 1,711,552 | 9 | 144 |
+| xz -9e | 223,640 | 146,500 | 478,896 | 558,976 | 176,456 | 241,872 | 56,364 | 668,704 | 22,480 | 2,573,888 | | |
+| 7z PPMd -mx9 (archive) | 180,645 | 141,442 | 410,356 | 609,164 | 193,652 | 264,029 | 55,477 | 679,210 | 17,484 | 2,551,459 | | |
+| zpaq method 5 | 168,047 | 114,223 | 394,031 | 550,662 | 126,384 | 169,226 | 48,569 | 608,116 | 16,788 | 2,196,046 | | |
+| paq8px v216 -5 | 150,410 | 85,705 | 275,804 | 497,312 | 84,996 | 122,544 | 26,887 | 344,154 | 14,919 | 1,602,731 | 3 to 13 | 600 to 1,160 |
+| paq8px v216 -8 | 149,803 | 85,093 | 272,823 | | | | | | | | 3 to 8 | 2,000 to 2,400 |
 
 paq8px was built from `ref/paq8px` with `clang++ -O3 -march=native` and
 run under `systemd-run --user --scope -p MemoryMax=3G` (its -5 uses about
-0.6 to 0.9 GB, -8 about 1.8 to 2.3 GB here; -9 and up need 4 to 29 GB).
-cmix v21 needs about 30 GB and was not run on this 16 GB machine.
+0.6 to 1.2 GB, -8 about 2 to 2.4 GB here, so -8 ran only on three files
+of the large corpus; -9 and up need 4 to 29 GB). cmix v21 needs about 30
+GB and was not run on this 16 GB machine. The large corpus is made by:
+`curl` of `https://www.gutenberg.org/cache/epub/1342/pg1342.txt`;
+`cat` of `ref/paq8px/src/{,model/,text/}*.{cpp,hpp}` sorted (837,756
+bytes); ImageMagick `convert` of
+`/usr/share/backgrounds` photos (`-resize 640x480!`, `BMP3:` for the
+BMP, `-colorspace Gray` for the PGM); `sox` synth plucks mixed with sine
+pads, reverb and a stereo remix for `music.wav`, band passed pink noise
+with tremolo for `voice8.wav`; `dd` of 1 MiB at 20 MiB of the D340W
+firmware.
 
 Findings:
 
-- Level 1 reaches about 0.6 MB/s (the target was 1 MB/s): per bit it is
-  one table read and update per order, a 7 input mixer and one APM; the
-  rest is Dart's cost per operation (bounds checks, no SIMD). Level 2 is
-  near zpaq -m5, level 3 better than zpaq -m5 on every file.
-- Level 9 is 10% larger than paq8px -8 on text.md and x86.bin and 15%
-  on source.dart (3% on the whole corpus, where kernel.bin dominates), at
-  1.5 to 3 times its speed; levels 4 and 5 are within 11 to 21% of it at
-  10 times its speed. paq8px has many more models (a
-  text model with stemming, XML, nest, chart, sparse match and more
-  word contexts) that zcm does not have yet.
-- Above level 6 the extra models pay little on these small files (100
-  to 260 KB): they need more data to learn. The time goes to the mixer
-  (about half: 4 to 10 weight sets of 100 to 300 inputs, 32-bit integer
-  weights) and to the context maps (about 40%, mostly memory latency).
-- The x86 parser (paq8px ExeModel) is the largest single gain: x86.bin
-  45,572 at level 3 (byte contexts only) against 39,516 at level 4.
-- The LSTM is slow and gains little on inputs this small (its benefit in
-  cmix shows on inputs of tens of MB); it is off unless asked for.
-- Memory: the budget of each level (`zcmDefaultMemoryMiB`: 32 MiB at
-  level 1 up to 3 GiB at level 9) is capped at 64 bytes per input byte
-  plus 8 MiB, so these files used 13 to 24 MiB of tables. Level 1 on a
-  1.5 MB file with `-m 256` peaked at 84 MB resident.
-- Independent segments (the four files as one 700 KB input, segments of
-  192 KiB): level 3 grows from 352,372 to 356,886 bytes (1.3%) and runs
-  at 308 KB/s on 4 isolates instead of 120 KB/s; level 6 grows from
-  339,642 to 345,032 (1.6%) at 49 KB/s instead of 22 KB/s. Larger
-  segments lose less.
+- Speed targets: level 1 is one class without model objects (1.1 to 1.3
+  MB/s, from 0.6); level 3 (orders 2, 3, 4, 6, a 5 context word model, 5
+  exe contexts, 3 mixer weight sets) 180 to 210 KB/s from 122; level 5
+  (plus sparse contexts, a 16 context word model and the x86 parser) 82
+  to 89 KB/s from 39; every level is smaller than zx 0.5's same level on
+  the small corpus in total. Most of the speed came from
+  `vm:unsafe:no-bounds-checks` on the hot functions (about 20%), from
+  fewer contexts where they did not pay (at level 5 the orders 5 and 8
+  and the indirect model cost 30% of the time for 0.1% of the size), and
+  from fewer mixer weight sets.
+- The English dictionary transform (cmix) is the largest single gain on
+  text: text.md 25,791 to 23,711 at level 6 (8%), source.dart 3.7%
+  (identifiers and comments are English words). It is applied when at
+  least half of the words of a segment are in the dictionary, and only
+  when the inverse gives the segment back exactly.
+- Level 7 to 9 against paq8px -8: text.md 1.6% smaller (with the
+  dictionary transform; paq8px does not use one by default), book.txt
+  0.7% smaller at level 9; source.dart 4% and source.cpp 4% larger,
+  x86 6% (x86.bin, x86_64.elf), firmware 6%, images 12 to 14%, audio 3
+  to 10%. The large corpus total is 6.8% above paq8px -5 at level 9 (it
+  was more than 40% above before the image and audio models: level 3
+  generic contexts give 2,251,488 against 1,896,867 now).
+- The steps measured on text.md and source.dart at level 7 (small
+  corpus): the paq8px word model -0.6% and -2.2%; the paq8px SSE chain
+  with APMPost -0.3%; the final mixer layer learning rate lowered from
+  56..14 to 8..2 (16.16) -1.9% on both; paq8px's order 0 and 1 slow and
+  fast maps -0.1 to -0.2%; at level 9 PPMd memory taken beside the
+  budget instead of from the context maps, and DMC, -1.6% on source.dart.
+  The 16 bit final probabilities were neutral on these files.
+- Image models: photo.ppm 154,597 at level 3 with generic contexts to
+  95,020 at level 7 (-39%), photo.bmp 190,185 to 136,866 (-28%),
+  gray.pgm 48,452 to 30,699 (-37%). Residual histograms with the
+  per-predictor error of the neighbors (paq8px ResidualMap) and a
+  quarter of the budget for them gave the largest steps; two least
+  squares fits 5 to 6%; more predictors from paq8px's list made these
+  small images worse (more mixer inputs than data).
+- Audio: music.wav 662,983 with generic contexts to 379,679 at level 7
+  (-43%), voice8.wav -8.5%. The mixer weight sets selected by the recent
+  residual sizes matter most: with one set instead of three the light
+  model loses 7%.
+- paq8px's chart, nest and XML models were ported (`zcm_words.dart`) but
+  are not used by any level: on these files they cost 0.1 to 0.7% (more
+  inputs than the data can train), the orders 16 and 24 likewise.
+- Memory: the budget of each level (`zcmDefaultMemoryMiB`) is capped at
+  64 bytes per input byte plus 8 MiB; the image and audio models may add
+  a quarter each, and PPMd at level 9 a quarter. Peak RSS stays below 190
+  MiB on these inputs.
 
 ## 2. Rules for keeping it fast
 
@@ -277,5 +338,6 @@ peak RSS and output size, for this port and for `/usr/bin/7z` (`SZ=` to
 use another). `tool/lzma_bench.dart` and `tool/ppmd_bench.dart` measure
 the codecs alone, in memory. `tool/zcm_bench.dart` measures the zcm levels
 (`-l 1,3,6`, `-m MiB`, `-seg BYTES`, `-par THREADS`,
-`-lstm cells,layers,horizon`, `-nodec`); run memory-heavy levels inside
-a cgroup (`systemd-run --user --scope -p MemoryMax=3G`).
+`-lstm cells,layers,horizon`, `-nodec`, `-nodict`, `-nodetect`; it prints
+the peak RSS of the process); run memory-heavy levels inside a cgroup
+(`systemd-run --user --scope -p MemoryMax=3G -p MemorySwapMax=0`).

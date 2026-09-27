@@ -74,15 +74,6 @@ final Uint8List _x64Flags = () {
   return t;
 }();
 
-/// Models that add mixer weight set selectors of their own.
-abstract interface class ZcmMixerContexts {
-  /// Sizes of the selectors this model sets.
-  List<int> get mixerContextSizes;
-
-  /// Sets them (after the predictor's own selectors).
-  void setMixerContexts(ZcmState s, Mixer m);
-}
-
 /// The paq8px x86/x64 model.
 final class X86Model implements ZcmModel, ZcmMixerContexts {
   final ContextMap _cm;
