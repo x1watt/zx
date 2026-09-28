@@ -122,7 +122,7 @@ void main() {
     final (result,) = await openNew(tester, e)();
     expect(e.calls, hasLength(1));
     expect(e.calls.single.compression?.auto, isTrue);
-    expect(e.calls.single.compression?.speed, ZxAutoSpeed.balanced);
+    expect(e.calls.single.compression?.speed, ZxAutoSpeed.max);
     expect(
       find.text('Chosen: level 6, 1.2 GiB RAM, 2 threads, ~3 minutes'),
       findsOneWidget,
@@ -131,14 +131,15 @@ void main() {
     expect(find.byKey(const Key('zx-warning')), findsNothing);
 
     // another preset asks again (debounced)
-    await tester.tap(find.text('Max'));
+    // selecting the default preset again does not invalidate the estimate
+    await tester.tap(find.text('Automatic best'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pump();
-    expect(e.calls, hasLength(2));
-    expect(e.calls.last.compression?.speed, ZxAutoSpeed.max);
+    expect(e.calls, hasLength(1));
 
     // custom minutes: a time budget
+    await tester.ensureVisible(find.text('Custom'));
     await tester.tap(find.text('Custom'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));

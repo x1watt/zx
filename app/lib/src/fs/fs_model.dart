@@ -16,10 +16,12 @@ typedef FsLister = Future<List<FsEntry>> Function(String dir);
 
 class FsModel extends ChangeNotifier {
   final FsLister lister;
+  int? Function(String path)? folderSizeResolver;
   String _dir;
   final List<String> _back = [];
   final List<String> _forward = [];
   List<FsEntry> _entries = const [];
+  final Map<String, FsEntry> _entryByPath = {};
   bool _loading = false;
   String? _error;
   int _token = 0;
@@ -59,6 +61,17 @@ class FsModel extends ChangeNotifier {
 
   /// The results of a recursive search are shown instead of the folder.
   bool get inSearch => _results != null;
+
+  /// Looks up an item from the current or recursive-search listing in O(1).
+  FsEntry? entry(String path) => _entryByPath[path];
+
+  /// Size of a file, or its indexed recursive size for a folder.
+  int sizeOf(FsEntry entry) =>
+      entry.isDir ? folderSizeResolver?.call(entry.path) ?? 0 : entry.size;
+
+  /// Redraws size columns and totals when the background index changes.
+  void refreshIndexedSizes() => notifyListeners();
+
   bool get searching => _searching;
   String get query => _query;
 
@@ -105,6 +118,7 @@ class FsModel extends ChangeNotifier {
       _selection.clear();
       _anchor = _cursor = null;
       _entries = const [];
+      _entryByPath.clear();
     }
     return reload();
   }
@@ -128,6 +142,9 @@ class FsModel extends ChangeNotifier {
       }
       if (t != _token) return;
       _entries = l;
+      _entryByPath
+        ..clear()
+        ..addEntries(l.map((e) => MapEntry(e.path, e)));
       _error = err;
       _loading = false;
       _rows = null;
@@ -190,7 +207,7 @@ class FsModel extends ChangeNotifier {
         case FsSort.name:
           c = 0;
         case FsSort.size:
-          c = a.size.compareTo(b.size);
+          c = sizeOf(a).compareTo(sizeOf(b));
         case FsSort.type:
           c = typeOf(a).compareTo(typeOf(b));
         case FsSort.modified:
@@ -202,8 +219,12 @@ class FsModel extends ChangeNotifier {
       return _ascending ? c : -c;
     }
 
+    // Folders keep their name order: the size of a folder is only known
+    // from the background index, so sorting on it would jump around while
+    // a scan is still filling the totals in.
     out.sort((a, b) {
       if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+      if (a.isDir) return compareNames(a.name, b.name);
       return cmp(a, b);
     });
     return out;
@@ -232,6 +253,7 @@ class FsModel extends ChangeNotifier {
       (batch) {
         if (_search != s) return;
         _results!.addAll(batch);
+        _entryByPath.addEntries(batch.map((e) => MapEntry(e.path, e)));
         _rows = null;
         notifyListeners();
       },
@@ -256,6 +278,9 @@ class FsModel extends ChangeNotifier {
     if (!keepResults) {
       _results = null;
       _query = '';
+      _entryByPath
+        ..clear()
+        ..addEntries(_entries.map((e) => MapEntry(e.path, e)));
     }
     _rows = null;
     if (notify) notifyListeners();

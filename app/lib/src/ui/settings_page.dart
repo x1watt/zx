@@ -285,7 +285,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       trailing: DropdownButton<String>(
                         key: const Key('set-format'),
                         value: newFormatById(s.defaultFormat).id,
-                        onChanged: (v) => s.defaultFormat = v ?? '7z',
+                        onChanged: (v) => s.defaultFormat = v ?? 'zx',
                         items: [
                           for (final f in kNewFormats)
                             DropdownMenuItem(value: f.id, child: Text(f.label)),

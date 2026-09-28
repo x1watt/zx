@@ -65,29 +65,32 @@ extension ExplorerActions on BrowserPageState {
       isLink: e.isLink && !e.isDir,
     );
     final showThumb =
-        !e.isDir && isImageName(e.name) && e.size > 0 && e.size < 40 << 20;
+        !e.isDir && isImageName(e.name) && e.size > 0 && e.size <= 40 << 20;
+    final identity =
+        '${p.normalize(e.path)}\n${e.size}\n${e.modified?.microsecondsSinceEpoch ?? 0}';
     return ViewItem(
       id: e.path,
       name: e.name,
       isDir: e.isDir,
       icon: icon,
       color: color,
-      thumbFile: showThumb ? e.path : null,
-      subtitle: _fs.inSearch
+      thumbnail: showThumb
+          ? ThumbnailRequest(
+              thumbnailKey(identity),
+              () => readThumbnailFile(e.path, e.size),
+            )
+          : null,
+      subtitle: _fs.inSearch && !e.isDir
           ? p.relative(e.path, from: _fs.dir)
           : [
+              if (e.isDir && _fs.sizeOf(e) > 0) formatBytes(_fs.sizeOf(e)),
               if (!e.isDir) formatBytes(e.size),
               formatDate(e.modified),
             ].join('   '),
     );
   }
 
-  FsEntry? _fsEntry(String id) {
-    for (final e in _fs.rows) {
-      if (e.path == id) return e;
-    }
-    return null;
-  }
+  FsEntry? _fsEntry(String id) => _fs.entry(id);
 
   ViewHandlers _fsHandlers({required bool narrow}) {
     final selecting = narrow && _fs.selection.isNotEmpty;
@@ -128,33 +131,26 @@ extension ExplorerActions on BrowserPageState {
   }
 
   ViewHandlers _archiveHandlers(ArchiveModel m, {required bool narrow}) {
-    ZxItem? item(String id) {
-      for (final r in m.rows) {
-        if (r.path == id) return r;
-      }
-      return null;
-    }
-
     return ViewHandlers(
       selectionMode: narrow && m.selection.isNotEmpty,
       touchOpens: narrow,
       onClick: (id, {ctrl = false, shift = false}) {
         _listFocus.requestFocus();
-        final i = item(id);
+        final i = m.item(id);
         if (i != null) m.click(i, ctrl: ctrl, shift: shift);
       },
       onOpen: (id) {
-        final i = item(id);
+        final i = m.item(id);
         if (i != null) openItem(i);
       },
       onContextMenu: (id, pos) {
-        final i = id == null ? null : item(id);
+        final i = id == null ? null : m.item(id);
         if (i != null) m.ensureSelected(i);
         _contextMenu(i, pos);
       },
       onLongPress: narrow
           ? (id) {
-              final i = item(id);
+              final i = m.item(id);
               if (i != null) m.click(i, ctrl: true);
             }
           : null,
@@ -175,12 +171,29 @@ extension ExplorerActions on BrowserPageState {
 
   ViewItem _archiveItem(ArchiveModel m, ZxItem i, ColorScheme cs) {
     final (icon, color) = iconFor(i, cs, inContainer: m.inContainer(i));
+    final showThumb =
+        !i.isDir &&
+        isImageName(i.name) &&
+        i.size != null &&
+        i.size! > 0 &&
+        i.size! <= 40 << 20;
+    final identity = i.sha256 == null
+        ? '${m.root.archive.path}\n${m.root.archive.numVersions}\n${m.root.archive.physicalSize}\n${m.archive.path}\n${m.archive.version}\n${i.path}\n${i.size ?? 0}\n${i.crc ?? 0}\n${i.modified?.microsecondsSinceEpoch ?? 0}'
+        : 'sha256:${i.sha256}:${extensionOf(i.name)}';
     return ViewItem(
       id: i.path,
       name: i.name,
       isDir: i.isDir,
       icon: icon,
       color: color,
+      thumbnail: showThumb
+          ? ThumbnailRequest(
+              thumbnailKey(identity),
+              () => m.archive
+                  .readBytes(i, maxBytes: 40 << 20)
+                  .catchError((Object _) => Uint8List(0)),
+            )
+          : null,
       subtitle: [
         if (!i.isDir) formatBytes(m.sizeOf(i)),
         formatDate(i.modified),
@@ -295,26 +308,41 @@ extension ExplorerActions on BrowserPageState {
   /// The crumbs of the folders of [dir]: `/ > home > user`.
   List<Widget> _fsCrumbs(String dir, {required bool current}) {
     final out = <Widget>[];
-    final parts = p.split(dir);
-    for (var i = 0; i < parts.length; i++) {
-      final path = p.joinAll(parts.sublist(0, i + 1));
+    final root = _fsTreeRoot;
+    var path = p.rootPrefix(p.normalize(dir));
+    final levels = <(String, String)>[(path, path)];
+    for (final part in p.split(dir).skip(1)) {
+      path = p.join(path, part);
+      levels.add((path, part));
+    }
+    for (var i = 0; i < levels.length; i++) {
+      final (levelPath, part) = levels[i];
       if (i > 0) out.add(crumbSeparator(context));
-      final isHome = path == _sv.paths.home;
+      final isHome = levelPath == _sv.paths.home;
+      final label = p.equals(levelPath, root)
+          ? (p.equals(root, _sv.paths.home)
+                ? 'Home'
+                : p.basename(root).isEmpty
+                ? root
+                : p.basename(root))
+          : part;
       out.add(
         crumbButton(
           context,
-          key: Key('fscrumb:$path'),
-          label: i == 0 && parts[0] == '/' ? '/' : parts[i],
-          icon: i == 0
-              ? Icons.computer_rounded
+          key: Key('fscrumb:$levelPath'),
+          label: label,
+          icon: p.equals(levelPath, root)
+              ? (p.equals(root, _sv.paths.home)
+                    ? Icons.home_rounded
+                    : Icons.storage_rounded)
               : isHome
               ? Icons.home_rounded
               : null,
           iconColor: Theme.of(context).colorScheme.primary,
-          current: current && i == parts.length - 1,
+          current: current && i == levels.length - 1,
           onTap: () async {
             if (_model != null) _replaceModel(null);
-            await _fs.navigate(path);
+            await _fs.navigate(levelPath);
           },
         ),
       );
@@ -946,7 +974,7 @@ extension ExplorerActions on BrowserPageState {
       case 'compress-other':
         await compressFs(
           format: _sv.settings.defaultFormat == 'zx'
-              ? '7z'
+              ? 'zip'
               : _sv.settings.defaultFormat,
         );
       case 'cut':

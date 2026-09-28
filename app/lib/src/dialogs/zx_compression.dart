@@ -90,7 +90,7 @@ const kLstmCells = <int>[32, 64, 128, 200];
 String speedLabel(String s) => switch (s) {
   'fast' => 'Fast',
   'balanced' => 'Balanced',
-  'max' => 'Max',
+  'max' => 'Automatic best',
   _ => 'Custom',
 };
 
@@ -396,7 +396,7 @@ class _ZxCompressionSectionState extends State<ZxCompressionSection> {
         child: Text(
           switch (p.speed) {
             'fast' => 'Quick, lighter compression.',
-            'max' => 'The strongest levels: slow, for archives kept long.',
+            'max' => 'Automatic best: choose the strongest practical compression for this machine.',
             _ => 'A good ratio at a moderate speed.',
           },
           style: TextStyle(

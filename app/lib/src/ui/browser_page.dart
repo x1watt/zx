@@ -4,6 +4,7 @@
 // only asks the questions and shows the results.
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
@@ -40,6 +41,8 @@ import 'settings_page.dart';
 import 'sidebar.dart';
 import 'transfer.dart';
 import 'views.dart';
+import 'thumbnail_cache.dart';
+import 'indexer.dart' show FileIndexer, IndexerPanel;
 
 part 'explorer.dart';
 
@@ -62,6 +65,121 @@ const _kOpenOutside = {
 
 Widget _withTooltip(String? message, Widget child) =>
     message == null ? child : Tooltip(message: message, child: child);
+
+/// Rebuilds the desktop shell when archive navigation changes; selection
+/// redraws remain inside the list, toolbar, preview and status widgets.
+class _WidePageModelListener extends StatefulWidget {
+  final ArchiveModel? model;
+  final Widget Function() builder;
+
+  const _WidePageModelListener({required this.model, required this.builder});
+
+  @override
+  State<_WidePageModelListener> createState() => _WidePageModelListenerState();
+}
+
+class _WidePageModelListenerState extends State<_WidePageModelListener> {
+  String? _dir;
+
+  @override
+  void initState() {
+    super.initState();
+    _dir = widget.model?.dir;
+    widget.model?.addListener(_changed);
+  }
+
+  @override
+  void didUpdateWidget(_WidePageModelListener oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.model != widget.model) {
+      oldWidget.model?.removeListener(_changed);
+      _dir = widget.model?.dir;
+      widget.model?.addListener(_changed);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.model?.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    final dir = widget.model?.dir;
+    if (_dir == dir) return;
+    _dir = dir;
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder();
+}
+
+/// Rebuilds a narrow page when its archive model changes without subscribing
+/// the full explorer shell to every selection update.
+class _NarrowPageModelListener extends StatefulWidget {
+  final ArchiveModel? model;
+  final Widget Function() builder;
+
+  const _NarrowPageModelListener({required this.model, required this.builder});
+
+  @override
+  State<_NarrowPageModelListener> createState() =>
+      _NarrowPageModelListenerState();
+}
+
+class _NarrowPageModelListenerState extends State<_NarrowPageModelListener> {
+  @override
+  void initState() {
+    super.initState();
+    widget.model?.addListener(_changed);
+  }
+
+  @override
+  void didUpdateWidget(_NarrowPageModelListener oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.model != widget.model) {
+      oldWidget.model?.removeListener(_changed);
+      widget.model?.addListener(_changed);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.model?.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder();
+}
+
+/// Converts only rows requested by a lazy ListView/GridView builder.
+class _LazyViewItems<T> extends ListBase<ViewItem> {
+  final List<T> rows;
+  final ViewItem Function(T row) make;
+  final Map<int, ViewItem> _cache = {};
+
+  _LazyViewItems(this.rows, this.make);
+
+  @override
+  int get length => rows.length;
+
+  @override
+  set length(int value) => throw UnsupportedError('read-only view');
+
+  @override
+  ViewItem operator [](int index) =>
+      _cache.putIfAbsent(index, () => make(rows[index]));
+
+  @override
+  void operator []=(int index, ViewItem value) =>
+      throw UnsupportedError('read-only view');
+}
 
 class BrowserPage extends StatefulWidget {
   final AppServices services;
@@ -103,6 +221,8 @@ class BrowserPageState extends State<BrowserPage> {
 
   /// The folder of the file system shown when no archive is.
   late final FsModel _fs;
+  late final ThumbnailCache _thumbnails;
+  late final FileIndexer _indexer;
   final _fsFilter = TextEditingController();
   late final PathEdit _pathEdit;
   List<Place> _places = const [];
@@ -121,6 +241,8 @@ class BrowserPageState extends State<BrowserPage> {
 
   /// The search field of a phone is open.
   bool _narrowSearch = false;
+  late final Listenable _pageListenable;
+  StreamSubscription<IncomingIntent>? _androidIntentSubscription;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _menu = MenuController();
 
@@ -149,8 +271,22 @@ class BrowserPageState extends State<BrowserPage> {
   void initState() {
     super.initState();
     _fs = FsModel(widget.startDir ?? _s.paths.home);
+    _thumbnails = ThumbnailCache(
+      archivePath: p.join(_s.paths.dataHome, 'zx', 'thumbnails.zx'),
+      tempDir: _s.paths.temp,
+    );
+    _indexer = FileIndexer(
+      cache: _thumbnails,
+      places: _s.places,
+      home: _s.paths.home,
+      excludedDataPath: p.join(_s.paths.dataHome, 'zx'),
+    );
+    _fs.folderSizeResolver = _indexer.folderSize;
+    _indexer.addListener(_onIndexerChanged);
+    unawaited(_indexer.start());
     _fs.showHidden = _s.settings.showHidden;
     _fs.addListener(_onFsChanged);
+    _pageListenable = Listenable.merge([_fs, _s.settings]);
     _pathEdit = PathEdit(
       text: () => _pathText(),
       onSubmit: goToPath,
@@ -173,7 +309,9 @@ class BrowserPageState extends State<BrowserPage> {
   /// storage permission, asked for with an explanation at the first start.
   Future<void> _listenToAndroid() async {
     AndroidPlaces.explainer = () => showStorageAccessDialog(context);
-    AndroidIntents.instance.stream.listen(_onAndroidIntent);
+    _androidIntentSubscription = AndroidIntents.instance.stream.listen(
+      _onAndroidIntent,
+    );
     final i = await AndroidIntents.instance.initial();
     if (i != null) {
       await _onAndroidIntent(i);
@@ -236,13 +374,35 @@ class BrowserPageState extends State<BrowserPage> {
     if (db != null) unawaited(db.close().catchError((Object _) {}));
     final cm = _clip?.model;
     if (cm != null && cm.root != m?.root) _closeLevels(cm);
+    unawaited(_androidIntentSubscription?.cancel());
     _listFocus.dispose();
     _filterFocus.dispose();
     _filter.dispose();
     _fsFilter.dispose();
+    _indexer.removeListener(_onIndexerChanged);
     _fs.dispose();
+    unawaited(_closeIndexerAndThumbnails());
     _pathEdit.dispose();
     super.dispose();
+  }
+
+  void _onIndexerChanged() {
+    if (!mounted) return;
+    _fs.refreshIndexedSizes();
+    setState(() {});
+  }
+
+  Future<void> _closeIndexerAndThumbnails() async {
+    try {
+      await _indexer.close();
+    } on Object {
+      // Cache and indexer shutdown are best effort.
+    }
+    try {
+      await _thumbnails.close();
+    } on Object {
+      // Cache writes may be unavailable on a read-only home.
+    }
   }
 
   void _syncFilter() {
@@ -1885,8 +2045,7 @@ class BrowserPageState extends State<BrowserPage> {
     );
     const div = Divider(height: 1);
     final canFolder = m == null || _whyNot('folder') == null;
-    final canPaste =
-        _clip != null && (m == null || _whyNot('add') == null);
+    final canPaste = _clip != null && (m == null || _whyNot('add') == null);
     return [
       item(
         'Open archive...',
@@ -1983,6 +2142,24 @@ class BrowserPageState extends State<BrowserPage> {
             ),
             child: const Text('Show hidden files'),
           ),
+          if (_model == null)
+            SubmenuButton(
+              key: const Key('menu-left-pane'),
+              menuChildren: [
+                for (final (value, label) in const [
+                  ('tree', 'Folder tree'),
+                  ('places', 'Places and bookmarks'),
+                  ('indexer', 'Indexer summary'),
+                ])
+                  RadioMenuButton<String>(
+                    value: value,
+                    groupValue: st.leftPane,
+                    onChanged: (v) => st.leftPane = v ?? 'tree',
+                    child: Text(label),
+                  ),
+              ],
+              child: const Text('Left pane'),
+            ),
           SubmenuButton(
             menuChildren: [
               for (final (k, label) in const [
@@ -2151,9 +2328,8 @@ class BrowserPageState extends State<BrowserPage> {
     );
   }
 
-  /// The view items of [rows], kept while the rows (the models cache
-  /// them until a change) and [key] are the same: a rebuild of the page
-  /// (a click, a selection, the menu) does not format every row again.
+  /// Rows are converted when a visible tile is built, not eagerly for every
+  /// entry in the folder.
   List<ViewItem> _itemsOf<T>(
     List<T> rows,
     Object key,
@@ -2162,7 +2338,7 @@ class BrowserPageState extends State<BrowserPage> {
     if (identical(rows, _itemsRows) && key == _itemsKey) return _items;
     _itemsRows = rows;
     _itemsKey = key;
-    return _items = [for (final r in rows) make(r)];
+    return _items = _LazyViewItems(rows, make);
   }
 
   Object? _itemsRows;
@@ -2256,6 +2432,7 @@ class BrowserPageState extends State<BrowserPage> {
             items: items,
             selection: sel,
             handlers: h,
+            thumbnailCache: _thumbnails,
             tile: tile,
           );
         },
@@ -2263,11 +2440,11 @@ class BrowserPageState extends State<BrowserPage> {
     }
 
     if (m == null) {
-      final items = _itemsOf(
-        _fs.rows,
-        (cs, _fs.inSearch, _fs.dir),
-        (FsEntry e) => _fsItem(e, cs),
-      );
+      final items = _itemsOf(_fs.rows, (
+        cs,
+        _fs.inSearch,
+        _fs.dir,
+      ), (FsEntry e) => _fsItem(e, cs));
       final h = _fsHandlers(narrow: narrow);
       final hint = _fs.loading
           ? 'Reading...'
@@ -2282,7 +2459,12 @@ class BrowserPageState extends State<BrowserPage> {
       }
       if (narrow) {
         return withHint(
-          TileList(items: items, selection: _fs.selection, handlers: h),
+          TileList(
+            items: items,
+            selection: _fs.selection,
+            handlers: h,
+            thumbnailCache: _thumbnails,
+          ),
           items.isEmpty,
           hint,
         );
@@ -2297,11 +2479,10 @@ class BrowserPageState extends State<BrowserPage> {
       );
     }
     if (grid || narrow) {
-      final items = _itemsOf(
-        m.rows,
-        (cs, m),
-        (ZxItem i) => _archiveItem(m, i, cs),
-      );
+      final items = _itemsOf(m.rows, (
+        cs,
+        m,
+      ), (ZxItem i) => _archiveItem(m, i, cs));
       final h = _archiveHandlers(m, narrow: narrow);
       final hint = m.filter.isNotEmpty
           ? 'No items match the filter'
@@ -2309,7 +2490,12 @@ class BrowserPageState extends State<BrowserPage> {
       return withHint(
         grid
             ? gridOf(items, m.selection, h)
-            : TileList(items: items, selection: m.selection, handlers: h),
+            : TileList(
+                items: items,
+                selection: m.selection,
+                handlers: h,
+                thumbnailCache: _thumbnails,
+              ),
         items.isEmpty,
         hint,
       );
@@ -2407,12 +2593,86 @@ class BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  String get _fsTreeRoot =>
+      p.isWithin(_s.paths.home, _fs.dir) || p.equals(_s.paths.home, _fs.dir)
+      ? _s.paths.home
+      : p.rootPrefix(p.normalize(_fs.dir));
+
   Widget _sidebar({bool drawer = false}) {
     final m = _model;
     void close() {
       if (drawer) _scaffoldKey.currentState?.closeDrawer();
     }
 
+    if (!drawer) {
+      final pane = _s.settings.leftPane;
+      Widget selectedPane = switch (pane) {
+        'indexer' => IndexerPanel(indexer: _indexer),
+        'places' => Sidebar(
+          places: _places,
+          volumes: _volumes,
+          bookmarks: _s.settings.bookmarks,
+          recent: _s.settings.recent,
+          current: m == null ? _fs.dir : null,
+          onPlace: (path) {
+            if (_model != null) _replaceModel(null);
+            unawaited(_fs.navigate(path));
+          },
+          onArchive: (path) => unawaited(openArchive(path)),
+          onRemoveBookmark: _s.settings.removeBookmark,
+          onDrop: (path, t) => _dropTo(PasteDest.fs(path), t),
+        ),
+        _ when m != null && !_dataTab => FolderTree(model: m),
+        _ when m != null => const Center(
+          child: Text('No folder tree in this view'),
+        ),
+        _ => FsFolderTree(
+          model: _fs,
+          root: _fsTreeRoot,
+          volumes: _volumes,
+          onNavigate: (path) => unawaited(_fs.navigate(path)),
+        ),
+      };
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 8, 4),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.view_sidebar_outlined,
+                  size: 17,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('Left pane', style: TextStyle(fontSize: 12)),
+                ),
+                DropdownButton<String>(
+                  key: const Key('left-pane-selector'),
+                  value: pane,
+                  underline: const SizedBox.shrink(),
+                  isDense: true,
+                  items: const [
+                    DropdownMenuItem(value: 'tree', child: Text('Tree')),
+                    DropdownMenuItem(value: 'places', child: Text('Places')),
+                    DropdownMenuItem(value: 'indexer', child: Text('Indexer')),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) _s.settings.leftPane = value;
+                  },
+                ),
+              ],
+            ),
+          ),
+          Divider(
+            height: 1,
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
+          Expanded(child: selectedPane),
+        ],
+      );
+    }
     return Sidebar(
       places: _places,
       volumes: _volumes,
@@ -2438,28 +2698,48 @@ class BrowserPageState extends State<BrowserPage> {
   (String, String) _fsStatus() {
     final rows = _fs.rows;
     final sel = _fs.selectedEntries;
-    int sum(Iterable<FsEntry> l) => l.fold(0, (a, e) => a + e.size);
+    int sum(Iterable<FsEntry> l) => l.fold(0, (a, e) => a + _fs.sizeOf(e));
+    final indexedSize = _indexer.folderSize(_fs.dir);
     final left = _fs.searching
         ? 'Searching... ${rows.length} found'
         : sel.isEmpty
         ? '${rows.length} item${rows.length == 1 ? '' : 's'}'
               '${_fs.inSearch ? ' found' : ''}, ${formatBytes(sum(rows))}'
+              '${indexedSize == null ? '' : ' · folder ${formatBytes(indexedSize)}'}'
         : '${sel.length} of ${rows.length} selected, ${formatBytes(sum(sel))}';
     final sp = _space;
     final right = sp == null
         ? ''
         : '${formatBytes(sp.free)} free of ${formatBytes(sp.total)}';
-    return (left, right);
+    final currentIndexedSize = _indexer.folderSize(_fs.dir);
+    final indexedSummary = currentIndexedSize == null
+        ? ''
+        : ' · folder ${formatBytes(currentIndexedSize)}';
+    return ('$left$indexedSummary', right);
   }
 
   @override
   Widget build(BuildContext context) {
-    final m = _model;
     return ListenableBuilder(
-      listenable: Listenable.merge([_s.settings, _fs, ?m]),
+      listenable: _s.settings,
       builder: (context, _) => LayoutBuilder(
         builder: (context, box) {
           final narrow = box.maxWidth < 600;
+          final page = narrow
+              ? ListenableBuilder(
+                  listenable: _pageListenable,
+                  builder: (context, _) {
+                    final model = _model;
+                    return _NarrowPageModelListener(
+                      model: model,
+                      builder: () => _narrowPage(context),
+                    );
+                  },
+                )
+              : _WidePageModelListener(
+                  model: _model,
+                  builder: () => _widePage(context),
+                );
           return Focus(
             autofocus: true,
             onKeyEvent: _onKey,
@@ -2467,7 +2747,7 @@ class BrowserPageState extends State<BrowserPage> {
               onDragEntered: (_) => setState(() => _dragging = true),
               onDragExited: (_) => setState(() => _dragging = false),
               onDragDone: _onDrop,
-              child: narrow ? _narrowPage(context) : _widePage(context),
+              child: page,
             ),
           );
         },
@@ -2475,11 +2755,29 @@ class BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  Widget _mainViewPane(bool narrow, ColorScheme cs) => ListenableBuilder(
+    listenable: _model ?? _fs,
+    builder: (context, _) => ListenableBuilder(
+      listenable: _s.settings,
+      builder: (context, _) => _mainView(narrow, cs),
+    ),
+  );
+
+  Widget _actionBarPane(ColorScheme cs) => ListenableBuilder(
+    listenable: _model ?? _fs,
+    builder: (context, _) {
+      final actions = _actionBar(cs);
+      return actions == null
+          ? const SizedBox(height: 4)
+          : ColoredBox(color: cs.surfaceContainerLow, child: actions);
+    },
+  );
+
+  Widget _sidebarPane() => _sidebar();
+
   Widget _widePage(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final m = _model;
-    final (fsLeft, fsRight) = m == null ? _fsStatus() : ('', '');
-    final bar = _actionBar(cs);
     return Scaffold(
       body: SafeArea(
         child: Stack(
@@ -2491,15 +2789,19 @@ class BrowserPageState extends State<BrowserPage> {
                   color: cs.surfaceContainerLow,
                   child: Row(
                     children: [
-                      Expanded(child: _pathBar(false)),
+                      Expanded(
+                        child: ListenableBuilder(
+                          listenable: _fs,
+                          builder: (context, _) => _pathBar(false),
+                        ),
+                      ),
                       _viewToggle(),
                       _appMenu(),
                       const SizedBox(width: 8),
                     ],
                   ),
                 ),
-                if (bar != null)
-                  ColoredBox(color: cs.surfaceContainerLow, child: bar),
+                _actionBarPane(cs),
                 Divider(height: 1, color: cs.outlineVariant),
                 if (m != null && _whyNotDb() == null) ...[
                   _viewSwitch(cs),
@@ -2512,7 +2814,10 @@ class BrowserPageState extends State<BrowserPage> {
                         width: _treeWidth,
                         child: ColoredBox(
                           color: cs.surfaceContainerLowest,
-                          child: _sidebar(),
+                          child: ListenableBuilder(
+                            listenable: _pageListenable,
+                            builder: (context, _) => _sidebarPane(),
+                          ),
                         ),
                       ),
                       _splitter(
@@ -2521,7 +2826,7 @@ class BrowserPageState extends State<BrowserPage> {
                       Expanded(
                         child: Focus(
                           focusNode: _listFocus,
-                          child: _mainView(false, cs),
+                          child: _mainViewPane(false, cs),
                         ),
                       ),
                       if (m != null &&
@@ -2544,13 +2849,25 @@ class BrowserPageState extends State<BrowserPage> {
                     ],
                   ),
                 ),
-                StatusBar(
-                  model: m,
-                  message: _busy ? 'Working...' : null,
-                  leftText: fsLeft,
-                  rightText: fsRight,
-                  trailing: m == null ? null : _versionPicker(m),
-                ),
+                if (m == null)
+                  ListenableBuilder(
+                    listenable: _fs,
+                    builder: (context, _) {
+                      final (left, right) = _fsStatus();
+                      return StatusBar(
+                        model: null,
+                        message: _busy ? 'Working...' : null,
+                        leftText: left,
+                        rightText: right,
+                      );
+                    },
+                  )
+                else
+                  StatusBar(
+                    model: m,
+                    message: _busy ? 'Working...' : null,
+                    trailing: _versionPicker(m),
+                  ),
               ],
             ),
             if (_dragging) _dropOverlay(cs),

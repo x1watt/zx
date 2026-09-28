@@ -96,7 +96,7 @@ class ZxPrefs {
   const ZxPrefs({
     this.dedup = true,
     this.auto = true,
-    this.speed = 'balanced',
+    this.speed = 'max',
     this.minutes = 10,
     this.method = 'zcm:4',
     this.memoryMiB = 0,
@@ -153,7 +153,12 @@ class ZxPrefs {
       return v is T ? v : def;
     }
 
-    final speed = get<String>('speed', d.speed);
+    final speed = get<String>(
+      'speed',
+      get<String>('mode', 'auto') == 'auto' && !j.containsKey('speed')
+          ? 'max'
+          : d.speed,
+    );
     return ZxPrefs(
       dedup: get<bool>('dedup', d.dedup),
       auto: get<String>('mode', 'auto') != 'manual',
@@ -184,6 +189,7 @@ class Settings extends ChangeNotifier {
   List<String> _recent = [];
   bool _gridView = false;
   bool _showHidden = false;
+  String _leftPane = 'tree';
   List<String> _bookmarks = [];
 
   Settings({this.file});
@@ -195,6 +201,14 @@ class Settings extends ChangeNotifier {
   /// The explorer shows the hidden files (names starting with a dot).
   bool get showHidden => _showHidden;
   set showHidden(bool v) => _change(() => _showHidden = v);
+
+  /// The wide explorer left pane: places, filesystem tree or indexer.
+  String get leftPane => _leftPane;
+  set leftPane(String v) => _change(
+    () => _leftPane = const {'places', 'tree', 'indexer'}.contains(v)
+        ? v
+        : 'tree',
+  );
 
   /// The folders pinned to the sidebar.
   List<String> get bookmarks => List.unmodifiable(_bookmarks);
@@ -290,6 +304,7 @@ class Settings extends ChangeNotifier {
     'recent': _recent,
     'gridView': _gridView,
     'showHidden': _showHidden,
+    'leftPane': _leftPane,
     'bookmarks': _bookmarks,
   };
 
@@ -300,6 +315,8 @@ class Settings extends ChangeNotifier {
     );
     final f = j['defaultFormat'];
     if (f is String) _defaultFormat = f;
+    if (!j.containsKey('defaultFormat')) _defaultFormat = 'zx';
+
     final l = j['defaultLevel'];
     if (l is int) _defaultLevel = l.clamp(0, 9);
     final c = j['confirmDelete'];
@@ -317,6 +334,13 @@ class Settings extends ChangeNotifier {
     if (g is bool) _gridView = g;
     final h = j['showHidden'];
     if (h is bool) _showHidden = h;
+    final leftPane = j['leftPane'];
+    if (leftPane is String &&
+        const {'places', 'tree', 'indexer'}.contains(leftPane)) {
+      _leftPane = leftPane;
+    } else if (j['showFileTree'] is bool) {
+      _leftPane = j['showFileTree'] == true ? 'tree' : 'places';
+    }
     final b = j['bookmarks'];
     if (b is List) {
       _bookmarks = [

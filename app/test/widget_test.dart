@@ -339,6 +339,7 @@ void main() {
     expect(r.theme, ThemeMode.light);
     expect(r.defaultFormat, 'zip');
     expect(r.defaultLevel, 9);
+    expect(r.leftPane, 'tree');
     expect(r.recent, ['/b.zip', '/a.7z']);
   });
 }

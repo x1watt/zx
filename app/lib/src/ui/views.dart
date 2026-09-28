@@ -5,14 +5,13 @@
 // phone. Clicks, the context menu, long press and drag and drop go to
 // [ViewHandlers].
 
-import 'dart:io';
-
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../fs/fs_model.dart';
 import 'file_list.dart' show kRowHeight;
+import 'thumbnail_cache.dart';
 import 'format_utils.dart';
 import 'transfer.dart';
 
@@ -25,8 +24,8 @@ class ViewItem {
   final IconData icon;
   final Color color;
 
-  /// A local image file to show as the thumbnail.
-  final String? thumbFile;
+  /// Persistent cache lookup for a supported raster image.
+  final ThumbnailRequest? thumbnail;
 
   /// The second line of a touch row (size and date).
   final String subtitle;
@@ -36,7 +35,7 @@ class ViewItem {
     required this.isDir,
     required this.icon,
     required this.color,
-    this.thumbFile,
+    this.thumbnail,
     this.subtitle = '',
   });
 }
@@ -101,6 +100,8 @@ String? _lastClickId;
 int _lastClickMs = -100000;
 
 class _ItemGesturesState extends State<_ItemGestures> {
+  bool _hovered = false;
+
   void _down(PointerDownEvent e) {
     widget.onRowHit();
     final h = widget.h;
@@ -137,23 +138,39 @@ class _ItemGesturesState extends State<_ItemGestures> {
     final id = widget.item.id;
     Widget w = Listener(
       onPointerDown: _down,
-      child: GestureDetector(
-        // touch only: the mouse is handled by the listener
-        supportedDevices: const {
-          PointerDeviceKind.touch,
-          PointerDeviceKind.stylus,
-        },
-        onTap: !h.touchOpens
-            ? null
-            : () => h.selectionMode ? h.onClick(id, ctrl: true) : h.onOpen(id),
-        onLongPressStart: (d) {
-          if (h.onLongPress != null) {
-            h.onLongPress!(id);
-          } else {
-            h.onContextMenu(id, d.globalPosition);
-          }
-        },
-        child: widget.child,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: _hovered
+                  ? Theme.of(context).colorScheme.outlineVariant
+                  : Colors.transparent,
+            ),
+          ),
+          child: GestureDetector(
+            // touch only: the mouse is handled by the listener
+            supportedDevices: const {
+              PointerDeviceKind.touch,
+              PointerDeviceKind.stylus,
+            },
+            onTap: !h.touchOpens
+                ? null
+                : () => h.selectionMode
+                      ? h.onClick(id, ctrl: true)
+                      : h.onOpen(id),
+            onLongPressStart: (d) {
+              if (h.onLongPress != null) {
+                h.onLongPress!(id);
+              } else {
+                h.onContextMenu(id, d.globalPosition);
+              }
+            },
+            child: widget.child,
+          ),
+        ),
       ),
     );
     final data = h.dragData;
@@ -343,34 +360,65 @@ class _BackgroundState extends State<_Background> {
 
 /// A thumbnail of a local image, decoded at [size] pixels by the engine,
 /// or [fallback] (for a file that is not an image, too large or broken).
-class Thumb extends StatelessWidget {
-  final String path;
+class Thumb extends StatefulWidget {
+  final ThumbnailCache cache;
+  final ThumbnailRequest request;
   final double size;
   final Widget fallback;
   const Thumb({
     super.key,
-    required this.path,
+    required this.cache,
+    required this.request,
     required this.size,
     required this.fallback,
   });
 
   @override
+  State<Thumb> createState() => _ThumbState();
+}
+
+class _ThumbState extends State<Thumb> {
+  Uint8List? _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(Thumb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.request.key != widget.request.key ||
+        oldWidget.cache != widget.cache) {
+      _bytes = null;
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    final key = widget.request.key;
+    final bytes = await widget.cache.load(widget.request);
+    if (mounted && widget.request.key == key && bytes != null) {
+      setState(() => _bytes = bytes);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final px = (size * MediaQuery.devicePixelRatioOf(context)).round();
+    final bytes = _bytes;
+    if (bytes == null) return widget.fallback;
+    final px = (widget.size * MediaQuery.devicePixelRatioOf(context)).round();
     return Image(
-      image: ResizeImage(
-        FileImage(File(path)),
-        width: px,
-        allowUpscaling: false,
-      ),
-      width: size,
-      height: size,
-      fit: BoxFit.cover,
+      image: ResizeImage(MemoryImage(bytes), width: px, allowUpscaling: false),
+      width: widget.size,
+      height: widget.size,
+      fit: BoxFit.contain,
       gaplessPlayback: true,
       filterQuality: FilterQuality.medium,
-      errorBuilder: (_, _, _) => fallback,
+      errorBuilder: (_, _, _) => widget.fallback,
       frameBuilder: (_, child, frame, sync) =>
-          frame == null && !sync ? fallback : child,
+          frame == null && !sync ? widget.fallback : child,
     );
   }
 }
@@ -380,12 +428,14 @@ class ItemGrid extends StatefulWidget {
   final List<ViewItem> items;
   final Set<String> selection;
   final ViewHandlers handlers;
+  final ThumbnailCache thumbnailCache;
   final double tile;
   const ItemGrid({
     super.key,
     required this.items,
     required this.selection,
     required this.handlers,
+    required this.thumbnailCache,
     this.tile = 112,
   });
 
@@ -450,12 +500,13 @@ class _ItemGridState extends State<ItemGrid> {
                       width: thumbSize,
                       height: thumbSize,
                       child: Center(
-                        child: it.thumbFile == null
+                        child: it.thumbnail == null
                             ? icon
                             : ClipRRect(
-                                borderRadius: BorderRadius.circular(4),
+                                borderRadius: BorderRadius.circular(6),
                                 child: Thumb(
-                                  path: it.thumbFile!,
+                                  cache: widget.thumbnailCache,
+                                  request: it.thumbnail!,
                                   size: thumbSize,
                                   fallback: icon,
                                 ),
@@ -463,14 +514,18 @@ class _ItemGridState extends State<ItemGrid> {
                       ),
                     ),
                     const SizedBox(height: 2),
-                    Text(
-                      it.name,
-                      maxLines: 2,
-                      textAlign: TextAlign.center,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: sel ? cs.onSecondaryContainer : cs.onSurface,
+                    Tooltip(
+                      message: it.name,
+                      waitDuration: const Duration(milliseconds: 650),
+                      child: Text(
+                        it.name,
+                        maxLines: 2,
+                        textAlign: TextAlign.center,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: sel ? cs.onSecondaryContainer : cs.onSurface,
+                        ),
                       ),
                     ),
                   ],
@@ -490,11 +545,13 @@ class TileList extends StatefulWidget {
   final List<ViewItem> items;
   final Set<String> selection;
   final ViewHandlers handlers;
+  final ThumbnailCache thumbnailCache;
   const TileList({
     super.key,
     required this.items,
     required this.selection,
     required this.handlers,
+    required this.thumbnailCache,
   });
 
   @override
@@ -546,12 +603,13 @@ class _TileListState extends State<TileList> {
                     width: 40,
                     height: 40,
                     child: Center(
-                      child: it.thumbFile == null
+                      child: it.thumbnail == null
                           ? icon
                           : ClipRRect(
-                              borderRadius: BorderRadius.circular(4),
+                              borderRadius: BorderRadius.circular(6),
                               child: Thumb(
-                                path: it.thumbFile!,
+                                cache: widget.thumbnailCache,
+                                request: it.thumbnail!,
                                 size: 40,
                                 fallback: icon,
                               ),
@@ -843,7 +901,11 @@ class _FsDetailsListState extends State<FsDetailsList> {
                                           ),
                                         ),
                                         FsSort.size => text(
-                                          e.isDir ? '' : formatBytes(e.size),
+                                          e.isDir
+                                              ? (m.sizeOf(e) > 0
+                                                    ? formatBytes(m.sizeOf(e))
+                                                    : '')
+                                              : formatBytes(e.size),
                                           c,
                                         ),
                                         FsSort.type => text(typeOf(e), c),

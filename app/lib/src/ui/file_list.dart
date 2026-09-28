@@ -395,6 +395,7 @@ class _Row extends StatelessWidget {
             : odd
             ? cs.surfaceContainerLow.withValues(alpha: 0.55)
             : null,
+        borderRadius: BorderRadius.circular(4),
       ),
       child: Row(
         children: [

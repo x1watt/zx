@@ -86,7 +86,8 @@ class Sidebar extends StatelessWidget {
             borderRadius: BorderRadius.circular(8),
             onTap: onTap ?? () => onPlace(path),
             child: SizedBox(
-              height: 34,
+              height: 38,
+
               child: Row(
                 children: [
                   const SizedBox(width: 10),

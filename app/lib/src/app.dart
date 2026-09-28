@@ -19,6 +19,35 @@ ThemeData buildTheme(Brightness b) {
     scaffoldBackgroundColor: cs.surface,
   );
   return base.copyWith(
+    dividerTheme: DividerThemeData(
+      color: cs.outlineVariant.withValues(alpha: 0.72),
+      thickness: 1,
+      space: 1,
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: cs.surfaceContainerHighest.withValues(alpha: 0.55),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide.none,
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide(
+          color: cs.outlineVariant.withValues(alpha: 0.55),
+        ),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide(color: cs.primary, width: 1.5),
+      ),
+    ),
+    textSelectionTheme: TextSelectionThemeData(
+      cursorColor: cs.primary,
+      selectionColor: cs.primary.withValues(alpha: 0.24),
+      selectionHandleColor: cs.primary,
+    ),
     tooltipTheme: TooltipThemeData(
       waitDuration: const Duration(milliseconds: 500),
       textStyle: TextStyle(fontSize: 12, color: cs.onInverseSurface),
@@ -42,6 +71,16 @@ ThemeData buildTheme(Brightness b) {
     popupMenuTheme: PopupMenuThemeData(
       color: cs.surfaceContainer,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ),
+    iconButtonTheme: IconButtonThemeData(
+      style: ButtonStyle(
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+        ),
+        overlayColor: WidgetStatePropertyAll(
+          cs.primary.withValues(alpha: b == Brightness.dark ? 0.16 : 0.09),
+        ),
+      ),
     ),
     scrollbarTheme: ScrollbarThemeData(
       thickness: const WidgetStatePropertyAll(8),

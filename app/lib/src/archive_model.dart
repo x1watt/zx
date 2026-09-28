@@ -45,6 +45,8 @@ class ArchiveModel extends ChangeNotifier {
   bool _ascending = true;
   String _filter = '';
   List<ZxItem>? _rows;
+  Map<String, ZxItem>? _itemByPath;
+  Map<String, List<ZxItem>>? _foldersByPath;
   Map<String, FolderStats>? _folderStats;
 
   /// Bumped when the archive changes on disk (for the views that cache).
@@ -139,6 +141,10 @@ class ArchiveModel extends ChangeNotifier {
   /// filtered.
   List<ZxItem> get rows => _rows ??= _computeRows();
 
+  /// Looks up an archive entry by path without scanning visible rows.
+  ZxItem? item(String path) =>
+      (_itemByPath ??= {for (final i in _archive.items) i.path: i})[path];
+
   List<ZxItem> get selectedItems => [
     for (final r in rows)
       if (_selection.contains(r.path)) r,
@@ -152,9 +158,17 @@ class ArchiveModel extends ChangeNotifier {
 
   /// The sub folders of [dir], sorted by name (for the tree).
   List<ZxItem> folders(String dir) {
-    final l = _archive.children(dir).where((i) => i.isDir).toList()
-      ..sort((a, b) => _cmpName(a.name, b.name));
-    return l;
+    final byParent = _foldersByPath ??= () {
+      final map = <String, List<ZxItem>>{};
+      for (final item in _archive.items) {
+        if (item.isDir) (map[item.parent] ??= []).add(item);
+      }
+      for (final children in map.values) {
+        children.sort((a, b) => _cmpName(a.name, b.name));
+      }
+      return map;
+    }();
+    return byParent[dir] ?? const [];
   }
 
   /// Sizes of everything below each folder ('' is the whole archive).
@@ -349,6 +363,8 @@ class ArchiveModel extends ChangeNotifier {
     if (!isOldVersion) allVersions = _archive.versions;
     generation++;
     _rows = null;
+    _itemByPath = null;
+    _foldersByPath = null;
     _folderStats = null;
     while (_dir.isNotEmpty && _archive[_dir] == null) {
       final k = _dir.lastIndexOf('/');

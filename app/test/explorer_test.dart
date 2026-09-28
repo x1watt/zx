@@ -120,8 +120,18 @@ void main() {
     final st = await pumpApp(tester, s);
     expect(st.fs.dir, root);
     expect(fsRows(st), ['docs', 'src', 'sub', 'tmp']);
-    expect(find.byKey(Key('place:$root')), findsOneWidget);
+    // the left pane shows the folder tree by default
+    expect(find.byKey(const Key('fs-folder-tree')), findsOneWidget);
+    // the places are one selector away
+    s.settings.leftPane = 'places';
+    await tester.pump();
+    await waitFor(
+      tester,
+      () => find.byKey(Key('place:$root')).evaluate().isNotEmpty,
+    );
     expect(find.byKey(const Key('recent:/x/old.7z')), findsOneWidget);
+    s.settings.leftPane = 'tree';
+    await tester.pump();
     await waitFor(
       tester,
       () => find.textContaining('250 GB free').evaluate().isNotEmpty,
@@ -174,7 +184,8 @@ void main() {
     expect(fsRows(st), contains('.hidden'));
     expect(s.settings.showHidden, isTrue);
 
-    // sort by size: folders first
+    // sort by size: the folders keep their name order, the files follow
+    // by their own size
     await tester.tap(find.byKey(const Key('fscol-size')));
     await tester.pump();
     expect(st.fs.sort, FsSort.size);
