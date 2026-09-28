@@ -6,8 +6,11 @@
 //
 //   dart compile exe tool/zxdb_bench_ts.dart -o /tmp/tsb
 //   /tmp/tsb [--rows 1000000] [--levels fast,balanced,max]
-//            [--threads 4] [--journal 200000] [--dir /tmp/x]
+//            [--threads 4] [--journal 200000] [--dir /tmp/x] [--hot 1]
 //
+// --hot N: for max and ultra, also keep the hot tier (hot_days) for the
+// last N days of the data and time a cold read of the last day with and
+// without it.
 // Needs sqlite3, zstd and xz on PATH for the comparisons (skipped when
 // missing).
 
@@ -178,6 +181,7 @@ void main(List<String> args) {
   final levels = _arg(args, '--levels', 'fast,balanced,max').split(',');
   final threads = int.parse(_arg(args, '--threads', '4'));
   final nJournal = int.parse(_arg(args, '--journal', '0'));
+  _hot = int.parse(_arg(args, '--hot', '0'));
   final dir = Directory(_arg(args, '--dir', Directory.systemTemp.path))
       .createTempSync('zxdb_ts_bench_');
   try {
@@ -226,6 +230,8 @@ void _synthetic(Directory dir, int nRows, List<String> levels, int threads) {
   }
 }
 
+int _hot = 0;
+
 void _runLevel(Directory dir, String name, List<ZxTsColumn> cols,
     List<List<Object?>> rows, int rawBytes, String level, int threads,
     {int? sq, int? zstd, int? xz, String? tag}) {
@@ -233,8 +239,15 @@ void _runLevel(Directory dir, String name, List<ZxTsColumn> cols,
   final db = ZxDatabase.open(path,
       create: true,
       options: ZxDbStoreOptions(durable: false, autoFoldBytes: 0, threads: threads));
+  // the data lies in the past: the hot window counts from now
+  final slow = level == 'max' || level == 'ultra';
+  final lastNs = rows.last[0] as int;
+  final agoDays =
+      (DateTime.now().microsecondsSinceEpoch * 1000 - lastNs) ~/ 86400000000000;
+  final hotDays = slow && _hot > 0 ? agoDays + _hot : null;
   db.createSeries('logs', cols,
       partitionBy: 'day',
+      hotDays: hotDays,
       compression: level,
       tags: tag == null ? const [] : [tag],
       sealRows: 1 << 40);
@@ -288,9 +301,38 @@ void _runLevel(Directory dir, String name, List<ZxTsColumn> cols,
     for (final c in cols)
       if (c.type == 'DATETIME' || c.type == 'INTEGER' || c.type == 'REAL') c.name
   ], cold: true);
-  if (level == 'max' || level == 'ultra') {
+  if (slow) {
     // a cold read of zcm text decodes at zcm's speed: minutes here
     print('  scan ts + numbers only (cold): ${numCols0.toStringAsFixed(0)} MB/s of raw text');
+    if (hotDays != null) {
+      final from = lastNs - 86400 * 1000000000;
+      final hotB = zxTsHotBytes(db.readSnapshot(), 'logs');
+      double lastDay(ZxTsDef d) {
+        zxTsClearCache();
+        final w = Stopwatch()..start();
+        final sc = ZxTsScan(db.readSnapshot(), d, ZxTsScanSpec(from: from));
+        var n = 0, h = 0;
+        while (sc.moveNext()) {
+          for (var i = 0; i < nc; i++) {
+            final v = sc.value(i);
+            if (v != null) h ^= v.hashCode;
+          }
+          n++;
+        }
+        if (h == 42) print('');
+        final secs = w.elapsedMicroseconds / 1e6;
+        return rawBytes * n / rows.length / secs / 1048576;
+      }
+
+      final d = s.def;
+      final withHot = lastDay(d);
+      final noHot = lastDay(
+          ZxTsDef.fromJson('logs', {...d.toJson(), 'hotDays': 0}));
+      print('  last day, all columns, cold: ${noHot.toStringAsFixed(2)} MB/s '
+          'without the hot tier, ${withHot.toStringAsFixed(0)} MB/s with it '
+          '(hot tier ${_mb(hotB)} MiB for the last $_hot day(s) of data, '
+          'archive ${_mb(size)} MiB)');
+    }
     db.close();
     File(path).deleteSync();
     return;

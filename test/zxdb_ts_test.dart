@@ -9,6 +9,7 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:zx/src/db/engine/compression.dart' show zxDbFastChain;
+import 'package:zx/src/db/sql/zx_sql.dart' show zxFormatDatetimeNs;
 import 'package:zx/src/db/ts/ts_codec.dart';
 import 'package:zx/src/db/ts/ts_store.dart' show zxTsPartStart, ZxTsPartition;
 import 'package:zx/src/db/zxdb.dart';
@@ -328,6 +329,131 @@ void main() {
     db.close();
   });
 
+  test('SQL: DATETIME comparisons with text, unixepoch, julianday', () {
+    final db = ZxDatabase.open(newPath(), create: true, options: opts());
+    final sql = db.sql;
+    sql.execute('CREATE TIMESERIES m (ts DATETIME, v INTEGER) '
+        "PARTITION BY DAY WITH (seal_rows = 100)");
+    // one row per hour from 2026-08-30 00:00 UTC for 5 days; the first
+    // 100 are sealed (seal_rows), the rest buffered
+    final t0 = DateTime.utc(2026, 8, 30).microsecondsSinceEpoch * 1000;
+    const hour = 3600 * sec;
+    db.series('m').appendAll([
+      for (var i = 0; i < 120; i++) [t0 + i * hour, i]
+    ]);
+    int count(String where, [List<Object?> p = const []]) =>
+        sql.select('SELECT count(*) FROM m WHERE $where', p)[0][0] as int;
+    int ref(int from, int to) =>
+        [for (var i = 0; i < 120; i++) t0 + i * hour]
+            .where((t) => t >= from && t < to)
+            .length;
+    final d1 = DateTime.utc(2026, 9, 1).microsecondsSinceEpoch * 1000;
+    final d2 = DateTime.utc(2026, 9, 2).microsecondsSinceEpoch * 1000;
+    const big = 1 << 62;
+    expect(count("ts >= '2026-09-01'"), ref(d1, big));
+    expect(count("ts < '2026-09-01T00:00:00Z'"), ref(-big, d1));
+    expect(count("ts >= '2026-09-01 02:00:00.000000001'"),
+        ref(d1 + 2 * hour + 1, big));
+    expect(count("ts >= '2026-09-01T03:00:00+02:00'"), ref(d1 + hour, big));
+    expect(count("ts BETWEEN '2026-09-01 10:00' AND '2026-09-02'"),
+        ref(d1 + 10 * hour, d2 + 1));
+    expect(count("'2026-09-01' <= ts"), ref(d1, big));
+    expect(count("ts = '2026-09-01 05:00:00'"), 1);
+    expect(count("ts IN ('2026-09-01 05:00', '2026-09-01 06:00:00Z')"), 2);
+    expect(count("ts >= unixepoch('2026-09-01')"), ref(d1, big));
+    expect(count("ts >= unixepoch('2026-09-02') - 86400"), ref(d1, big));
+    expect(count("ts >= julianday('2026-09-01')"), ref(d1, big));
+    expect(count('ts >= ?', ['2026-09-01']), ref(d1, big));
+    expect(count("ts < datetime('2026-09-02', '-1 day')"), ref(-big, d1));
+    expect(count("ts >= zx_ns('2026-09-01')"), ref(d1, big));
+    expect(count('ts >= ?', [d1]), ref(d1, big));
+    // the text bound limits the partitions read (plan)
+    final plan = sql
+        .select("EXPLAIN QUERY PLAN SELECT * FROM m WHERE ts BETWEEN "
+            "'2026-09-01' AND '2026-09-02'")
+        .map((r) => r[3])
+        .join();
+    expect(plan, contains('t>=,t<='));
+    // now relative: rows of the last day before now
+    final now = DateTime.now().toUtc().microsecondsSinceEpoch * 1000;
+    db.series('m').appendAll([
+      [now - 2 * day, -1],
+      [now - hour, -2]
+    ]);
+    expect(count("ts > datetime('now', '-1 day')"), 1);
+    expect(count("ts > unixepoch('now') - 86400"), 1);
+    // date functions read the ns of a DATETIME column; results carry
+    // the column type
+    final r = sql.execute(
+        "SELECT ts, datetime(ts), date(ts), strftime('%H', ts), zx_datetime(ts) "
+        'FROM m WHERE v = 5');
+    expect(r.rows, [
+      [t0 + 5 * hour, '2026-08-30 05:00:00', '2026-08-30', '05',
+        '2026-08-30 05:00:00.000000000']
+    ]);
+    expect(r.types[0], 'DATETIME');
+    expect(r.isDatetime(0), isTrue);
+    expect(r.isDatetime(1), isFalse);
+    expect(sql.execute('SELECT x FROM (SELECT ts AS x FROM m) LIMIT 1')
+        .isDatetime(0), isTrue);
+    expect(sql.query('SELECT ts FROM m LIMIT 1').isDatetime(0), isTrue);
+    expect(zxFormatDatetimeNs(t0 + 1500000), '2026-08-30 00:00:00.001500');
+    expect(zxFormatDatetimeNs(-1), '1969-12-31 23:59:59.999999999');
+    // plain tables keep SQLite's rules: a DATETIME is NUMERIC there
+    sql.execute('CREATE TABLE p (ts DATETIME)');
+    sql.execute('INSERT INTO p VALUES (?)', [d1]);
+    expect(sql.select("SELECT count(*) FROM p WHERE ts >= '2026-09-01'")[0][0],
+        0);
+    db.close();
+  });
+
+  test('SQL: HISTORY OF a series', () {
+    final db = ZxDatabase.open(newPath(), create: true, options: opts());
+    final t0 = DateTime.utc(2026, 9, 1).microsecondsSinceEpoch * 1000;
+    db.nowMs = () => t0 ~/ 1000000 + 3600 * 1000;
+    final s = db.createSeries(
+        'h', [ZxTsColumn('ts', 'DATETIME'), ZxTsColumn('v', 'TEXT')],
+        partitionBy: 'day', retention: '3d');
+    s.appendAll([
+      [t0, 'a'],
+      [t0 + sec, 'b'],
+      [t0 - 2 * day, 'old'],
+    ]);
+    final gAppend1 = db.store.generations.last.generation;
+    s.seal();
+    s.appendAll([
+      [t0 + 2 * sec, 'c'],
+      [t0 + sec, 'b'],
+    ]);
+    // five days later: the seal drops the partitions past the retention
+    db.nowMs = () => t0 ~/ 1000000 + 5 * 86400 * 1000;
+    s.appendAll([
+      [t0 + 5 * day, 'new'],
+    ]);
+    s.seal();
+    final gLast = db.store.generations.last.generation;
+    final h = db.sql.execute(
+        'SELECT v, zx_op, zx_rows, zx_generation, datetime(ts) FROM HISTORY OF h');
+    final rows = h.rows;
+    expect(rows.where((r) => r[1] == 'append').map((r) => r[0]).toList(),
+        ['old', 'a', 'b', 'b', 'c', 'new']);
+    expect(rows.where((r) => r[1] == 'append' && r[0] == 'a').single[3],
+        gAppend1);
+    final ret = rows.where((r) => r[1] == 'retention').toList();
+    expect(ret.map((r) => r[2]).toList(), [1, 4]);
+    expect(ret.map((r) => r[4]).toList(),
+        ['2026-08-30 00:00:00', '2026-09-01 00:00:00']);
+    expect(ret.every((r) => r[3] == gLast && r[0] == null), isTrue);
+    expect(h.isDatetime(4), isFalse);
+    expect(
+        db.sql.select("SELECT count(*) FROM HISTORY OF h WHERE zx_op = 'append' "
+            "AND ts >= '2026-09-01'"),
+        [
+          [5]
+        ]);
+    db.close();
+  });
+
   test('SQL statements, rollups, zcm max, drop', () {
     final db = ZxDatabase.open(newPath(), create: true, options: opts());
     final sql = db.sql;
@@ -352,9 +478,9 @@ void main() {
     }
     sql.execute("CREATE ROLLUP per_h ON logs EVERY '1h' AS "
         'SELECT level, count(*) AS n, avg(latency) AS lat FROM logs GROUP BY level');
-    // not sealed yet: the rollup is empty
-    expect(sql.select('SELECT count(*) FROM per_h'), [
-      [0]
+    // not sealed yet: the rollup aggregates the write buffer on the fly
+    expect(sql.select('SELECT sum(n) FROM per_h'), [
+      [50]
     ]);
     expect(sql.select('SELECT count(*) FROM logs'), [
       [50]
@@ -456,5 +582,161 @@ void main() {
     expect(jsonDecode(rows[2][4] as String)['_UID'], '0');
     expect(jsonDecode(rows[3][4] as String), {'facility': 4, 'app': 'su', 'pid': 123});
     db.close();
+  });
+
+  group('rollups: buffered rows, general WHERE', () {
+    test('buffer merge and expression WHERE match a plain aggregate', () {
+      final db = ZxDatabase.open(newPath(), create: true, options: opts());
+      final sql = db.sql;
+      sql.execute('''
+        CREATE TIMESERIES m (ts DATETIME, host TEXT, v REAL, msg TEXT)
+        PARTITION BY HOUR''');
+      final r = Random(7);
+      final t0 = 1790000000 * sec;
+      final all = <List<Object?>>[];
+      void add(int n) {
+        final rows = [
+          for (var i = 0; i < n; i++)
+            [
+              t0 + r.nextInt(6 * 3600) * sec,
+              'h${r.nextInt(3)}',
+              r.nextInt(100) / 4,
+              r.nextBool() ? 'Timeout upstream' : 'ok'
+            ]
+        ];
+        all.addAll(rows);
+        db.series('m').appendAll(rows);
+      }
+
+      // a general WHERE: functions, arithmetic, OR
+      sql.execute("CREATE ROLLUP q ON m EVERY '1h' AS "
+          "SELECT host, count(*) AS n, sum(v) AS s, min(v) AS lo, "
+          "max(v) AS hi, last(v) AS lv FROM m "
+          "WHERE lower(msg) LIKE '%timeout%' OR v * 2 > 40 GROUP BY host");
+      expect(db.series('m').rollups.single.whereSql, isNotNull);
+      // a simple WHERE keeps the fast path
+      sql.execute("CREATE ROLLUP f ON m EVERY '1h' AS "
+          "SELECT count(*) AS n FROM m WHERE host = 'h1'");
+      expect(db.series('m').rollups.firstWhere((d) => d.name == 'f').whereSql,
+          isNull);
+      const expQ = 'SELECT ts / 3600000000000 * 3600000000000 AS b, host, '
+          'count(*), sum(v), min(v), max(v) FROM m '
+          "WHERE lower(msg) LIKE '%timeout%' OR v * 2 > 40 "
+          'GROUP BY b, host ORDER BY b, host';
+      const gotQ = 'SELECT ts, host, n, s, lo, hi FROM q ORDER BY ts, host';
+      void check() {
+        expect(sql.select(gotQ), sql.select(expQ));
+        expect(sql.select('SELECT sum(n) FROM f'),
+            sql.select("SELECT count(*) FROM m WHERE host = 'h1'"));
+        // descending and a range, merged in order
+        final desc = sql.select('SELECT ts, host, n FROM q '
+            'WHERE ts >= ? AND ts < ? ORDER BY ts DESC',
+            [t0 + 3600 * sec, t0 + 4 * 3600 * sec]);
+        final asc = sql.select('SELECT ts, host, n FROM q '
+            'WHERE ts >= ? AND ts < ? ORDER BY ts',
+            [t0 + 3600 * sec, t0 + 4 * 3600 * sec]);
+        expect(desc.map((x) => x[0]).toList(),
+            asc.map((x) => x[0]).toList().reversed.toList());
+        expect(desc.length, asc.length);
+      }
+
+      add(300);
+      check(); // everything buffered
+      db.series('m').seal();
+      check(); // everything sealed
+      add(200);
+      check(); // sealed and buffered rows in the same buckets
+      // the Dart API sees the buffer too; buffer: false only sealed rows
+      final d = db.series('m').rollups.firstWhere((d) => d.name == 'f');
+      final snap = db.readSnapshot();
+      int total(bool buffer) => zxRollupRows(snap, d, buffer: buffer)
+          .fold(0, (a, x) => a + (x[1] as int));
+      expect(total(true),
+          all.where((x) => x[1] == 'h1').length);
+      expect(total(false) < total(true), isTrue);
+      db.series('m').seal();
+      check(); // no double count after the seal
+      expect(
+          () => sql.execute("CREATE ROLLUP bad ON m EVERY '1h' AS "
+              'SELECT count(*) AS n FROM m WHERE nope + 1 > 2'),
+          throwsA(anything));
+      db.close();
+    });
+  });
+
+  group('hot tier', () {
+    test('LZ4 copies of recent partitions, aging, defaults, drop', () {
+      final db = ZxDatabase.open(newPath(), create: true, options: opts());
+      final t0 = DateTime.utc(2026, 3, 1).microsecondsSinceEpoch * 1000;
+      var now = t0 ~/ 1000000 + 10 * 86400000;
+      db.nowMs = () => now;
+      const cols = [
+        ZxTsColumn('ts', 'DATETIME'),
+        ZxTsColumn('n', 'INTEGER'),
+        ZxTsColumn('message', 'TEXT'),
+      ];
+      final r = Random(7);
+      final rows = [
+        for (var i = 0; i < 4000; i++)
+          [
+            t0 + i * (10 * day ~/ 4000),
+            i,
+            'request ${r.nextInt(500)} from host${r.nextInt(9)} took '
+                '${r.nextInt(3000)} ms'
+          ]
+      ];
+      for (final (name, hd) in [('h2', 2), ('h20', 20), ('h0', 0)]) {
+        db.createSeries(name, cols, compression: 'balanced', hotDays: hd);
+        db.series(name).appendAll(rows);
+        db.series(name).seal();
+      }
+      final snap = db.readSnapshot();
+      final h2 = zxTsHotBytes(snap, 'h2');
+      final h20 = zxTsHotBytes(snap, 'h20');
+      expect(h2, greaterThan(0));
+      expect(h20, greaterThan(h2 * 3)); // every partition vs the last two
+      expect(zxTsHotBytes(snap, 'h0'), 0);
+      // scans read the hot copy and give the same rows as the cold one
+      for (final name in ['h2', 'h20']) {
+        final s = db.series(name);
+        zxTsClearCache();
+        expect(s.query(), rows);
+        zxTsClearCache();
+        final cold = ZxTsScan(db.readSnapshot(),
+            ZxTsDef.fromJson(name, {...s.def.toJson(), 'hotDays': 0}),
+            const ZxTsScanSpec());
+        var i = 0;
+        while (cold.moveNext()) {
+          expect(cold.value(2), rows[i++][2]);
+        }
+        expect(i, rows.length);
+      }
+      // the copies age out at the next seal (and VACUUM)
+      now += 3 * 86400000;
+      db.series('h2').seal();
+      expect(zxTsHotBytes(db.readSnapshot(), 'h2'), 0);
+      db.vacuum();
+      final h20b = zxTsHotBytes(db.readSnapshot(), 'h20');
+      expect(h20b, greaterThan(0));
+      expect(h20b, lessThanOrEqualTo(h20));
+      expect(db.series('h20').query(), rows);
+      // defaults: one day; fast text keeps no copy
+      db.createSeries('d', cols, compression: 'fast');
+      expect(db.series('d').def.hotDays, 1);
+      db.series('d').appendAll(rows.sublist(3900));
+      db.series('d').seal();
+      expect(zxTsHotBytes(db.readSnapshot(), 'd'), 0);
+      final sql = db.sql;
+      sql.execute('CREATE TIMESERIES s1 (ts DATETIME, m TEXT) '
+          'WITH (hot_days = 0)');
+      sql.execute("CREATE TIMESERIES s2 (ts DATETIME, m TEXT) "
+          "WITH (hot_days = '36h')");
+      expect(db.series('s1').def.hotDays, 0);
+      expect(db.series('s2').def.hotDays, 2);
+      // dropping the series drops its hot tier
+      db.dropSeries('h20');
+      expect(db.readSnapshot().tree('ts:h20:hot'), isNull);
+      db.close();
+    });
   });
 }

@@ -9,11 +9,19 @@
 //
 // The query is one SELECT over the series: plain columns that are in
 // GROUP BY, aggregates count(*), count(x), sum, total, avg, min, max,
-// first(x) and last(x) (by time), an optional WHERE that is an AND of
-// comparisons of a column with literals (=, <>, <, <=, >, >=, IN, IS
-// [NOT] NULL, LIKE). The bucket is implicit: the rollup's rows are
-// (ts = bucket start, the select's columns); a reference to the series'
-// time column in the select is the bucket.
+// first(x) and last(x) (by time), an optional WHERE. A WHERE that is an
+// AND of comparisons of a column with literals (=, <>, <, <=, >, >=, IN,
+// IS [NOT] NULL, LIKE) is tested by a small matcher here; any other
+// expression over the series' columns is kept as SQL text and evaluated
+// with the SQL engine's evaluator (sql/row_expr.dart). The bucket is
+// implicit: the rollup's rows are (ts = bucket start, the select's
+// columns); a reference to the series' time column in the select is the
+// bucket.
+//
+// Reads see the write buffer too: the rows of the buffer in the range
+// read are aggregated on the fly and merged with the stored states of
+// the same (bucket, group). The seal feeds the stored states and empties
+// the buffer in one transaction, so no row is counted twice.
 //
 // Trees: zx$rollup (name: the definition, JSON), rollup:<name> (key
 // (bucket, group values...) with keycodec.dart, value the aggregate
@@ -25,6 +33,8 @@ import 'dart:typed_data';
 
 import '../keycodec.dart';
 import '../sql/ast.dart';
+import '../sql/catalog.dart' show exprToSql;
+import '../sql/row_expr.dart';
 import '../storage_api.dart';
 import 'ts_codec.dart';
 import 'ts_store.dart';
@@ -57,8 +67,12 @@ class ZxRollupDef {
   /// The WHERE: an AND of (column, op, literal or list of literals).
   final List<(int, String, Object?)> where;
 
+  /// A general WHERE (SQL text) when it is not such an AND, else null.
+  final String? whereSql;
+
   const ZxRollupDef(this.name, this.series, this.everyMs, this.retentionMs,
-      this.groups, this.aggs, this.outs, this.names, this.where);
+      this.groups, this.aggs, this.outs, this.names, this.where,
+      {this.whereSql});
 
   Map<String, Object?> toJson() => {
         'series': series,
@@ -75,6 +89,7 @@ class ZxRollupDef {
         'where': [
           for (final w in where) [w.$1, w.$2, w.$3]
         ],
+        if (whereSql != null) 'where_sql': whereSql,
       };
 
   static ZxRollupDef fromJson(String name, Map<String, Object?> j) =>
@@ -96,7 +111,8 @@ class ZxRollupDef {
           [
             for (final w in j['where'] as List)
               ((w as List)[0] as int, w[1] as String, w[2])
-          ]);
+          ],
+          whereSql: j['where_sql'] as String?);
 
   /// The output column names, ts first.
   List<String> get columns => ['ts', ...names];
@@ -218,12 +234,18 @@ class ZxRollupDef {
             (e.pattern as LitExpr).value));
         return;
       }
-      throw const ZxDbException(
-          'a rollup WHERE is an AND of column comparisons with literals',
-          ZxDbError.unsupported);
+      throw const _General();
     }
 
-    if (body.where != null) cond(body.where!);
+    String? whereSql;
+    if (body.where != null) {
+      try {
+        cond(body.where!);
+      } on _General {
+        where.clear();
+        whereSql = exprToSql(body.where!);
+      }
+    }
     final ev = every ?? st.every;
     if (ev == null) {
       throw const ZxDbException('a rollup needs EVERY', ZxDbError.syntax);
@@ -231,7 +253,22 @@ class ZxRollupDef {
     final ret = retention ?? st.retention;
     return ZxRollupDef(st.name, def.name, zxTsParseDurationMs(ev),
         ret == null ? null : zxTsParseDurationMs(ret), groups, aggs, outs,
-        names, where);
+        names, where, whereSql: whereSql);
+  }
+
+  /// The row filter of this rollup for series [sdef] (reading [s] for
+  /// subqueries of a general WHERE).
+  bool Function(List<Object?>) filter(ZxSnapshot s, ZxTsDef sdef,
+      {int? nowNs}) {
+    final w = whereSql;
+    if (w == null) return where.isEmpty ? (_) => true : _accepts;
+    final ex = ZxRowExpr.compile(
+        w,
+        [for (final c in sdef.columns) c.name],
+        [for (final c in sdef.columns) c.type],
+        s,
+        nowNs: nowNs);
+    return ex.test;
   }
 
   bool _accepts(List<Object?> row) {
@@ -271,6 +308,11 @@ class ZxRollupDef {
     }
     return true;
   }
+}
+
+// the WHERE is not an AND of simple comparisons
+class _General implements Exception {
+  const _General();
 }
 
 final Map<String, RegExp> _likeCache = {};
@@ -426,6 +468,7 @@ bool zxRollupCreate(ZxWriteTxn t, ZxRollupDef def, {bool ifNotExists = false}) {
   if (sdef == null) {
     throw ZxDbException('no time series "${def.series}"', ZxDbError.notFound);
   }
+  final ok = def.filter(t, sdef); // checks a general WHERE first
   m.put(k, _utf8(jsonEncode(def.toJson())));
   t.createTree(zxRollupTree(def.name), const TreeOptions(compression: 'fast'));
   final scan = ZxTsScan(t, sdef, const ZxTsScanSpec(buffer: false));
@@ -433,11 +476,11 @@ bool zxRollupCreate(ZxWriteTxn t, ZxRollupDef def, {bool ifNotExists = false}) {
   while (scan.moveNext()) {
     rows.add(scan.row());
     if (rows.length >= 65536) {
-      _feed(t, sdef, def, rows);
+      _feed(t, sdef, def, rows, ok);
       rows.clear();
     }
   }
-  _feed(t, sdef, def, rows);
+  _feed(t, sdef, def, rows, ok);
   return true;
 }
 
@@ -453,14 +496,15 @@ bool zxRollupDrop(ZxWriteTxn t, String name, {bool ifExists = false}) {
   return true;
 }
 
-void _feed(ZxWriteTxn t, ZxTsDef sdef, ZxRollupDef def, List<List<Object?>> rows) {
-  if (rows.isEmpty) return;
-  final tree = t.tree(zxRollupTree(def.name))!;
+// aggregates [rows] per (bucket, group): key string (latin1 of the key)
+// to (key, states)
+HashMap<String, (Uint8List, List<List<Object?>>)> _aggregate(ZxTsDef sdef,
+    ZxRollupDef def, List<List<Object?>> rows, bool Function(List<Object?>) ok) {
   final every = def.everyMs * 1000000;
   final acc = HashMap<String, (Uint8List, List<List<Object?>>)>();
   final tc = sdef.tsCol;
   for (final r in rows) {
-    if (!def._accepts(r)) continue;
+    if (!ok(r)) continue;
     final ts = r[tc] as int;
     final q = ts ~/ every;
     final b = (ts % every != 0 && ts < 0 ? q - 1 : q) * every;
@@ -477,6 +521,14 @@ void _feed(ZxWriteTxn t, ZxTsDef sdef, ZxRollupDef def, List<List<Object?>> rows
       _add(e.$2[i], fn, c < 0 ? null : r[c], ts, c < 0);
     }
   }
+  return acc;
+}
+
+void _feed(ZxWriteTxn t, ZxTsDef sdef, ZxRollupDef def, List<List<Object?>> rows,
+    [bool Function(List<Object?>)? ok]) {
+  if (rows.isEmpty) return;
+  final tree = t.tree(zxRollupTree(def.name))!;
+  final acc = _aggregate(sdef, def, rows, ok ?? def.filter(t, sdef));
   for (final e in acc.values) {
     final old = tree.get(e.$1);
     List<List<Object?>> st = e.$2;
@@ -506,30 +558,84 @@ void zxRollupsOnSeal(
 }
 
 /// The rows of rollup [def] at [s] with buckets in [from, to):
-/// ts, then the output columns.
+/// ts, then the output columns. The stored states are merged with an
+/// aggregate of the rows still in the series' write buffer (unless
+/// [buffer] is false), so rows appended since the last seal count.
+/// [nowMs] is the clock of the rollup's retention for those rows.
 Iterable<List<Object?>> zxRollupRows(ZxSnapshot s, ZxRollupDef def,
-    {int? from, int? to, bool descending = false}) sync* {
+    {int? from,
+    int? to,
+    bool descending = false,
+    bool buffer = true,
+    int? nowMs}) sync* {
   final tree = s.tree(zxRollupTree(def.name));
   if (tree == null) return;
+  // the buffer's buckets in [from, to), in key order
+  var pend = const <(Uint8List, List<List<Object?>>)>[];
+  final sdef = buffer ? zxTsDef(s, def.series) : null;
+  if (sdef != null && zxTsBufferedRows(s, def.series) > 0) {
+    var lo = from;
+    final r = def.retentionMs;
+    if (r != null) {
+      final cut = ((nowMs ?? DateTime.now().millisecondsSinceEpoch) - r) * 1000000;
+      if (lo == null || cut > lo) lo = cut;
+    }
+    // a bucket >= lo holds rows >= lo only; rows < to are in buckets < to
+    final rows = zxTsBufferRows(s, sdef, from: lo, to: to);
+    if (rows.isNotEmpty) {
+      final acc = _aggregate(sdef, def, rows,
+          def.filter(s, sdef, nowNs: nowMs == null ? null : nowMs * 1000000));
+      pend = [
+        for (final e in acc.values)
+          if (lo == null || (decodeKey(e.$1)[0] as int) >= lo) (e.$1, e.$2)
+      ]..sort((a, b) => descending
+          ? zxCompareKeys(b.$1, a.$1)
+          : zxCompareKeys(a.$1, b.$1));
+    }
+  }
+  List<Object?> out(Uint8List key, List<List<Object?>> st) {
+    final k = decodeKey(key);
+    final row = <Object?>[k[0]];
+    for (final (kind, i) in def.outs) {
+      if (kind == 'g') {
+        row.add(k[1 + i]);
+      } else {
+        row.add(_final(st[i], def.aggs[i].$1));
+      }
+    }
+    return row;
+  }
+
   final c = tree.scan(
       from: from == null ? null : encodeKey([from]),
       to: to == null ? null : encodeKey([to]),
       reverse: descending);
+  var p = 0;
   try {
     while (c.moveNext()) {
-      final k = decodeKey(c.key);
+      final key = c.key;
       final st = _decodeStates(c.value);
-      final row = <Object?>[k[0]];
-      for (final (kind, i) in def.outs) {
-        if (kind == 'g') {
-          row.add(k[1 + i]);
-        } else {
-          row.add(_final(st[i], def.aggs[i].$1));
+      while (p < pend.length) {
+        final d = zxCompareKeys(pend[p].$1, key);
+        if (descending ? d <= 0 : d >= 0) {
+          if (d == 0) {
+            for (var i = 0; i < st.length && i < pend[p].$2.length; i++) {
+              _merge(st[i], pend[p].$2[i]);
+            }
+            p++;
+          }
+          break;
         }
+        yield out(pend[p].$1, pend[p].$2);
+        p++;
       }
-      yield row;
+      yield out(key, st);
     }
   } finally {
     c.close();
+  }
+  while (p < pend.length) {
+    yield out(pend[p].$1, pend[p].$2);
+    p++;
   }
 }

@@ -100,8 +100,9 @@ export 'src/util/tlsh.dart' show Tlsh, tlshDistance;
 export 'src/version.dart' show zxVersionString;
 
 // zxdb, the database inside a .zx archive (in a worker isolate).
-export 'src/db/zxdb_async.dart' show ZxDatabaseAsync, ZxKvStoreAsync;
-export 'src/db/sql/zx_sql.dart' show ZxSqlResult;
+export 'src/db/zxdb_async.dart'
+    show ZxDatabaseAsync, ZxKvStoreAsync, ZxSeriesAsync;
+export 'src/db/sql/zx_sql.dart' show ZxSqlResult, zxFormatDatetimeNs, zxIsDatetimeType;
 export 'src/db/storage_api.dart' show ZxDbException, ZxDbError;
 
 // Streams and errors.

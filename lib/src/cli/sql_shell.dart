@@ -530,6 +530,10 @@ class ZxSqlShell {
   String? colSep;
   String? rowSep;
   bool timer = false;
+
+  /// DATETIME columns (ns since 1970 UTC) print as ISO text, except in
+  /// the json and quote modes (exact values); `.datetime off` prints ns.
+  bool datetimeText = true;
   bool bail = false;
 
   /// Named parameters (.param set).
@@ -656,8 +660,18 @@ class ZxSqlShell {
     try {
       cur = sql.query(stmt, params.isEmpty ? null : params);
       final p = printer(cur.columns);
+      final dt = datetimeText && mode != 'json' && mode != 'quote'
+          ? [for (var i = 0; i < cur.columns.length; i++) if (cur.isDatetime(i)) i]
+          : const <int>[];
       while (cur.moveNext()) {
-        p.row(cur.current);
+        var r = cur.current;
+        if (dt.isNotEmpty) {
+          r = [...r];
+          for (final i in dt) {
+            if (r[i] is int) r[i] = zxFormatDatetimeNs(r[i]);
+          }
+        }
+        p.row(r);
       }
       p.end();
     } on ZxDbException catch (e) {
@@ -721,6 +735,7 @@ class ZxSqlShell {
   static const String helpText = '''
 .asof GEN|DATE|off       Read the database as of a generation or a time
 .bail on|off             Stop after hitting an error (default off)
+.datetime on|off         DATETIME columns as ISO text (on) or ns (off)
 .export FILE [TABLE|SELECT ...]  Write a table or query to FILE (.csv,
                          .json: array of objects, .jsonl: one per line)
 .export-arca DIR         Write arca manifests, subtitles, previews to DIR
@@ -843,6 +858,8 @@ class ZxSqlShell {
         bail = _onOff(a.isEmpty ? null : a[0]);
       case 'timer':
         timer = _onOff(a.isEmpty ? null : a[0]);
+      case 'datetime':
+        datetimeText = _onOff(a.isEmpty ? null : a[0]);
       case 'mode':
         if (a.isEmpty) {
           out('current output mode: $mode\n');

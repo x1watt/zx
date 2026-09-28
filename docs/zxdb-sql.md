@@ -313,16 +313,26 @@ DROP TIMESERIES [IF EXISTS] logs;           -- its rollups too
   `fast`, `balanced`, `max` (the default, zcm), `ultra` or a chain),
   `fts = on` (a full-text index on the column `message`, else the first
   TEXT column) or `fts = column`, `tags = (col, ...)` (a Bloom filter per
-  segment and tag column), `segment_rows` (131072) and `seal_rows`
+  segment and tag column), `segment_rows` (131072), `seal_rows`
   (1048576: an append or INSERT that leaves this many rows in the write
-  buffer seals it).
+  buffer seals it) and `hot_days` (1; 0 or `off` disables it; a number
+  of days or a duration such as `'36h'`): the hot tier, an LZ4 copy of
+  the text columns of the partitions that ended less than that many days
+  ago, which scans read instead of the slow coded text. It applies only
+  when `compression` is slower than LZ4 (not `fast` or `store`); the
+  copies go when their partition ages out (at each seal and at VACUUM,
+  relative to the clock) and with their segment.
 - `INSERT` appends to the write buffer. `UPDATE` and `DELETE` fail: rows
   go by retention (whole partitions, at each seal and at VACUUM, relative
   to the clock) or with `DROP TIMESERIES`.
 - `SELECT` reads the sealed segments and the write buffer. Constraints
-  `ts =, <, <=, >, >=` with an integer (ns) choose the partitions and
-  segments read; compare with `zx_ns('2026-09-01')`, not with text (a
-  DATETIME is an integer, and the executor tests every constraint again).
+  `ts =, <, <=, >, >=`, `ts BETWEEN a AND b` and `ts IN (...)` choose the
+  partitions and segments read. The value may be ns, date/time text
+  (`'2026-09-01'`, `'2026-09-01 10:00'`, `'2026-09-01T10:00:00.5Z'`,
+  `'...+02:00'`, the result of `datetime('now', '-1 day')`), or the result
+  of `unixepoch(...)` (seconds) or `julianday(...)` (days), also plus or
+  minus a number (`unixepoch('now') - 86400`): see "DATETIME columns of
+  virtual tables" below. `zx_ns(...)` still works.
   `tag = value` skips the segments whose Bloom filter excludes the value.
   `ORDER BY ts` or `ORDER BY ts DESC` is the scan's own order (no sort).
   Only the columns the query uses are decoded.
@@ -330,8 +340,40 @@ DROP TIMESERIES [IF EXISTS] logs;           -- its rollups too
   upstream'`: rows whose indexed column holds every word (`word*` matches
   a prefix; words are folded like the metadata full-text index: lower
   case, accents removed).
-- `FROM logs AS OF ...` reads the series as it was; `HISTORY OF` is not
-  supported for series.
+- `FROM logs AS OF ...` reads the series as it was. `FROM HISTORY OF
+  logs` yields, per generation, the rows it appended (`zx_op = 'append'`,
+  in time order) and one row per partition it dropped by retention
+  (`zx_op = 'retention'`: `ts` is the partition start, `zx_rows` the rows
+  dropped, the other columns NULL), with the columns of the series, then
+  `zx_generation`, `zx_time`, `zx_op` and `zx_rows` (1 for an append).
+  Seals move rows without changing them and give no rows. It reads the
+  partitions that changed between consecutive generations, so it is
+  meant for audits, not for big series with many generations.
+
+DATETIME columns of virtual tables (**Deviation**): the time column of a
+series, a rollup's `ts` and the DATETIME columns of the system tables
+hold ns and have the comparison affinity DATETIME. In a comparison
+(`=`, `<>`, `<`, `<=`, `>`, `>=`, `IS`, `BETWEEN`, `IN`) with such a
+column the other operand is converted to ns first: date/time text in the
+formats of `datetime()` (a date alone, a time with or without seconds,
+up to 9 fraction digits, `T` or a space, `Z` or an offset), numeric text
+to a number, a `unixepoch()` value (and that value plus or minus a
+number) from seconds, a `julianday()` value from days; other values are
+compared as they are (text that is not a time sorts after every
+integer). The same converted value is what the table receives for
+partition pruning, so pruning and the executor's own test agree. Plain
+tables keep SQLite's rules: a DATETIME column there has NUMERIC affinity
+and `ts >= '2026-09-01'` compares an integer with text. A DATETIME
+column (of any table) given to `date`, `time`, `datetime`, `julianday`,
+`unixepoch` or `strftime` is read as ns, not as a Julian day number, so
+`datetime(ts)` gives `2026-09-01 10:00:00`; `zx_datetime(ts)` keeps the
+9 fraction digits. SELECT returns DATETIME values as integers;
+`ZxSqlResult.types` (and `ZxSqlCursor.types`) give the declared type of
+each result column that reads a column (also through views and
+subqueries), `isDatetime(i)` tests it and `zxFormatDatetimeNs(v)`
+formats ns as ISO text (UTC), which the `zx sql` shell does for DATETIME
+columns (`.datetime off` prints ns; json and quote modes always print
+ns).
 
 ```sql
 CREATE ROLLUP hourly ON logs EVERY '1h' RETENTION '5y' AS
@@ -345,13 +387,19 @@ DROP ROLLUP [IF EXISTS] hourly;
   `ts` (the bucket start) and the select's columns. The select has group
   columns (in GROUP BY) and aggregates `count(*)`, `count(x)`, `sum`,
   `total`, `avg`, `min`, `max`, `first(x)` and `last(x)` (by time); its
-  WHERE is an AND of comparisons of a column with literals (`=`, `<>`,
-  `<`, `<=`, `>`, `>=`, `IN`, `IS [NOT] NULL`, `LIKE`). `ON series` or
-  the FROM names the series; EVERY is required.
-- It is filled from the sealed rows when it is created and kept up to
-  date at each seal (rows in the write buffer are not in it yet). Its
-  data outlives the series' retention; its own RETENTION drops old
-  buckets at each seal.
+  WHERE is any expression over the series' columns (functions, `OR`,
+  arithmetic, subqueries; no aggregates), evaluated with the SQL
+  engine's evaluator on each row. An AND of comparisons of a column with
+  literals (`=`, `<>`, `<`, `<=`, `>`, `>=`, `IN`, `IS [NOT] NULL`,
+  `LIKE`) takes a faster matcher. `ON series` or the FROM names the
+  series; EVERY is required.
+- It is filled from the sealed rows when it is created and stored at
+  each seal. Reads see the write buffer too: the buffered rows in the
+  range read are aggregated when the rollup is queried and merged with
+  the stored buckets, so a row counts as soon as it is appended (and
+  once: the seal stores it and empties the buffer in one transaction).
+  Its data outlives the series' retention; its own RETENTION drops old
+  buckets at each seal (and hides older buffered rows).
 
 ### Time travel (**Deviation**)
 
@@ -363,7 +411,7 @@ DROP ROLLUP [IF EXISTS] hourly;
   virtual tables (they get the snapshot in their context); a view named
   with AS OF reads the current state of its tables. `t AS OF ... AS x` and `t x AS OF ...` are both
   accepted.
-- `FROM HISTORY OF t` yields one row per change of each row across all
+- `FROM HISTORY OF t` (for a time series see "Time series") yields one row per change of each row across all
   generations: the columns of t, then `zx_generation`, `zx_time` (ns)
   and `zx_op` ('insert', 'update' or 'delete'; a delete row carries the
   values deleted), plus the rowid. It reads every generation, so it is
@@ -512,6 +560,7 @@ Dot commands:
 | `.export FILE TABLE\|QUERY` | writes a table or a query: `.csv` (header, CRLF), `.json` (an array of objects), `.jsonl` (one object per line); BLOBs as hex (zx extension; sqlite3 has no .export) |
 | `.read FILE` | runs a file of statements and dot commands |
 | `.param set NAME VALUE`, `.param unset NAME`, `.param list`, `.param clear` | named parameters (`:x`, `@x`, `$x`) for the statements; VALUE is a SQL expression, text when it does not parse |
+| `.datetime on\|off` | (zx) DATETIME columns print as ISO text in UTC (on, the default) or as ns; the json and quote modes always print ns |
 | `.timer on\|off` | prints `Run Time: real S` after each statement (no user and sys times) |
 | `.bail on\|off`, `.print TEXT`, `.help`, `.quit` / `.exit` | as in sqlite3 |
 | `.asof GEN\|DATE\|off` | (zx) the session reads the database as of a generation or the last one at or before a time (any time value of `datetime()`); writes are refused until `.asof off`. System tables still read the current archive unless the query says `AS OF` |

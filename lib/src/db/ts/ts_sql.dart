@@ -9,21 +9,25 @@
 // a tag column skips the segments whose Bloom filter says no; `search =
 // 'words'` uses the full-text index; ORDER BY the time column (ASC or
 // DESC) is the scan order; only the columns the query uses are decoded.
-// The executor still tests every constraint (so a time compared with
-// text must use zx_ns('2026-09-01'): a DATETIME is an integer).
+// The executor still tests every constraint. DATETIME columns of virtual
+// tables have the comparison affinity timeNs (sql/value.dart): text,
+// unixepoch() and julianday() operands are converted to ns first, so
+// `ts >= '2026-09-01'` prunes and filters the same rows.
 // INSERT appends to the write buffer; UPDATE and DELETE are refused.
 
 import 'dart:convert';
 import 'dart:typed_data';
 
 import '../sql/ast.dart';
+import '../sql/datetime.dart' show parseDateTimeToNs;
 import '../sql/zx_sql.dart';
 import '../storage_api.dart';
 import 'ts_rollup.dart';
 import 'ts_store.dart';
 
 /// A time series as a SQL table.
-class ZxTsSqlTable extends ZxWritableVirtualTable {
+class ZxTsSqlTable extends ZxWritableVirtualTable
+    implements ZxHistoryVirtualTable {
   final ZxTsDef def;
   final int Function() nowMs;
   int _rowid = 0;
@@ -85,6 +89,153 @@ class ZxTsSqlTable extends ZxWritableVirtualTable {
   ZxVtabCursor open(ZxVtabContext ctx) => _TsCursor(this, ctx);
 
   @override
+  List<ZxVtabColumn> get historyColumns => [
+        for (final c in def.columns) ZxVtabColumn(c.name, c.type),
+        const ZxVtabColumn('zx_generation', 'INTEGER'),
+        const ZxVtabColumn('zx_time', 'DATETIME'),
+        const ZxVtabColumn('zx_op', 'TEXT'),
+        const ZxVtabColumn('zx_rows', 'INTEGER'),
+      ];
+
+  /// HISTORY OF a series: per generation the rows it appended ('append',
+  /// in time order) and the partitions it dropped by retention (one
+  /// 'retention' row: the time column is the partition start, zx_rows the
+  /// rows dropped, the other columns NULL). Seals and the rewriting of
+  /// buffer blocks move rows without changing them, so they give no
+  /// rows. Only the partitions whose segments or buffered rows changed
+  /// between two generations are read.
+  @override
+  Iterable<List<Object?>> historyRows(
+      List<({int generation, int timeNs, String? comment})> generations,
+      ZxSnapshot Function(int generation) snapshotAt) sync* {
+    final nc = def.columns.length;
+    final tc = def.tsCol;
+    ZxSnapshot? prev;
+    ZxTsDef? prevDef;
+    var prevSegs = <int, Set<int>>{};
+    var prevBuf = <int, List<List<Object?>>>{};
+    var prevRaw = <Uint8List>[];
+    try {
+      for (final g in generations) {
+        final snap = snapshotAt(g.generation);
+        final d = zxTsDef(snap, def.name);
+        if (d == null || d.uid != def.uid) {
+          // not this series (yet, or an older one of the same name)
+          snap.close();
+          continue;
+        }
+        final segs = <int, Set<int>>{};
+        for (final e in zxTsSegmentList(snap, d.name)) {
+          (segs[e.part] ??= {}).add(e.id);
+        }
+        final raw = <Uint8List>[];
+        final bt = snap.tree(zxTsBufTree(d.name));
+        if (bt != null) {
+          final c = bt.scan();
+          while (c.moveNext()) {
+            raw
+              ..add(c.key)
+              ..add(c.value);
+          }
+          c.close();
+        }
+        var bufSame = raw.length == prevRaw.length;
+        for (var i = 0; bufSame && i < raw.length; i++) {
+          bufSame = _sameBytes(raw[i], prevRaw[i]);
+        }
+        final buf = bufSame ? prevBuf : <int, List<List<Object?>>>{};
+        if (!bufSame) {
+          for (final r in zxTsBufferRows(snap, d)) {
+            (buf[zxTsPartStart(d.partition, r[tc] as int)] ??= []).add(r);
+          }
+        }
+        final parts = <int>{};
+        for (final p in {...segs.keys, ...prevSegs.keys}) {
+          final a = segs[p], b = prevSegs[p];
+          if (a == null || b == null || a.length != b.length || !a.containsAll(b)) {
+            parts.add(p);
+          }
+        }
+        if (!bufSame) {
+          for (final p in {...buf.keys, ...prevBuf.keys}) {
+            if ((buf[p]?.length ?? 0) != (prevBuf[p]?.length ?? 0)) parts.add(p);
+          }
+        }
+        for (final p in parts.toList()..sort()) {
+          final end = zxTsPartEnd(d.partition, p);
+          final now = _partRows(snap, d, p, end);
+          final before = prevDef == null
+              ? const <List<Object?>>[]
+              : _partRows(prev!, prevDef, p, end);
+          final left = <String, int>{};
+          for (final r in before) {
+            final k = _rowKey(r);
+            left[k] = (left[k] ?? 0) + 1;
+          }
+          for (final r in now) {
+            final k = _rowKey(r);
+            final n = left[k] ?? 0;
+            if (n > 0) {
+              left[k] = n - 1;
+              continue;
+            }
+            yield [...r, g.generation, g.timeNs, 'append', 1];
+          }
+          final gone = left.values.fold<int>(0, (a, b) => a + b);
+          if (gone > 0) {
+            final row = List<Object?>.filled(nc, null);
+            row[tc] = p;
+            yield [...row, g.generation, g.timeNs, 'retention', gone];
+          }
+        }
+        prev?.close();
+        prev = snap;
+        prevDef = d;
+        prevSegs = segs;
+        prevBuf = buf;
+        prevRaw = raw;
+      }
+    } finally {
+      prev?.close();
+    }
+  }
+
+  static List<List<Object?>> _partRows(
+      ZxSnapshot s, ZxTsDef d, int from, int to) {
+    final sc = ZxTsScan(s, d, ZxTsScanSpec(from: from, to: to));
+    final n = d.columns.length;
+    final out = <List<Object?>>[];
+    while (sc.moveNext()) {
+      out.add([for (var i = 0; i < n; i++) sc.value(i)]);
+    }
+    return out;
+  }
+
+  static String _rowKey(List<Object?> r) {
+    final sb = StringBuffer();
+    for (final v in r) {
+      sb.write(switch (v) {
+        null => 'n',
+        int() => 'i$v',
+        double() => 'd$v',
+        String() => 's${v.length}:$v',
+        Uint8List() => 'b${base64.encode(v)}',
+        _ => 'o$v',
+      });
+      sb.write(',');
+    }
+    return sb.toString();
+  }
+
+  static bool _sameBytes(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  @override
   int insert(ZxVtabContext ctx, int? rowid, List<Object?> values) {
     final t = ctx.txn;
     if (t == null) {
@@ -117,16 +268,13 @@ class ZxTsSqlTable extends ZxWritableVirtualTable {
       ZxDbError.unsupported);
 }
 
+/// A time constraint value as ns: an integer, or date/time text in the
+/// formats the executor's DATETIME comparison accepts (anything else
+/// compares as text there, so it does not limit the scan).
 int? _timeArg(Object? a) {
   if (a is int) return a;
-  if (a is double) return a.round();
-  if (a is String) {
-    try {
-      return zxTsTimeNs(a);
-    } on ZxDbException {
-      return null;
-    }
-  }
+  if (a is double) return a.isFinite ? a.round() : null;
+  if (a is String) return parseDateTimeToNs(a);
   return null;
 }
 
@@ -176,6 +324,23 @@ class _TsCursor extends ZxVtabCursor {
       }
       if (a == null) {
         empty = true;
+        continue;
+      }
+      // The planner converts text and unixepoch()/julianday() values to
+      // ns (DATETIME comparison affinity); a REAL bounds the range
+      // loosely (the executor tests the exact comparison).
+      if (a is double) {
+        if (!a.isFinite) continue;
+        final lo = a.floor(), hi = a.ceil();
+        switch (op) {
+          case 't=':
+            lower(lo);
+            upper(hi + 1);
+          case 't>' || 't>=':
+            lower(lo);
+          case 't<' || 't<=':
+            upper(hi + 1);
+        }
         continue;
       }
       final v = _timeArg(a);
@@ -317,7 +482,10 @@ class _RollupCursor extends ZxVtabCursor {
       return;
     }
     _it = zxRollupRows(ctx.snapshot, def,
-            from: from, to: to, descending: idxNum & 1 != 0)
+            from: from,
+            to: to,
+            descending: idxNum & 1 != 0,
+            nowMs: ctx.nowNs ~/ 1000000)
         .iterator;
   }
 

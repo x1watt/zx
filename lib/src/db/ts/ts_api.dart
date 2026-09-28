@@ -25,7 +25,8 @@ export 'ts_store.dart'
         ZxTsSealResult,
         ZxTsSealOptions,
         zxTsClearCache,
-        zxTsCacheBudget;
+        zxTsCacheBudget,
+        zxTsHotBytes;
 
 /// A time series of a database.
 class ZxSeries {
@@ -189,7 +190,9 @@ extension ZxDatabaseSeries on ZxDatabase {
   /// Creates a series. [partitionBy]: hour, day (default), week, month;
   /// [retention]: '400d'...; [compression] of the text columns ('max' by
   /// default); [fts]: a TEXT column with a full-text index; [tags]:
-  /// columns with Bloom filters per segment.
+  /// columns with Bloom filters per segment; [hotDays]: keep an LZ4 copy
+  /// of the text columns of partitions younger than that many days (the
+  /// hot tier, for `max` and other slow chains; 0 is off).
   ZxSeries createSeries(String name, List<ZxTsColumn> columns,
       {String? partitionBy,
       String? retention,
@@ -197,7 +200,8 @@ extension ZxDatabaseSeries on ZxDatabase {
       String? fts,
       List<String> tags = const [],
       int? segmentRows,
-      int? sealRows}) {
+      int? sealRows,
+      int? hotDays}) {
     final def = ZxTsDef.create(name, columns,
         partitionBy: partitionBy,
         retention: retention,
@@ -207,6 +211,7 @@ extension ZxDatabaseSeries on ZxDatabase {
           if (tags.isNotEmpty) 'tags': tags,
           if (segmentRows != null) 'segment_rows': segmentRows,
           if (sealRows != null) 'seal_rows': sealRows,
+          if (hotDays != null) 'hot_days': hotDays,
         });
     transaction((t) => zxTsCreate(t, def));
     return ZxSeries(this, name);

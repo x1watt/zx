@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import '../keycodec.dart';
 import '../storage_api.dart';
 import 'catalog.dart';
+import 'datetime.dart' show zxFormatDatetimeNs;
 import 'functions.dart';
 import 'value.dart';
 import 'vtab.dart';
@@ -191,6 +192,93 @@ abstract class Ev {
 
   /// Not constant (random(), subqueries with side effects...).
   bool volatile = false;
+
+  /// The unit of a time number (zx): 0 none, [timeUnitSeconds] for
+  /// unixepoch(), [timeUnitJulian] for julianday(), kept by + and - with
+  /// a plain number. A DATETIME column of a virtual table (ns) compared
+  /// with such a value scales it to ns.
+  int timeUnit = 0;
+
+  /// The declared type of the column this node reads (a column reference,
+  /// also through views and subqueries), else null. Result sets expose
+  /// it so that UIs can format DATETIME ns values.
+  String? declType;
+}
+
+const timeUnitSeconds = 1;
+const timeUnitJulian = 2;
+
+/// Converts the operand of a comparison with a DATETIME column of a
+/// virtual table to ns since 1970 UTC: date/time text is parsed,
+/// unixepoch() seconds and julianday() days are scaled, other values
+/// pass unchanged. Its value is what the planner hands the table as a
+/// constraint, so partition pruning and the executor agree.
+class TimeNsEv extends Ev {
+  final Ev e;
+  TimeNsEv(this.e) {
+    aff = Affinity.timeNs;
+    volatile = e.volatile;
+  }
+
+  @override
+  Object? eval(Frame f) {
+    final v = e.eval(f);
+    if (v == null) return null;
+    switch (e.timeUnit) {
+      case timeUnitSeconds:
+        final n = toNumber(v);
+        if (n is int) return n * 1000000000;
+        if (n is double) return (n * 1e9).round();
+        return v;
+      case timeUnitJulian:
+        final n = toNumber(v);
+        if (n == null) return v;
+        return ((n - 2440587.5) * 86400000.0).round() * 1000000;
+    }
+    return timeNsValue(v);
+  }
+
+  @override
+  void children(void Function(Ev) f) => f(e);
+}
+
+/// A DATETIME column (ns since 1970 UTC) given to a date function
+/// (date, time, datetime, julianday, unixepoch, strftime): the integer
+/// becomes ISO text, so `datetime(ts)` works (zx; the number would be a
+/// Julian day number out of range in SQLite).
+class NsTimeTextEv extends Ev {
+  final Ev e;
+  NsTimeTextEv(this.e) {
+    volatile = e.volatile;
+  }
+
+  @override
+  Object? eval(Frame f) {
+    final v = e.eval(f);
+    return v is int ? zxFormatDatetimeNs(v) : v;
+  }
+
+  @override
+  void children(void Function(Ev) f) => f(e);
+}
+
+/// True when [e] reads a DATETIME column (ns values).
+bool isNsTimeColumn(Ev e) =>
+    e.aff == Affinity.timeNs ||
+    (e.declType != null && kindOfType(e.declType) == ZxColumnKind.datetime);
+
+/// [x] as an operand compared with [other]: wrapped in [TimeNsEv] when
+/// [other] is a DATETIME column of a virtual table and [x] is not.
+Ev timeOperand(Ev x, Ev other) {
+  if (other.aff != Affinity.timeNs || x.aff == Affinity.timeNs) return x;
+  if (x is ConstEv && x.timeUnit == 0) {
+    // literals are converted once (NULL stays a plain NULL constant)
+    if (x.v == null) return x;
+    return ConstEv(timeNsValue(x.v))
+      ..aff = Affinity.timeNs
+      ..coll = x.coll;
+  }
+  return TimeNsEv(x);
 }
 
 class ConstEv extends Ev {
@@ -323,7 +411,15 @@ Object? _real(double d) => d.isNaN ? null : d;
 class ArithEv extends Ev {
   final String op;
   final Ev l, r;
-  ArithEv(this.op, this.l, this.r);
+  ArithEv(this.op, this.l, this.r) {
+    // unixepoch('now') - 86400 is still seconds.
+    if (op == '+' || op == '-') {
+      if (r.timeUnit == 0 && r.aff != Affinity.timeNs) timeUnit = l.timeUnit;
+      if (op == '+' && l.timeUnit == 0 && l.aff != Affinity.timeNs) {
+        timeUnit = r.timeUnit;
+      }
+    }
+  }
   @override
   Object? eval(Frame f) => arithmetic(op, l.eval(f), r.eval(f));
   @override
@@ -502,8 +598,10 @@ class CmpEv extends Ev {
   final Ev l, r;
   final Affinity cmpAff;
   final Collation? cmpColl;
-  CmpEv(this.op, this.l, this.r)
-      : cmpAff = comparisonAffinity(l.aff, r.aff),
+  CmpEv(this.op, Ev l, Ev r)
+      : l = timeOperand(l, r),
+        r = timeOperand(r, l),
+        cmpAff = comparisonAffinity(l.aff, r.aff),
         cmpColl = binaryCollation(l, r);
 
   @override
@@ -542,8 +640,10 @@ class IsEv extends Ev {
   final Ev l, r;
   final Affinity cmpAff;
   final Collation? cmpColl;
-  IsEv(this.not, this.l, this.r)
-      : cmpAff = comparisonAffinity(l.aff, r.aff),
+  IsEv(this.not, Ev l, Ev r)
+      : l = timeOperand(l, r),
+        r = timeOperand(r, l),
+        cmpAff = comparisonAffinity(l.aff, r.aff),
         cmpColl = binaryCollation(l, r);
   @override
   Object? eval(Frame f) {
@@ -579,8 +679,10 @@ class BetweenEv extends Ev {
   final Ev e, lo, hi;
   final Affinity affLo, affHi;
   final Collation? collLo, collHi;
-  BetweenEv(this.not, this.e, this.lo, this.hi)
-      : affLo = comparisonAffinity(e.aff, lo.aff),
+  BetweenEv(this.not, this.e, Ev lo, Ev hi)
+      : lo = timeOperand(lo, e),
+        hi = timeOperand(hi, e),
+        affLo = comparisonAffinity(e.aff, lo.aff),
         affHi = comparisonAffinity(e.aff, hi.aff),
         collLo = binaryCollation(e, lo),
         collHi = binaryCollation(e, hi);
@@ -615,7 +717,8 @@ class InListEv extends Ev {
   final bool not;
   final Ev e;
   final List<Ev> list;
-  InListEv(this.not, this.e, this.list);
+  InListEv(this.not, this.e, List<Ev> list)
+      : list = [for (final x in list) timeOperand(x, e)];
   @override
   Object? eval(Frame f) {
     if (list.isEmpty) return not ? 1 : 0;
@@ -777,6 +880,8 @@ class FuncEv extends Ev {
             : null {
     isJson = fn.resultIsJson;
     volatile = !fn.deterministic;
+    if (fn.name == 'unixepoch') timeUnit = timeUnitSeconds;
+    if (fn.name == 'julianday') timeUnit = timeUnitJulian;
   }
   @override
   Object? eval(Frame f) {

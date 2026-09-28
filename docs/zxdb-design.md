@@ -632,6 +632,26 @@ default, `zxTsCacheBudget`), keyed by the series' random uid, the segment
 id and the column: a segment never changes once written and ids are not
 reused, so the cache needs no invalidation, and AS OF snapshots share it.
 
+The hot tier (option `hot_days`, 1 by default, `ZxTsDef.hotDays`): a
+cold read of zcm text runs at zcm's decode speed, so the seal also
+writes, for segments of partitions that end less than `hot_days` before
+now, each column with coded text sections again with those sections
+coded by LZ4 (number and time sections are LZ4 already and are shared),
+into `ts:<name>:hot` (`store`, keyed as the segment tree). Scans and
+merges read the hot copy when there is one (same decoded values, same
+cache key). Each seal (so also VACUUM) deletes the copies of partitions
+that aged out, and every segment delete (merge, retention) deletes its
+copy. Series with `fast` or `store` text keep no copy. Measured
+(`tool/zxdb_bench_ts.dart --rows 200000 --levels max --hot 1`, 29.3 MiB
+of synthetic log text over 1.2 days, all of it in the hot window): a
+cold read of the last day, all columns, runs at 0.16 MB/s of raw text
+without the copy (about 150 s for the day) and 156 MB/s with it; the
+copy takes 3.5 MiB, about the size of the max segments of the same days
+(3.6 MiB). So the copy roughly doubles the bytes of the hot days only:
+with one day hot and a retention of months that is a few tenths of a
+percent more, against reads of recent data that are about 1000 times
+faster after a restart. That is why it is on by default with one day.
+
 ### 12.4 SQL wiring
 
 `zxTsRegisterSql` (from `ZxDatabase.sql`) resolves series and rollups by
@@ -642,17 +662,56 @@ consumes `ORDER BY ts [DESC]`, a rollup `ORDER BY ts [DESC]`. The parser
 takes `ON series` in CREATE ROLLUP and name lists in options (`tags =
 (a, b)`).
 
+Rollups (`ts_rollup.dart`): a WHERE that is not an AND of simple
+comparisons is stored as SQL text and compiled per read or seal with
+the SQL planner against the series' columns (`sql/row_expr.dart`:
+`ZxRowExpr`, one source of plain rows, no store). A read aggregates the
+buffered rows of its range (the block headers skip the others) into
+(bucket, group) states, sorts them by key and merges them with the
+stored states in one pass (both are in key order, either direction).
+
+Async (`zxdb_async.dart`, `ZxDatabaseAsync.series(name)` /
+`ZxSeriesAsync`): `createSeries`, `dropSeries`, `seriesNames`,
+`sealAllSeries`, `appendAll`, `seal`, `stats`, `scanBatches` and
+`query`. An appendAll is one message and one worker transaction, packed
+by column: integer columns as an Int64List, float columns as a
+Float64List (null bitmaps when needed; 64 KiB and more go as
+TransferableTypedData), other columns (texts) as a List. Measured with
+200k log rows (time, host, latency, int, 80 char message): the caller's
+isolate spends 70 to 85 ms packing and sending against 90 to 110 ms for
+sending the row Lists as they are; the worker spends about 100 ms
+rebuilding rows, off the UI isolate. Joining the texts into one String
+was slower (35 ms for the join alone; a List of Strings copies in 5 to
+7 ms). A scan is a cursor in the worker (it keeps the snapshot of its
+start); `scanBatches` asks for one batch at a time and only while the
+Stream is not paused, so a slow listener holds one batch in flight;
+cancel closes the cursor.
+
+Time comparisons (`sql/value.dart`, `sql/eval.dart`): DATETIME columns
+of virtual tables get the comparison affinity `Affinity.timeNs` (plain
+tables keep NUMERIC). Comparisons wrap the other operand in `TimeNsEv`,
+which parses date/time text to ns and scales `unixepoch()` seconds and
+`julianday()` days (a unit carried by `Ev.timeUnit` through `+` and `-`
+with a plain number); the planner hands that wrapped value to the table
+as the constraint, so pruning and the executor's test see the same ns.
+`BETWEEN` on a virtual table column is passed as `>=` and `<=`.
+`Ev.declType` carries the declared type of column references through
+views and subqueries into `ZxSqlResult.types`.
+
+HISTORY OF a series (`ZxHistoryVirtualTable` in `sql/vtab.dart`,
+implemented by `ZxTsSqlTable`): generation by generation, the segment
+directory (ids per partition) and the raw buffer blocks are compared
+with the previous generation; only partitions whose segments or buffered
+rows changed are read at both generations and their rows diffed as
+multisets. New rows are appends; rows gone are one retention row per
+partition. Seals and block rewrites move rows without changing the
+multiset, so they give nothing.
+
 ### 12.5 Open items
 
-- `HISTORY OF` a series is not supported (AS OF is).
-- Time constraints with text values are applied by the scan, but the
-  executor tests them again with SQL comparison rules (an integer is
-  below any text), so they must be written with `zx_ns(...)`.
-- A rollup's WHERE is limited to comparisons with literals; rows in the
-  write buffer reach rollups only at the seal.
-- A cold read of a `max` (zcm) text column decodes at zcm's speed (about
-  85 KB/s at level 4); scans of time and number columns do not touch the
-  text sections.
+- A cold read of a `max` (zcm) text column older than the hot tier
+  (12.3) decodes at zcm's speed (about 0.16 MB/s of raw log text); scans
+  of time and number columns do not touch the text sections.
 
 ### 12.6 Measured
 

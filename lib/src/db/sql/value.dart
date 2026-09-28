@@ -11,11 +11,17 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../storage_api.dart';
+import 'datetime.dart' show parseDateTimeToNs;
 
 /// Column / expression affinity. [none] is the "no affinity" of
 /// expressions (literals, function results); [blob] is the affinity of
 /// columns declared BLOB or without a type. Neither converts values.
-enum Affinity { none, blob, text, numeric, integer, real }
+/// [timeNs] (zx) is the comparison affinity of the DATETIME columns of
+/// virtual tables (time series, rollups, system tables), whose values
+/// are ns since 1970 UTC: the other operand of a comparison is converted
+/// to ns (date/time text, and the results of unixepoch() and julianday()
+/// scaled from their units). Plain tables keep SQLite's NUMERIC.
+enum Affinity { none, blob, text, numeric, integer, real, timeNs }
 
 bool isNumericAffinity(Affinity a) =>
     a == Affinity.numeric || a == Affinity.integer || a == Affinity.real;
@@ -23,6 +29,7 @@ bool isNumericAffinity(Affinity a) =>
 /// Affinity applied to both operands of a comparison (SQLite
 /// sqlite3CompareAffinity).
 Affinity comparisonAffinity(Affinity a, Affinity b) {
+  if (a == Affinity.timeNs || b == Affinity.timeNs) return Affinity.timeNs;
   if (a != Affinity.none && b != Affinity.none) {
     if (isNumericAffinity(a) || isNumericAffinity(b)) return Affinity.numeric;
     return Affinity.blob;
@@ -39,7 +46,21 @@ Object? applyCompareAffinity(Object? v, Affinity a) {
     if (v is String) return textToNumeric(v, integer: false);
     return v;
   }
+  if (a == Affinity.timeNs) return timeNsValue(v);
   if (a == Affinity.text && v is num) return numToText(v);
+  return v;
+}
+
+/// A value compared with a DATETIME column of a virtual table: date/time
+/// text (ISO-8601 with an optional time, fraction, Z or offset, and every
+/// format of datetime()) becomes ns since 1970 UTC; numeric text becomes
+/// a number; other values are unchanged.
+Object? timeNsValue(Object? v) {
+  if (v is String) {
+    final ns = parseDateTimeToNs(v);
+    if (ns != null) return ns;
+    return textToNumeric(v, integer: false);
+  }
   return v;
 }
 
@@ -349,6 +370,10 @@ Object? applyAffinity(Object? v, Affinity a) {
     case Affinity.text:
       if (v is num) return numToText(v);
       return v;
+    case Affinity.timeNs:
+      if (v is String) return parseDateTimeToNs(v) ?? textToNumeric(v);
+      if (v is double && realIsSmallInt(v)) return v.toInt();
+      return v;
     case Affinity.numeric:
     case Affinity.integer:
       if (v is String) return textToNumeric(v);
@@ -494,6 +519,7 @@ Object? castValue(Object? v, String typeName) {
     case Affinity.text:
       return toText(v);
     case Affinity.integer:
+    case Affinity.timeNs:
       return toInt(v);
     case Affinity.real:
       if (v is num) return v.toDouble();

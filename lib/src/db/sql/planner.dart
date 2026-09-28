@@ -123,6 +123,9 @@ class SourceInfo {
   String kind = 'table'; // table, vtab, sub, list
   String? indexedBy;
   bool notIndexed = false;
+
+  /// Declared column types (null: unknown).
+  List<String?>? types;
   SourceInfo(this.alias, this.display, this.cols, this.affs, this.colls,
       this.json, this.hidden, this.slot);
 
@@ -1317,6 +1320,16 @@ class Planner {
       }
       throw err('no such function: $name');
     }
+    // zx: a DATETIME column given to a date function is ns, not a
+    // Julian day number.
+    final tArg = switch (name.toLowerCase()) {
+      'date' || 'time' || 'datetime' || 'julianday' || 'unixepoch' => 0,
+      'strftime' => 1,
+      _ => -1,
+    };
+    if (tArg >= 0 && tArg < args.length && isNsTimeColumn(args[tArg])) {
+      args[tArg] = NsTimeTextEv(args[tArg]);
+    }
     final ev = FuncEv(fn, args);
     if (name == 'likely' || name == 'unlikely' || name == 'likelihood') {
       ev.aff = args[0].aff;
@@ -1350,6 +1363,8 @@ class Planner {
           ev.aff = src.affs[col];
           ev.coll = src.colls[col];
           ev.isJson = src.json[col];
+          final ty = src.types;
+          if (ty != null && col < ty.length) ev.declType = ty[col];
         } else {
           ev.aff = Affinity.integer;
         }
@@ -2120,6 +2135,7 @@ class Planner {
         slot);
     info.kind = 'sub';
     info.sub = plan;
+    info.types = [for (final e in plan.colInfo) e.declType];
     return info;
   }
 
@@ -2192,6 +2208,7 @@ class Planner {
       info.rowidCol = td.ipk >= 0 ? td.ipk : n;
       if (td.ipk >= 0) info.rowidCol = n; // rowid names map to the row end
       info.table = td;
+      info.types = [for (final c in td.columns) c.type];
       info.snap = snap;
       info.indexedBy = s.indexedBy;
       info.notIndexed = s.notIndexed;
@@ -2248,11 +2265,18 @@ class Planner {
         alias,
         name,
         [for (final c in cols) c.name],
-        [for (final c in cols) affinityOfType(c.type)],
+        [
+          for (final c in cols)
+            // DATETIME columns of virtual tables hold ns: compare as time.
+            kindOfType(c.type) == ZxColumnKind.datetime
+                ? Affinity.timeNs
+                : affinityOfType(c.type)
+        ],
         List.filled(cols.length, null),
         [for (final c in cols) kindOfType(c.type) == ZxColumnKind.json],
         [for (final c in cols) c.hidden],
         slot);
+    info.types = [for (final c in cols) c.type];
     info.rowidCol = cols.length;
     info.vtab = vt;
     info.kind = 'vtab';
@@ -2434,6 +2458,38 @@ class Planner {
   SourceInfo _historySource(TableSource s, String alias, int slot) {
     final store = env.store;
     final gens = store.generations;
+    if (ctx.catalog.table(s.name) == null) {
+      final vt = env.findVtab(s.name, ctx.snap);
+      if (vt is ZxHistoryVirtualTable) {
+        final h = vt as ZxHistoryVirtualTable;
+        final cols = h.historyColumns;
+        final info = SourceInfo(
+            alias,
+            'HISTORY OF ${s.name}',
+            [for (final c in cols) c.name],
+            [
+              for (final c in cols)
+                kindOfType(c.type) == ZxColumnKind.datetime
+                    ? Affinity.timeNs
+                    : affinityOfType(c.type)
+            ],
+            List.filled(cols.length, null),
+            [for (final c in cols) kindOfType(c.type) == ZxColumnKind.json],
+            List.filled(cols.length, false),
+            slot);
+        info.types = [for (final c in cols) c.type];
+        info.rowidCol = cols.length;
+        info.kind = 'list';
+        List<List<Object?>>? rows;
+        info.rowsLoader = () => rows ??= [
+              for (final (i, r) in h
+                  .historyRows(gens, (g) => store.snapshot(generation: g))
+                  .indexed)
+                [...r, i + 1]
+            ];
+        return info;
+      }
+    }
     TableDef? last;
     final out = <List<Object?>>[];
     Map<int, Uint8List> prev = {};
@@ -2672,6 +2728,22 @@ class Planner {
       }
       cons.add(ZxIndexConstraint(col, o, true));
       vals.add(t.value!);
+    }
+    // x BETWEEN a AND b gives the table x >= a and x <= b (the executor
+    // still tests the BETWEEN).
+    final mask = 1 << src.slot;
+    final laterMask = ~((1 << (level + 1)) - 1);
+    bool okValue(Ev v) => (v.deps & mask) == 0 && (v.deps & laterMask) == 0;
+    for (final ev in l.filters) {
+      if (ev is! BetweenEv || ev.not) continue;
+      final e = ev.e;
+      if (e is! ColEv || e.depth != 0 || e.slot != src.slot) continue;
+      if (!okValue(ev.lo) || !okValue(ev.hi)) continue;
+      final col = e.col == src.rowidCol ? -1 : e.col;
+      cons.add(ZxIndexConstraint(col, ZxConstraintOp.ge, true));
+      vals.add(ev.lo);
+      cons.add(ZxIndexConstraint(col, ZxConstraintOp.le, true));
+      vals.add(ev.hi);
     }
     final ob = <ZxIndexOrderBy>[];
     if (order != null) {

@@ -47,6 +47,10 @@ String zxTsDirTree(String s) => 'ts:$s:dir';
 String zxTsSegTree(String s) => 'ts:$s:seg';
 String zxTsFtsTree(String s) => 'ts:$s:fts';
 
+/// The hot tier: LZ4 copies of the columns with coded text of the
+/// segments of recent partitions (option hot_days).
+String zxTsHotTree(String s) => 'ts:$s:hot';
+
 Uint8List _utf8(String s) => Uint8List.fromList(utf8.encode(s));
 
 const int _nsHour = 3600 * 1000000000;
@@ -180,12 +184,18 @@ class ZxTsDef {
   /// A random id (cache keys of decoded columns).
   final int uid;
 
+  /// Days of the hot tier (0: none; 1 by default at creation): segments
+  /// of partitions that end less than this many days before now also
+  /// keep their text columns coded with LZ4 when the series' compression
+  /// is slower than that (not fast or store), and scans read that copy.
+  final int hotDays;
+
   /// The conversion of each column.
   late final List<ZxTsType> kinds = [for (final c in columns) c.kind];
 
   ZxTsDef(this.name, this.columns, this.tsCol, this.partition,
       this.retentionMs, this.compression, this.ftsCol, this.tags,
-      this.segmentRows, this.sealRows, this.uid);
+      this.segmentRows, this.sealRows, this.uid, {this.hotDays = 0});
 
   int columnIndex(String name) {
     final l = name.toLowerCase();
@@ -208,6 +218,7 @@ class ZxTsDef {
         'segmentRows': segmentRows,
         'sealRows': sealRows,
         'uid': uid,
+        if (hotDays > 0) 'hotDays': hotDays,
       };
 
   static ZxTsDef fromJson(String name, Map<String, Object?> j) => ZxTsDef(
@@ -224,7 +235,8 @@ class ZxTsDef {
       (j['tags'] as List).cast<int>(),
       j['segmentRows'] as int,
       j['sealRows'] as int,
-      j['uid'] as int);
+      j['uid'] as int,
+      hotDays: (j['hotDays'] as int?) ?? 0);
 
   /// Builds a definition from CREATE TIMESERIES parts.
   static ZxTsDef create(String name, List<ZxTsColumn> columns,
@@ -309,8 +321,25 @@ class ZxTsDef {
         _intOpt(o['segment_rows']) ?? (1 << 17),
         _intOpt(o['seal_rows']) ?? (1 << 20),
         (rnd.nextInt(1 << 30) << 30) ^ rnd.nextInt(1 << 30) ^
-            DateTime.now().microsecondsSinceEpoch);
+            DateTime.now().microsecondsSinceEpoch,
+        // one day by default: see docs/zxdb-design.md 12.3 (the hot tier)
+        hotDays: o.containsKey('hot_days') ? _hotDaysOpt(o['hot_days']) : 1);
   }
+}
+
+// hot_days: a number of days or a duration ('36h' is 2 days)
+int _hotDaysOpt(Object? v) {
+  if (v == null || v == false) return 0;
+  if (v is int) {
+    if (v < 0) throw ZxDbException('bad hot_days "$v"', ZxDbError.syntax);
+    return v;
+  }
+  final s = '$v'.trim();
+  if (s == '0' || s.toLowerCase() == 'off') return 0;
+  final n = int.tryParse(s);
+  if (n != null && n >= 0) return n;
+  final ms = zxTsParseDurationMs(s);
+  return (ms + 86400000 - 1) ~/ 86400000;
 }
 
 int? _intOpt(Object? v) {
@@ -390,7 +419,8 @@ bool zxTsDrop(ZxWriteTxn t, String name, {bool ifExists = false}) {
     zxTsBufTree(name),
     zxTsDirTree(name),
     zxTsSegTree(name),
-    if (def.ftsCol >= 0) zxTsFtsTree(name)
+    if (def.ftsCol >= 0) zxTsFtsTree(name),
+    zxTsHotTree(name),
   ]) {
     if (t.tree(tn) != null) t.dropTree(tn);
   }
@@ -573,6 +603,21 @@ List<List<Object?>> _readBuffer(ZxTree buf, ZxTsDef def, int? from, int? to) {
   return out;
 }
 
+/// The rows of the write buffer of [def] at [s] with times in [from, to)
+/// (append order; blocks outside the range are not decoded).
+List<List<Object?>> zxTsBufferRows(ZxSnapshot s, ZxTsDef def,
+    {int? from, int? to}) {
+  final buf = s.tree(zxTsBufTree(def.name));
+  if (buf == null) return const [];
+  final tc = def.tsCol;
+  return [
+    for (final r in _readBuffer(buf, def, from, to))
+      if ((from == null || (r[tc] as int) >= from) &&
+          (to == null || (r[tc] as int) < to))
+        r
+  ];
+}
+
 List<List<Object?>> _decodeBlock(Uint8List b, ZxTsDef def, int? from, int? to) {
   final r = TsReader(b);
   final n = r.varint();
@@ -702,9 +747,11 @@ void zxTsClearCache() => _cache.clear();
 /// Sets the memory budget of the decoded column cache.
 set zxTsCacheBudget(int bytes) => _cache.budget = bytes;
 
-TsColumn _column(ZxTree seg, ZxTsDef def, int segId, int col) =>
+TsColumn _column(ZxTree seg, ZxTsDef def, int segId, int col,
+        [ZxTree? hot]) =>
     _cache.get('${def.uid}:$segId:$col', () {
-      final b = seg.get(_colKey(segId, col));
+      final k = _colKey(segId, col);
+      final b = hot?.get(k) ?? seg.get(k);
       if (b == null) {
         throw ZxDbException(
             'time series ${def.name}: missing column $col of segment $segId',
@@ -834,11 +881,19 @@ ZxTsSealResult zxTsSeal(ZxWriteTxn t, String name,
   final dir = t.tree(zxTsDirTree(name))!;
   final seg = t.tree(zxTsSegTree(name))!;
   final fts = def.ftsCol >= 0 ? t.tree(zxTsFtsTree(name)) : null;
+  final hotOn = def.hotDays > 0 && _hotUseful(def);
+  var hot = t.tree(zxTsHotTree(name));
+  if (hot == null && hotOn) {
+    hot = t.createTree(
+        zxTsHotTree(name), const TreeOptions(compression: 'store'));
+  }
   var st = _getState(t, name);
   final rows = _readBuffer(buf, def, null, null);
   final cutoffNs = def.retentionMs == null
       ? null
       : (nowMs - def.retentionMs!) * 1000000;
+  // partitions ending after this are hot
+  final hotNs = (nowMs - def.hotDays * 86400000) * 1000000;
   if (rows.isNotEmpty) listener?.call(t, def, rows, nowMs);
   final tc = def.tsCol;
   // group by partition, keeping the append order
@@ -859,8 +914,8 @@ ZxTsSealResult zxTsSeal(ZxWriteTxn t, String name,
     final ex = _segments(dir, fromPart: part, toPart: part + 1);
     if (ex.isNotEmpty && ex.last.rows < def.segmentRows ~/ 2) {
       final last = ex.last;
-      final old = _segmentRows(seg, def, last);
-      _deleteSegment(dir, seg, fts, last);
+      final old = _segmentRows(seg, def, last, hot);
+      _deleteSegment(dir, seg, fts, last, hot);
       prows = [...old, ...prows];
     }
     // sort by time, stable
@@ -893,6 +948,10 @@ ZxTsSealResult zxTsSeal(ZxWriteTxn t, String name,
       m.head.colBytes[c] = b.length;
       bytes += b.length;
       seg.put(_colKey(m.id, c), b);
+      if (hotOn && zxTsPartEnd(def.partition, m.part) > hotNs) {
+        final hb = _hotBlob(m.drafts[c]);
+        if (hb != null) hot!.put(_colKey(m.id, c), hb);
+      }
     }
     dir.put(_key16(m.part, m.id), m.head.encode());
     final p = m.postings;
@@ -920,27 +979,67 @@ ZxTsSealResult zxTsSeal(ZxWriteTxn t, String name,
     final parts = <int>{};
     for (final h in segs) {
       if (zxTsPartEnd(def.partition, h.part) <= cutoffNs) {
-        _deleteSegment(dir, seg, fts, h);
+        _deleteSegment(dir, seg, fts, h, hot);
         parts.add(h.part);
       }
     }
     dropped = parts.length;
+  }
+  // the hot tier: copies of partitions that aged out go (all of them when
+  // the option is off)
+  if (hot != null) {
+    for (final h in _segments(dir)) {
+      if (!hotOn || zxTsPartEnd(def.partition, h.part) <= hotNs) {
+        hot.deleteRange(from: _colKey(h.id, 0), to: _colKey(h.id + 1, 0));
+      }
+    }
   }
   st = _State(st.nextBlock, nextSeg, 0, 0);
   _putState(t, name, st);
   return ZxTsSealResult(rows.length, made.length, dropped, bytes);
 }
 
-void _deleteSegment(
-    ZxWritableTree dir, ZxWritableTree seg, ZxWritableTree? fts, _SegHead h) {
+void _deleteSegment(ZxWritableTree dir, ZxWritableTree seg,
+    ZxWritableTree? fts, _SegHead h, ZxWritableTree? hot) {
   dir.delete(_key16(h.part, h.id));
   seg.deleteRange(from: _colKey(h.id, 0), to: _colKey(h.id + 1, 0));
   fts?.deleteRange(from: _key8(h.id), to: _key8(h.id + 1));
+  hot?.deleteRange(from: _colKey(h.id, 0), to: _colKey(h.id + 1, 0));
 }
 
-List<List<Object?>> _segmentRows(ZxTree seg, ZxTsDef def, _SegHead h) {
+// A hot tier pays off only when the text is coded with something slower
+// than LZ4.
+bool _hotUseful(ZxTsDef def) {
+  final c = def.compression.toLowerCase();
+  return c != 'fast' && c != 'store';
+}
+
+// The column [d] with its coded text sections coded again with LZ4, or
+// null when it has none (numbers and time are LZ4 already).
+Uint8List? _hotBlob(TsColumnDraft d) {
+  var any = false;
+  final secs = <TsSection>[];
+  for (final s in d.sections) {
+    if (!s.text || s.coders == null) {
+      secs.add(s);
+      continue;
+    }
+    any = true;
+    final n = TsSection(s.raw, true);
+    final r = tsCode(s.raw, zxDbFastChain);
+    if (r != null) {
+      n.payload = r.$1;
+      n.coders = r.$2;
+    }
+    secs.add(n);
+  }
+  return any ? TsColumnDraft(d.head, secs).build() : null;
+}
+
+List<List<Object?>> _segmentRows(ZxTree seg, ZxTsDef def, _SegHead h,
+    [ZxTree? hot]) {
   final nc = def.columns.length;
-  final cols = [for (var c = 0; c < nc; c++) _column(seg, def, h.id, c)];
+  final cols = [for (var c = 0; c < nc; c++) _column(seg, def, h.id, c, hot)];
   return [
     for (var i = 0; i < h.rows; i++) [for (var c = 0; c < nc; c++) cols[c].value(i)]
   ];
@@ -1067,6 +1166,7 @@ class ZxTsScan {
   final ZxTsScanSpec spec;
   late final ZxTree _seg;
   late final ZxTree? _fts;
+  late final ZxTree? _hot;
   final List<int> _parts = [];
   final Map<int, List<_SegHead>> _segsByPart = {};
   final Map<int, List<List<Object?>>> _bufByPart = {};
@@ -1085,6 +1185,7 @@ class ZxTsScan {
   ZxTsScan(this.snap, this.def, this.spec) {
     final name = def.name;
     _seg = snap.tree(zxTsSegTree(name))!;
+    _hot = def.hotDays > 0 ? snap.tree(zxTsHotTree(name)) : null;
     _fts = def.ftsCol >= 0 ? snap.tree(zxTsFtsTree(name)) : null;
     final m = spec.match;
     _words = m == null
@@ -1214,20 +1315,20 @@ class ZxTsScan {
       for (final h in segs) {
         final allow = _ftsRows(h);
         if (allow != null && allow.isEmpty) continue;
-        final tcol = _column(_seg, def, h.id, def.tsCol);
+        final tcol = _column(_seg, def, h.id, def.tsCol, _hot);
         final cols = List<TsColumn?>.filled(nc, null);
         for (var c = 0; c < nc; c++) {
           if (c == def.tsCol) {
             cols[c] = tcol;
           } else if (_need(c)) {
-            cols[c] = _column(_seg, def, h.id, c);
+            cols[c] = _column(_seg, def, h.id, c, _hot);
           }
         }
         final eqCols = <TsColumn>[];
         final eqVals = <Object?>[];
         if (spec.filterRows) {
           for (final e in eq.entries) {
-            eqCols.add(cols[e.key] ?? _column(_seg, def, h.id, e.key));
+            eqCols.add(cols[e.key] ?? _column(_seg, def, h.id, e.key, _hot));
             eqVals.add(e.value);
           }
         }
@@ -1349,7 +1450,7 @@ class ZxTsScan {
     if (rows != null) return rows[_cr][c];
     var col = s.cols[c];
     if (col == null) {
-      col = _column(_seg, def, s.head!.id, c);
+      col = _column(_seg, def, s.head!.id, c, _hot);
       s.cols[c] = col;
     }
     return col.value(_cr);
@@ -1382,4 +1483,28 @@ Uint8List? _prefixEnd(Uint8List p) {
     }
   }
   return null;
+}
+
+/// Bytes of the hot tier of series [name] (LZ4 copies of recent text
+/// columns; 0 when it has none).
+int zxTsHotBytes(ZxSnapshot s, String name) {
+  final h = s.tree(zxTsHotTree(name));
+  if (h == null) return 0;
+  var n = 0;
+  final c = h.scan();
+  while (c.moveNext()) {
+    n += c.value.length;
+  }
+  c.close();
+  return n;
+}
+
+/// The sealed segments of series [name] at [s]: partition start, segment
+/// id and rows (read from the directory only; used by HISTORY OF).
+List<({int part, int id, int rows})> zxTsSegmentList(ZxSnapshot s, String name) {
+  final dir = s.tree(zxTsDirTree(name));
+  if (dir == null) return const [];
+  return [
+    for (final h in _segments(dir)) (part: h.part, id: h.id, rows: h.rows)
+  ];
 }

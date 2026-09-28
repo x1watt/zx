@@ -36,6 +36,7 @@ export 'functions.dart'
         ZxAggregateFunction,
         ZxAggregateState,
         ZxFunctionContext;
+export 'datetime.dart' show zxFormatDatetimeNs;
 export 'vtab.dart';
 
 /// Result of [ZxSql.execute].
@@ -46,8 +47,19 @@ class ZxSqlResult {
   /// Rows inserted, updated or deleted by the (last) statement.
   final int changes;
   final int lastInsertRowid;
+
+  /// Per column, the declared type of the column it reads when the result
+  /// column is a column reference (also through views and subqueries),
+  /// else null; empty when unknown (statements other than SELECT). UIs use
+  /// it to show DATETIME values (ns since 1970 UTC) as dates: see
+  /// [isDatetime] and [zxFormatDatetimeNs].
+  final List<String?> types;
   const ZxSqlResult(
-      this.columns, this.rows, this.changes, this.lastInsertRowid);
+      this.columns, this.rows, this.changes, this.lastInsertRowid,
+      {this.types = const []});
+
+  /// True when column [i] holds DATETIME values (ns since 1970 UTC).
+  bool isDatetime(int i) => zxIsDatetimeType(i < types.length ? types[i] : null);
 
   bool get isEmpty => rows.isEmpty;
 
@@ -67,11 +79,17 @@ class ZxSqlResult {
 /// Streaming result of a query.
 class ZxSqlCursor {
   final List<String> columns;
+
+  /// Declared types of the columns, as [ZxSqlResult.types].
+  final List<String?> types;
   final RowIter _it;
   final void Function() _onClose;
   bool _closed = false;
   List<Object?>? _cur;
-  ZxSqlCursor._(this.columns, this._it, this._onClose);
+  ZxSqlCursor._(this.columns, this._it, this._onClose, {this.types = const []});
+
+  /// True when column [i] holds DATETIME values (ns since 1970 UTC).
+  bool isDatetime(int i) => zxIsDatetimeType(i < types.length ? types[i] : null);
 
   bool moveNext() {
     if (_closed) return false;
@@ -284,7 +302,7 @@ class ZxSql {
     final st = s.statements.last;
     if (st is! SelectStmt) {
       final r = _run(st, p);
-      return ZxSqlCursor._(r.columns, ListIter(r.rows), () {});
+      return ZxSqlCursor._(r.columns, ListIter(r.rows), () {}, types: r.types);
     }
     final snap = _txn ?? store.snapshot();
     final own = _txn == null;
@@ -295,12 +313,17 @@ class ZxSql {
       return ZxSqlCursor._(plan.columns, it, () {
         ctx.closeExtra();
         if (own) snap.close();
-      });
+      }, types: _typesOf(plan));
     } catch (_) {
       if (own) snap.close();
       rethrow;
     }
   }
+
+  static List<String?> _typesOf(SelectPlan plan) => [
+        for (final e in plan.colInfo)
+          e.declType ?? (e.aff == Affinity.timeNs ? 'DATETIME' : null)
+      ];
 
   ExecCtx _ctx(ZxSnapshot snap, ZxWriteTxn? txn, List<Object?> params) =>
       ExecCtx(_env, snap, txn, _catalogFor(snap), params, _now(),
@@ -414,7 +437,8 @@ class ZxSql {
   ZxSqlResult _readStmt(Stmt st, ExecCtx ctx) {
     if (st is SelectStmt) {
       final plan = Planner(ctx).planSelect(st, null, null);
-      return ZxSqlResult(plan.columns, drain(plan.open(null)), 0, _lastRowid);
+      return ZxSqlResult(plan.columns, drain(plan.open(null)), 0, _lastRowid,
+          types: _typesOf(plan));
     }
     if (st is ExplainStmt) return _explain(st, ctx);
     if (st is PragmaStmt) return _pragma(st, ctx);
@@ -639,6 +663,7 @@ class _Ddl {
             Affinity.real => 'REAL',
             Affinity.text => 'TEXT',
             Affinity.numeric => 'NUM',
+            Affinity.timeNs => 'DATETIME',
             _ => '',
           };
       final seen = <String>{};
@@ -969,3 +994,9 @@ Expr renameInExpr(Expr e, String from, String to) {
   }
   return e;
 }
+
+/// True for the declared types whose values are ns since 1970 UTC
+/// (DATETIME, TIMESTAMP).
+bool zxIsDatetimeType(String? type) =>
+    type != null && kindOfType(type) == ZxColumnKind.datetime;
+

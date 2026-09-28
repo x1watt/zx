@@ -569,6 +569,10 @@ zcm text runs at zcm's decode speed).
   text is one free column (max: 0.94 of xz's size ratio).
 - A full warm scan of 1M rows exceeds the decoded column cache (256 MiB)
   and runs at cold speed; a day fits (875 MB/s).
+- The hot tier (`--hot 1`, 200k lines, 29.3 MiB of text over 1.2 days,
+  max): a cold read of the last day, all columns, 0.16 MB/s without it,
+  156 MB/s with it; the LZ4 copy takes 3.5 MiB beside 3.6 MiB of max
+  segments (docs/zxdb-design.md 12.3). Seal of max: 117 s for 200k lines.
 - The buffer blocks stay under 16 KiB so the tree keeps them inline: as
   overflow values each was hashed (SHA-256) for deduplication at put.
 

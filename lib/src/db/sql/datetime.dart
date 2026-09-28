@@ -584,3 +584,27 @@ int _dayOfYear(_DT p) {
 
 /// Current time as iJD milliseconds.
 int nowJulianMs(int unixNs) => unixNs ~/ 1000000 + _unixEpochJDms;
+
+/// A DATETIME value (ns since 1970 UTC) as ISO-8601 text in UTC:
+/// `YYYY-MM-DD HH:MM:SS`, with the fraction of a second when it is not
+/// zero (3, 6 or 9 digits). Values that are not integers come back as
+/// text unchanged.
+String zxFormatDatetimeNs(Object? v) {
+  if (v is! int) return v == null ? '' : '$v';
+  final sec = v ~/ 1000000000 - (v % 1000000000 != 0 && v < 0 ? 1 : 0);
+  final frac = v - sec * 1000000000;
+  final d = DateTime.fromMillisecondsSinceEpoch(sec * 1000, isUtc: true);
+  String two(int x) => x.toString().padLeft(2, '0');
+  var out = '${d.year.toString().padLeft(4, '0')}-${two(d.month)}-${two(d.day)} '
+      '${two(d.hour)}:${two(d.minute)}:${two(d.second)}';
+  if (frac != 0) {
+    var f = frac.toString().padLeft(9, '0');
+    if (f.endsWith('000000')) {
+      f = f.substring(0, 3);
+    } else if (f.endsWith('000')) {
+      f = f.substring(0, 6);
+    }
+    out = '$out.$f';
+  }
+  return out;
+}

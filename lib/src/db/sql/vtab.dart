@@ -147,6 +147,19 @@ abstract class ZxVirtualTable {
   ZxVtabCursor open(ZxVtabContext ctx);
 }
 
+/// A virtual table with a history: `FROM HISTORY OF name` yields
+/// [historyRows] with the columns [historyColumns] (zx; used by time
+/// series, docs/zxdb-sql.md "Time travel").
+abstract class ZxHistoryVirtualTable {
+  List<ZxVtabColumn> get historyColumns;
+
+  /// The rows of HISTORY OF, from the committed [generations] (oldest
+  /// first); [snapshotAt] opens a generation (the caller closes it).
+  Iterable<List<Object?>> historyRows(
+      List<({int generation, int timeNs, String? comment})> generations,
+      ZxSnapshot Function(int generation) snapshotAt);
+}
+
 /// Conflict resolution of INSERT OR ... / UPDATE OR ... (SQLite's ON
 /// CONFLICT algorithms). [abort] is the default: fail the statement.
 enum ZxConflictMode { abort, fail, ignore, replace, rollback }
