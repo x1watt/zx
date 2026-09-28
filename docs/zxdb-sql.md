@@ -283,11 +283,75 @@ zx statements (**Deviation**, passed to hooks):
 CREATE KV STORE [IF NOT EXISTS] name [WITH (ttl = '7d', compression = 'fast')];
 CREATE TIMESERIES [IF NOT EXISTS] logs (ts DATETIME, level TEXT, message TEXT)
   PARTITION BY DAY RETENTION '400d' [WITH (compression = 'max')];
-CREATE ROLLUP [IF NOT EXISTS] name [(cols)] [EVERY '1h'] [RETENTION '...'] [WITH (...)]
+CREATE ROLLUP [IF NOT EXISTS] name [(cols)] [ON series] [EVERY '1h'] [RETENTION '...'] [WITH (...)]
   AS SELECT ... [EVERY '1h'];
 DROP KV STORE | TIMESERIES | ROLLUP [IF EXISTS] name;
 VACUUM [ULTRA];
 ```
+
+### Time series (**Deviation**)
+
+A time series is an append-only table of rows with a time, stored in
+column segments per time partition (docs/zxdb-design.md sections 2.3 and
+12). `ZxDatabase.sql` knows them; the Dart API is `db.series(name)`.
+
+```sql
+CREATE TIMESERIES [IF NOT EXISTS] logs (
+  ts DATETIME, host TEXT, level TEXT, message TEXT, fields JSON, latency REAL
+) PARTITION BY HOUR | DAY | WEEK | MONTH   -- default DAY
+  RETENTION '400d'                          -- optional: ms, s, m, h, d, w, y
+  WITH (compression = 'max', fts = on, tags = (host, level));
+DROP TIMESERIES [IF EXISTS] logs;           -- its rollups too
+```
+
+- The time column is the DATETIME column named `ts`, else the first
+  DATETIME column; its values are ns since 1970 UTC (INTEGER). Rows
+  without a time are refused. Column types convert values as for tables
+  (DATETIME text to ns, JSON objects to text, BOOLEAN to 0/1); a column's
+  values keep their own types otherwise.
+- Options: `compression` (of the text columns and dictionaries: `store`,
+  `fast`, `balanced`, `max` (the default, zcm), `ultra` or a chain),
+  `fts = on` (a full-text index on the column `message`, else the first
+  TEXT column) or `fts = column`, `tags = (col, ...)` (a Bloom filter per
+  segment and tag column), `segment_rows` (131072) and `seal_rows`
+  (1048576: an append or INSERT that leaves this many rows in the write
+  buffer seals it).
+- `INSERT` appends to the write buffer. `UPDATE` and `DELETE` fail: rows
+  go by retention (whole partitions, at each seal and at VACUUM, relative
+  to the clock) or with `DROP TIMESERIES`.
+- `SELECT` reads the sealed segments and the write buffer. Constraints
+  `ts =, <, <=, >, >=` with an integer (ns) choose the partitions and
+  segments read; compare with `zx_ns('2026-09-01')`, not with text (a
+  DATETIME is an integer, and the executor tests every constraint again).
+  `tag = value` skips the segments whose Bloom filter excludes the value.
+  `ORDER BY ts` or `ORDER BY ts DESC` is the scan's own order (no sort).
+  Only the columns the query uses are decoded.
+- Full-text search: the hidden column `search`, `WHERE search = 'timeout
+  upstream'`: rows whose indexed column holds every word (`word*` matches
+  a prefix; words are folded like the metadata full-text index: lower
+  case, accents removed).
+- `FROM logs AS OF ...` reads the series as it was; `HISTORY OF` is not
+  supported for series.
+
+```sql
+CREATE ROLLUP hourly ON logs EVERY '1h' RETENTION '5y' AS
+  SELECT level, count(*) AS n, avg(latency) AS lat, max(latency) AS worst
+  FROM logs WHERE host <> 'test' GROUP BY level;
+SELECT * FROM hourly WHERE ts >= zx_ns('2026-09-01') ORDER BY ts;
+DROP ROLLUP [IF EXISTS] hourly;
+```
+
+- A rollup is a materialized aggregate per time bucket: its rows are
+  `ts` (the bucket start) and the select's columns. The select has group
+  columns (in GROUP BY) and aggregates `count(*)`, `count(x)`, `sum`,
+  `total`, `avg`, `min`, `max`, `first(x)` and `last(x)` (by time); its
+  WHERE is an AND of comparisons of a column with literals (`=`, `<>`,
+  `<`, `<=`, `>`, `>=`, `IN`, `IS [NOT] NULL`, `LIKE`). `ON series` or
+  the FROM names the series; EVERY is required.
+- It is filled from the sealed rows when it is created and kept up to
+  date at each seal (rows in the write buffer are not in it yet). Its
+  data outlives the series' retention; its own RETENTION drops old
+  buckets at each seal.
 
 ### Time travel (**Deviation**)
 
@@ -404,3 +468,55 @@ default fills the missing columns on read, as in SQLite.
 - Renaming a table or column does not rewrite views that use it.
 - `printf('%.0f', x)` truncates, as SQLite 3.45 does; printf prints at
   most 16 significant digits.
+
+## The zx sql shell
+
+`zx sql [OPTIONS] ARCHIVE [SQL | .COMMAND ...]` (`lib/src/cli/sql_command.dart`,
+`lib/src/cli/sql_shell.dart`) is the database's command line, modeled on
+the `sqlite3` program. The archive is created when it does not exist
+(its database on the first write). Arguments after the archive run in
+order (SQL or dot commands) and the program ends; without them statements
+are read from the standard input: a script (errors are reported with the
+line of the statement, `Parse error near line 3: no such table: t`, and
+the exit code is 1 when there were any), or an interactive shell on a
+terminal (prompt `zx> `, continuation `   ...> `, line editing with the
+arrow keys, Home/End, Ctrl-A/E/K/U/W, Ctrl-C to drop the line, history
+in `~/.zx_sql_history`). A statement ends at a `;` outside quotes and
+comments; several statements may share a line and one may span lines.
+
+Options: `-list`, `-csv`, `-json`, `-line`, `-table`, `-box`, `-markdown`,
+`-quote`, `-tabs` (output mode), `-header` / `-noheader`, `-separator SEP`,
+`-nullvalue TEXT`, `-cmd COMMAND` (run before the input), `-bail` (stop at
+the first error), `-readonly`, `-p{Password}`, `-help`.
+
+Output modes print what sqlite3 3.45 prints (checked against it in
+`test/cli_sql_test.dart`): `list` (`|` separated, headers off by default),
+`csv` (RFC 4180 quoting as sqlite3 does it; rows end in CRLF after `.mode
+csv` and in LF with `-csv`, as in sqlite3), `json` (one array per
+statement), `line`, `table`, `box`, `markdown` (headers always, cells with
+new lines on several lines, tabs expanded), `quote` (SQL literals) and
+`tabs`. REALs print as `%!.15g`. **Deviation**: `json` and `quote` print a
+REAL with the fewest digits (15 to 17) that read back as the same value,
+where sqlite3 prints up to 20 digits (`0.1`, sqlite3 `0.100000000000000005`).
+Statements with no rows print nothing (no header either).
+
+Dot commands:
+
+| Command | Effect |
+|---|---|
+| `.tables [PATTERN]` | tables, views and KV stores (a LIKE pattern also matches the system tables, `.tables zx_%`), in columns as sqlite3 prints them |
+| `.schema [PATTERN]` | the CREATE statements (and `CREATE KV STORE`; with a pattern, the metadata tables' DDL) |
+| `.indexes [TABLE]` | index names |
+| `.mode MODE`, `.headers on\|off`, `.nullvalue TEXT`, `.separator COL [ROW]` | output settings |
+| `.import [--csv\|--json] [--skip N] FILE TABLE` | CSV (a missing table is created with TEXT columns named by the first row; into an existing table every row is data), or JSON (`.json`, `.jsonl`, `.ndjson` or `--json`: an array of objects or one object per line; a new table gets the keys as untyped columns, nested values become JSON text); one transaction |
+| `.export FILE TABLE\|QUERY` | writes a table or a query: `.csv` (header, CRLF), `.json` (an array of objects), `.jsonl` (one object per line); BLOBs as hex (zx extension; sqlite3 has no .export) |
+| `.read FILE` | runs a file of statements and dot commands |
+| `.param set NAME VALUE`, `.param unset NAME`, `.param list`, `.param clear` | named parameters (`:x`, `@x`, `$x`) for the statements; VALUE is a SQL expression, text when it does not parse |
+| `.timer on\|off` | prints `Run Time: real S` after each statement (no user and sys times) |
+| `.bail on\|off`, `.print TEXT`, `.help`, `.quit` / `.exit` | as in sqlite3 |
+| `.asof GEN\|DATE\|off` | (zx) the session reads the database as of a generation or the last one at or before a time (any time value of `datetime()`); writes are refused until `.asof off`. System tables still read the current archive unless the query says `AS OF` |
+| `.generations` | (zx) the generations: number, time (UTC), comment |
+| `.kv` | (zx) the KV stores: name, TTL, entries |
+| `.vacuum [ultra]` | (zx) `VACUUM` (`ultra`: recompress every page with the strongest chain) and the bytes freed |
+| `.import-arca DIR`, `.export-arca DIR` | (zx) arca manifests, subtitles and previews into / out of the metadata tables (`arcaImport` / `arcaExport`) |
+| `.import-sqlite FILE [TABLE...]`, `.export-sqlite FILE [TABLE...]` | (zx) tables, rows, indexes and views from / to a SQLite database file (`sqliteImport` / `sqliteExport` in `lib/src/db/sqlite_io/`) |

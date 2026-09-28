@@ -569,6 +569,19 @@ input differences, never by reading or disassembling their code.
   archive again with `ZxArchive.open(version:)`; the model keeps the list
   of every version (`allVersions`), since a handle at version N lists
   only the versions up to N.
+- The database of a .zx archive (section 17): `DbSession`
+  (`app/lib/src/db_session.dart`) checks for one with
+  `ZxDatabaseAsync.hasDatabase` (a background isolate) when a .zx
+  archive is shown, and keeps a `ZxDatabaseAsync` (worker isolate) open
+  for the Data view, the metadata of the preview and the Properties, and
+  the similar files and SHA-256 searches; the opener is behind
+  `AppServices.dbOpener` for the tests. A session is made per archive
+  file, version and read-only reason: nested levels, the flattened view
+  and older versions refuse writes (an older version reads `AS OF
+  GENERATION n`). After a SQL write the listing is opened again (the
+  archive has a new generation, and the handler refuses to write over a
+  generation it has not seen); after a change of the archive the SQL
+  session is made again (`resetSql`) so the system tables see the files.
 - Same text rules as the library: plain ASCII in comments, docs and
   strings of the UI.
 
@@ -1019,8 +1032,9 @@ not apply).
   `engine/` implements it in the archive; `kv.dart` and `zxdb.dart`
   (`ZxDatabase`) are the public API of the key-value stores and of the
   database; `zxdb_async.dart` runs `ZxDatabase` in a worker isolate.
-  `sql/` (the SQL engine), `system/` (system tables, TLSH band index) and
-  `meta/` (metadata tables, full-text index) use the contract only.
+  `sql/` (the SQL engine), `system/` (system tables, TLSH band index),
+  `meta/` (metadata tables, full-text index) and `ts/` (time series and
+  rollups, docs/zxdb-design.md section 12) use the contract only.
 - **Engine files** (`lib/src/db/engine`): `page.dart` (the decoded pages
   and their bytes: leaves and branches with prefix-compressed keys,
   overflow pages), `btree.dart` (the copy-on-write B+tree over page ids:
@@ -1029,8 +1043,15 @@ not apply).
   pages, the page cache, `DbView` that resolves page ids of one
   generation), `store.dart` (`ZxDbStore`: open or create, snapshots, the
   write transaction with its spill of changed pages, the commit as an
-  archive generation, fold, vacuum), `compression.dart` (the policy
-  names and their chains), `cache.dart` (the LRU with a byte budget).
+  archive generation, fold, vacuum), `delta.dart` (the delta layer of
+  large trees: memtable, sorted runs, the merge cursor, the runs' Bloom
+  filters), `compression.dart` (the policy names and their chains),
+  `cache.dart` (the LRU with a byte budget).
+- **Delta layer.** Random writes into a large tree go to a memtable of
+  the transaction and become a sorted run at commit (pages written once);
+  reads merge memtable, runs and base; runs are merged by size tiers and
+  folded into the base in one sorted pass (`fold`, vacuum, or when they
+  pass half the tree). docs/zxdb-design.md 11.2.
 - **Pages by id.** A tree names its pages by id; the page map of each
   generation (map pages of 1024 locations, listed by the root in Index
   record 0x49) says where each id's current bytes are. A write
@@ -1042,7 +1063,9 @@ not apply).
 - **Commit.** One archive generation: the changed pages in page blocks
   (type 7), grouped by tree (about 64 KiB of pages a block), the changed
   map pages, then the Index of the last generation with the new database
-  root (file entries, chunk runs, generation list carried) and a Footer;
+  root (file entries, chunk runs, generation list carried), usually as an
+  incremental Index naming the last full one (docs/zx-format.md 9.1.2,
+  a full checkpoint every 64 commits), and a Footer;
   a crash before the Footer leaves the previous generation current and
   the next commit cuts the partial one. The Index is stored when it is
   small and coded with LZMA2 level 1 (the Header's metadata chain)

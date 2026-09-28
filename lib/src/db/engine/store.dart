@@ -12,6 +12,7 @@
 //
 // Synchronous: the async API runs it in a worker isolate (zxdb_async.dart).
 
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -33,6 +34,7 @@ import '../storage_api.dart';
 import 'btree.dart';
 import 'compression.dart';
 import 'dbfile.dart';
+import 'delta.dart';
 import 'page.dart';
 
 /// Settings of a [ZxDbStore].
@@ -86,6 +88,33 @@ class ZxDbStoreOptions {
   /// The clock of the generations (ns since epoch); tests may fix it.
   int Function()? clock;
 
+  /// Trees of at least this many entries take random writes through the
+  /// delta layer (sorted runs merged at fold, delta.dart); -1: never.
+  int lsmMinEntries;
+
+  /// A transaction's writes to such a tree go straight into the tree
+  /// (not a run) when they are at least 1/lsmDirectRatio of its entries
+  /// and it has no runs, or when they all come after its last key.
+  int lsmDirectRatio;
+
+  /// A tree's writes held in memory before they become a run.
+  int lsmMemBytes;
+
+  /// Runs of a tree before the newest ones are merged whatever their size.
+  int lsmMaxRuns;
+
+  /// The runs of a tree are folded into it (one sorted pass) when their
+  /// entries exceed this fraction of the tree's entries and lsmFoldMin.
+  double lsmFoldRatio;
+  int lsmFoldMin;
+
+  /// Database commits write an incremental Index (the database root and
+  /// the new generations, naming the last full Index) instead of the
+  /// whole Index of the archive; a full Index (a checkpoint) is written
+  /// after this many commits, or when the full Index is small. 0: always
+  /// a full Index.
+  int indexCheckpointCommits;
+
   ZxDbStoreOptions(
       {this.pageCacheBytes = 128 << 20,
       this.blockCacheBytes = 32 << 20,
@@ -100,7 +129,14 @@ class ZxDbStoreOptions {
       this.memoryLimit,
       this.checkType = ZxCheck.xxh64,
       this.refreshMicros = 1000,
-      this.clock})
+      this.clock,
+      this.indexCheckpointCommits = 64,
+      this.lsmMinEntries = 65536,
+      this.lsmDirectRatio = 8,
+      this.lsmMemBytes = 32 << 20,
+      this.lsmMaxRuns = 20,
+      this.lsmFoldRatio = 0.5,
+      this.lsmFoldMin = 65536})
       : threads = threads ?? defaultThreads();
 }
 
@@ -113,23 +149,61 @@ class ZxDbFoldResult {
   const ZxDbFoldResult(this.pages, this.bytesIn, this.bytesOut, this.generation);
 }
 
-/// A tree of the catalog: its number (the tag of its pages), its root
-/// page, its entry count and options.
+/// A tree of the catalog: its number (the tag of its pages), its base
+/// tree (root page, entries), its delta runs (newest first), its entry
+/// count and options.
 class TreeMeta {
   final String name;
   final int id;
+
+  /// The root page of the base tree.
   int root;
+
+  /// The entries of the tree (base and runs merged).
   int count;
+
+  /// The entries of the base tree alone.
+  int baseCount;
+
+  /// [count] is exact; false after blind puts into the delta layer (it
+  /// is then an upper bound, settled by [deltaExactCount] or a fold).
+  bool countExact;
+
+  /// The delta runs, newest first (delta.dart).
+  List<DeltaRun> runs;
   TreeOptions options;
-  TreeMeta(this.name, this.id, this.root, this.count, this.options);
+  TreeMeta(this.name, this.id, this.root, this.count, this.options,
+      {int? baseCount, List<DeltaRun>? runs, this.countExact = true})
+      : baseCount = baseCount ?? count,
+        runs = runs ?? [];
 
   int get tag => id < 0xFFFF ? id : 0xFFFF;
 
-  // vint version 1, vint id, vint root, vint count, vint page size (0:
-  // default), vint 1 then string compression, or vint 0
+  /// The entries of the runs (deletions included) and their bytes.
+  int get deltaCount {
+    var n = 0;
+    for (final r in runs) {
+      n += r.count;
+    }
+    return n;
+  }
+
+  int get deltaBytes {
+    var n = 0;
+    for (final r in runs) {
+      n += r.bytes;
+    }
+    return n;
+  }
+
+  // vint version (1, or 2 with runs), vint id, vint root, vint count, vint
+  // page size (0: default), vint 1 then string compression, or vint 0;
+  // version 2 adds vint flags (bit 0: count not exact), vint base count,
+  // vint run count, runs x (vint root, vint entries, vint bytes)
   Uint8List encode() {
     final w = ZxBytes(32);
-    w.vint(1);
+    final v2 = runs.isNotEmpty || baseCount != count || !countExact;
+    w.vint(v2 ? 2 : 1);
     w.vint(id);
     w.vint(root);
     w.vint(count);
@@ -141,21 +215,44 @@ class TreeMeta {
       w.vint(1);
       w.string(c);
     }
+    if (v2) {
+      w.vint(countExact ? 0 : 1);
+      w.vint(baseCount);
+      w.vint(runs.length);
+      for (final r in runs) {
+        w.vint(r.root);
+        w.vint(r.count);
+        w.vint(r.bytes);
+      }
+    }
     return w.toBytes();
   }
 
   static TreeMeta decode(String name, Uint8List b) {
     try {
       final r = ZxRead(b);
-      if (r.vint() != 1) {
+      final v = r.vint();
+      if (v != 1 && v != 2) {
         throw const ZxDbException(
             'unsupported catalog record', ZxDbError.unsupported);
       }
       final id = r.vint(), root = r.vint(), count = r.vint();
       final ps = r.vint();
       final c = r.vint() == 1 ? r.string() : null;
+      var baseCount = count;
+      var exact = true;
+      final runs = <DeltaRun>[];
+      if (v == 2) {
+        exact = (r.vint() & 1) == 0;
+        baseCount = r.vint();
+        final n = r.count(3);
+        for (var i = 0; i < n; i++) {
+          runs.add(DeltaRun(r.vint(), r.vint(), r.vint()));
+        }
+      }
       return TreeMeta(name, id, root, count,
-          TreeOptions(compression: c, pageSize: ps == 0 ? null : ps));
+          TreeOptions(compression: c, pageSize: ps == 0 ? null : ps),
+          baseCount: baseCount, runs: runs, countExact: exact);
     } on SevenZipException catch (e) {
       throw ZxDbException('damaged catalog: ${e.message}', ZxDbError.corrupt);
     }
@@ -580,7 +677,26 @@ class ZxDbStore implements ZxStore {
       idx.optionalFeatures = last.optionalFeatures;
       idx.database = root;
       final start = w.pos;
-      w.writeIndex(idx.encode(multiVolume: false));
+      // an incremental Index (docs/zx-format.md 9.1.2) naming the last
+      // full one, unless a checkpoint is due: every
+      // indexCheckpointCommits commits, or when the full Index is small
+      // (a delta would not save much and a full one ends the chain)
+      final baseLoc = last.base ?? head.loc;
+      final baseGen = last.base != null ? last.baseGeneration : head.number;
+      Uint8List? delta;
+      if (options.indexCheckpointCommits > 0 &&
+          number - baseGen <= options.indexCheckpointCommits) {
+        idx.blockTableHash = last.blockTableHash;
+        final d = idx.encodeDelta(baseLoc, baseGen);
+        if (d.length * 2 + 256 < baseLoc.size) delta = d;
+      }
+      if (delta != null) {
+        idx.base = baseLoc;
+        idx.baseGeneration = baseGen;
+        w.writeIndex(delta);
+      } else {
+        w.writeIndex(idx.encode(multiVolume: false));
+      }
       // the runs are valid for the block table just encoded
       if (runs != null) {
         idx.chunkRuns = ZxChunkRuns(idx.blockTableHash, runs.runs);
@@ -695,7 +811,7 @@ class ZxDbStore implements ZxStore {
           'a write transaction of this store is open', ZxDbError.busy);
     }
     var pages = 0, bytesIn = 0, bytesOut = 0;
-    int? gen;
+    int? gen = foldDeltas(waitMs: waitMs);
     final done = <int>{};
     for (;;) {
       _refresh(force: true);
@@ -719,6 +835,64 @@ class ZxDbStore implements ZxStore {
       if (!plan.more) break;
     }
     return ZxDbFoldResult(pages, bytesIn, bytesOut, gen);
+  }
+
+  /// Merges the delta runs of every tree into its base tree, in one
+  /// write transaction (comment "fold deltas"): each base page the runs
+  /// touch is written once. Returns its generation, null when no tree
+  /// had runs.
+  int? foldDeltas({int waitMs = 5000}) {
+    _checkOpen();
+    _refresh(force: true);
+    final names = _treesWithRuns(_head);
+    if (names.isEmpty) return null;
+    final t = begin(waitMs: waitMs) as _DbTxn;
+    try {
+      for (final n in names) {
+        (t.tree(n) as _TxnTree?)?.foldDeltas();
+      }
+      return t.commit(comment: 'fold deltas');
+    } finally {
+      if (!t._closed) t.rollback();
+    }
+  }
+
+  // the trees of [head] that have delta runs, and the bytes of the runs
+  _Head? _runsOf;
+  List<String> _runsNames = const [];
+  int _runsBytes = 0;
+  List<String> _treesWithRuns(_Head head) {
+    if (!identical(_runsOf, head)) {
+      final names = <String>[];
+      var bytes = 0;
+      final view = head.view;
+      final cur = TreeCursor(() => view, () => view.catalogRoot, () {});
+      while (cur.moveNext()) {
+        final m = TreeMeta.decode(utf8.decode(cur.key), cur.value);
+        if (m.runs.isNotEmpty) {
+          names.add(m.name);
+          bytes += m.deltaBytes;
+        }
+      }
+      _runsOf = head;
+      _runsNames = names;
+      _runsBytes = bytes;
+    }
+    return _runsNames;
+  }
+
+  /// The delta runs of tree [name] in the last generation (tests, tools).
+  int deltaRunCount(String name) {
+    final t = snapshot().tree(name);
+    return t is _DbTree ? t.meta.runs.length : 0;
+  }
+
+  /// Bytes waiting for a fold: pages in the write buffer and the keys and
+  /// values of the delta runs (ZxDatabaseAsync folds past autoFoldBytes).
+  int get foldBacklogBytes {
+    _checkOpen();
+    _treesWithRuns(_head);
+    return unfoldedBytes + _runsBytes;
   }
 
   // the fold with the lock held (vacuum)
@@ -904,6 +1078,7 @@ class ZxDbStore implements ZxStore {
       throw const ZxDbException(
           'a write transaction of this store is open', ZxDbError.busy);
     }
+    foldDeltas(waitMs: waitMs);
     final lock = ZxWriteLock.tryAcquire(path, waitMs: waitMs);
     if (lock == null) {
       throw const ZxDbException(
@@ -1152,7 +1327,7 @@ class _DbSnapshot implements ZxSnapshot {
   }
 }
 
-class _DbTree implements ZxTree {
+class _DbTree implements ZxTree, ZxLengthEstimate {
   final _DbSnapshot snap;
   final TreeMeta meta;
   _DbTree(this.snap, this.meta);
@@ -1163,12 +1338,27 @@ class _DbTree implements ZxTree {
   @override
   TreeOptions get options => meta.options;
 
+  int? _exact;
+
   @override
-  int get length => meta.count;
+  int get length {
+    if (meta.countExact) return meta.count;
+    return _exact ??= deltaExactCount(
+        snap.view, meta.root, meta.baseCount, meta.runs, null, snap._check);
+  }
+
+  @override
+  int get estimatedLength => meta.count;
 
   @override
   Uint8List? get(Uint8List key) {
     snap._check();
+    final runs = meta.runs;
+    if (runs.isNotEmpty) {
+      final view = snap.view;
+      final (found, v) = deltaGet(view, runs, key, view);
+      if (found) return v;
+    }
     final v = treeGet(snap.view, meta.root, key);
     return v == null ? null : resolveValue(snap.view, v);
   }
@@ -1176,8 +1366,17 @@ class _DbTree implements ZxTree {
   @override
   ZxCursor scan({Uint8List? from, Uint8List? to, bool reverse = false}) {
     snap._check();
-    return TreeCursor(() => snap.view, () => meta.root, snap._check,
-        from: from, to: to, reverse: reverse);
+    if (meta.runs.isEmpty) {
+      return TreeCursor(() => snap.view, () => meta.root, snap._check,
+          from: from, to: to, reverse: reverse);
+    }
+    return MergeCursor(
+        (f, t) => deltaSources(() => snap.view, snap._check, meta.root,
+            meta.runs, null, f, t, reverse),
+        snap._check,
+        from: from,
+        to: to,
+        reverse: reverse);
   }
 }
 
@@ -1190,7 +1389,7 @@ class _DbTree implements ZxTree {
 /// page count, the page ids, 32 bytes SHA-256.
 const String zxDbBlobTree = r'zx$blob';
 
-class _DbTxn implements ZxWriteTxn, PageWriter, BlobStore {
+class _DbTxn implements ZxWriteTxn, PageWriter, BlobStore, RunFilters {
   final ZxDbStore store;
   final ZxWriteLock lock;
   final _Head head;
@@ -1498,14 +1697,19 @@ class _DbTxn implements ZxWriteTxn, PageWriter, BlobStore {
     }
     final h = handles[name];
     final w = h?._w ??
-        TreeWriter(this, m.root, m.count, 16384, m.tag,
+        TreeWriter(this, m.root, m.baseCount, 16384, m.tag,
             blobs: name == zxDbBlobTree ? null : this);
     _depth++;
     try {
       w.drop();
+      for (final r in m.runs) {
+        TreeWriter(this, r.root, r.count, 16384, m.tag, blobs: this).drop();
+      }
     } finally {
       _depth--;
     }
+    m.runs = [];
+    h?._mem = null;
     handles.remove(name);
     h?._dropped = true;
     metas[name] = null;
@@ -1569,7 +1773,32 @@ class _DbTxn implements ZxWriteTxn, PageWriter, BlobStore {
     }
   }
 
+  // the filter of a run committed before this transaction (the runs
+  // made here are not filtered)
+  @override
+  RunFilter? filterOf(DeltaRun r) {
+    if (dirty.containsKey(r.root) || spilled.containsKey(r.root)) return null;
+    return store._file.runFilter(view, r);
+  }
+
+  // whether the writes of [m] go to the delta layer in this transaction
+  bool _lsmFor(TreeMeta m) {
+    if (m.runs.isNotEmpty) return true;
+    final o = store.options;
+    return o.lsmMinEntries >= 0 &&
+        m.count >= o.lsmMinEntries &&
+        m.name != zxDbBlobTree;
+  }
+
+  // the memtables of the trees as runs (or into their bases)
+  void _flushMemtables() {
+    for (final h in handles.values.toList()) {
+      if (!h._dropped && h.lsm) h._flushMem();
+    }
+  }
+
   int _commit(String? comment) {
+    _flushMemtables();
     // the catalog
     for (final name in changed) {
       final m = metas[name];
@@ -1645,12 +1874,22 @@ class _DbTxn implements ZxWriteTxn, PageWriter, BlobStore {
   }
 }
 
-class _TxnTree implements ZxWritableTree {
+class _TxnTree implements ZxWritableTree, ZxLengthEstimate {
   final _DbTxn txn;
   final TreeMeta meta;
   TreeWriter? _writer;
   int _mods = 0;
   bool _dropped = false;
+
+  /// Writes go to the delta layer (delta.dart): a memtable, written as a
+  /// run at commit.
+  late final bool lsm = txn._lsmFor(meta);
+  SplayTreeMap<Uint8List, Uint8List>? _mem;
+  int _memBytes = 0;
+
+  // the last key of the base tree (null: empty), while known
+  Uint8List? _baseLast;
+  bool _baseLastKnown = false;
 
   _TxnTree(this.txn, this.meta);
 
@@ -1659,12 +1898,11 @@ class _TxnTree implements ZxWritableTree {
     if (_dropped) throw StateError('the tree "${meta.name}" was dropped');
   }
 
+  int get _pageSize => meta.options.pageSize ?? txn.store.options.pageSize;
+
+  // the writer of the base tree (the only thing that changes it)
   TreeWriter get _w => _writer ??= TreeWriter(
-      txn,
-      meta.root,
-      meta.count,
-      meta.options.pageSize ?? txn.store.options.pageSize,
-      meta.tag,
+      txn, meta.root, meta.baseCount, _pageSize, meta.tag,
       blobs: meta.name == zxDbBlobTree ? null : txn);
 
   int get _root => _writer?.root ?? meta.root;
@@ -1676,26 +1914,95 @@ class _TxnTree implements ZxWritableTree {
   TreeOptions get options => meta.options;
 
   @override
-  int get length => _writer?.count ?? meta.count;
+  int get length {
+    if (!lsm) return _writer?.count ?? meta.count;
+    if (!meta.countExact) {
+      meta.count = deltaExactCount(
+          txn, _root, meta.baseCount, meta.runs, _mem, _check);
+      meta.countExact = true;
+      txn.changed.add(meta.name);
+    }
+    return meta.count;
+  }
+
+  @override
+  int get estimatedLength =>
+      lsm ? meta.count : (_writer?.count ?? meta.count);
 
   @override
   Uint8List? get(Uint8List key) {
     _check();
+    if (lsm) {
+      final m = _mem;
+      if (m != null) {
+        final v = m[key];
+        if (v != null) return identical(v, deltaTomb) ? null : v;
+      }
+      final runs = meta.runs;
+      if (runs.isNotEmpty) {
+        final (found, v) = deltaGet(txn, runs, key, txn);
+        if (found) return v;
+      }
+    }
     final v = treeGet(txn, _root, key);
     return v == null ? null : resolveValue(txn, v);
+  }
+
+  // whether [key] is known to be in no lower layer without reading it:
+  // no runs and after the last key of the base
+  bool _newAfterBase(Uint8List key) {
+    if (meta.runs.isNotEmpty) return false;
+    if (!_baseLastKnown) {
+      final c = TreeCursor(() => txn, () => _root, _check, reverse: true);
+      _baseLast = c.moveNext() ? Uint8List.fromList(c.key) : null;
+      _baseLastKnown = true;
+    }
+    final last = _baseLast;
+    return last == null || zxCompareKeys(key, last) > 0;
+  }
+
+  // whether [key] is in the runs or the base (not the memtable)
+  bool _lowerHas(Uint8List key) {
+    final runs = meta.runs;
+    if (runs.isNotEmpty) {
+      final (found, v) = deltaGet(txn, runs, key, txn);
+      if (found) return v != null;
+    } else {
+      if (!_baseLastKnown) {
+        final c = TreeCursor(() => txn, () => _root, _check, reverse: true);
+        _baseLast = c.moveNext() ? Uint8List.fromList(c.key) : null;
+        _baseLastKnown = true;
+      }
+      final last = _baseLast;
+      if (last == null || zxCompareKeys(key, last) > 0) return false;
+    }
+    return treeGet(txn, _root, key) != null;
   }
 
   @override
   ZxCursor scan({Uint8List? from, Uint8List? to, bool reverse = false}) {
     _check();
-    return TreeCursor(() => txn, () => _root, _check,
-        mods: () => _mods, from: from, to: to, reverse: reverse);
+    if (!lsm) {
+      return TreeCursor(() => txn, () => _root, _check,
+          mods: () => _mods, from: from, to: to, reverse: reverse);
+    }
+    return MergeCursor(
+        (f, t) => deltaSources(() => txn, _check, _root, meta.runs, _mem, f,
+            t, reverse),
+        _check,
+        mods: () => _mods,
+        from: from,
+        to: to,
+        reverse: reverse);
   }
 
   void _changed() {
-    final w = _w;
-    meta.root = w.root;
-    meta.count = w.count;
+    if (!lsm) {
+      final w = _w;
+      meta.root = w.root;
+      meta.count = w.count;
+      meta.baseCount = w.count;
+    }
     _mods++;
     txn.changed.add(meta.name);
     txn._touched = true;
@@ -1712,6 +2019,27 @@ class _TxnTree implements ZxWritableTree {
           'key of ${key.length} bytes (at most $zxMaxKeyLength)',
           ZxDbError.constraint);
     }
+    if (lsm) {
+      final m = _mem ??= newMemtable();
+      final old = m[key];
+      m[old != null ? key : Uint8List.fromList(key)] =
+          Uint8List.fromList(value);
+      _memBytes += key.length + value.length + 64;
+      if (old == null) {
+        // blind: the key is not read (the count is settled when asked
+        // or at the fold), except after the last key of a tree without
+        // runs (an append), which is known to be new
+        meta.count++;
+        if (meta.countExact && !_newAfterBase(key)) meta.countExact = false;
+      } else if (identical(old, deltaTomb)) {
+        meta.count++;
+      }
+      _changed();
+      if (_memBytes > txn.store.options.lsmMemBytes && txn._depth == 0) {
+        _flushMem();
+      }
+      return;
+    }
     txn._depth++;
     try {
       _w.put(key, value);
@@ -1724,6 +2052,22 @@ class _TxnTree implements ZxWritableTree {
   @override
   bool delete(Uint8List key) {
     _check();
+    if (lsm) {
+      final m = _mem ??= newMemtable();
+      final old = m[key];
+      final lower = _lowerHas(key);
+      final existed = old != null ? !identical(old, deltaTomb) : lower;
+      if (!existed) return false;
+      if (lower) {
+        m[old != null ? key : Uint8List.fromList(key)] = deltaTomb;
+        _memBytes += key.length + 64;
+      } else {
+        m.remove(key);
+      }
+      meta.count--;
+      _changed();
+      return true;
+    }
     bool had;
     txn._depth++;
     try {
@@ -1739,6 +2083,21 @@ class _TxnTree implements ZxWritableTree {
   int deleteRange({Uint8List? from, Uint8List? to}) {
     _check();
     var n = 0;
+    if (lsm) {
+      for (;;) {
+        final batch = <Uint8List>[];
+        final c = scan(from: from, to: to);
+        while (batch.length < 1024 && c.moveNext()) {
+          batch.add(Uint8List.fromList(c.key));
+        }
+        c.close();
+        if (batch.isEmpty) break;
+        for (final k in batch) {
+          if (delete(k)) n++;
+        }
+      }
+      return n;
+    }
     for (;;) {
       final batch = <Uint8List>[];
       final c = TreeCursor(() => txn, () => _root, _check, from: from, to: to);
@@ -1757,5 +2116,166 @@ class _TxnTree implements ZxWritableTree {
       _changed();
     }
     return n;
+  }
+
+  // ---- the delta layer
+
+  // writes the memtable: into the base when it is an append or large
+  // against the base (and there are no runs), else as a new run; then
+  // merges runs of similar size and folds the runs into the base when
+  // they grew too large against it
+  void _flushMem({bool fold = true}) {
+    final m = _mem;
+    if (m == null || m.isEmpty) return;
+    final o = txn.store.options;
+    txn._depth++;
+    try {
+      var direct = false;
+      if (meta.runs.isEmpty) {
+        direct = m.length * o.lsmDirectRatio >= meta.baseCount;
+        if (!direct) {
+          _lowerHas(m.firstKey()!); // knows the last base key
+          final last = _baseLast;
+          direct = last == null || zxCompareKeys(m.firstKey()!, last) > 0;
+        }
+      }
+      var ops = 0;
+      if (direct) {
+        final w = _w;
+        for (final e in m.entries) {
+          final v = e.value;
+          if (identical(v, deltaTomb)) {
+            w.delete(e.key);
+          } else {
+            w.put(e.key, v);
+          }
+          if ((++ops & 1023) == 0) txn._maybeSpill();
+        }
+        meta.root = w.root;
+        meta.baseCount = w.count;
+        meta.count = w.count;
+        meta.countExact = true;
+      } else {
+        final rw = TreeWriter(txn, 0, 0, _pageSize, meta.tag, blobs: txn);
+        var bytes = 0;
+        for (final e in m.entries) {
+          final k = e.key, v = e.value;
+          rw.put(k, deltaEncode(v));
+          bytes += k.length + v.length + 1;
+          if ((++ops & 1023) == 0) txn._maybeSpill();
+        }
+        meta.runs = [DeltaRun(rw.root, rw.count, bytes), ...meta.runs];
+      }
+    } finally {
+      txn._depth--;
+    }
+    m.clear();
+    _memBytes = 0;
+    _baseLastKnown = false;
+    _mods++;
+    txn.changed.add(meta.name);
+    txn._touched = true;
+    if (meta.runs.isNotEmpty) {
+      _mergeRuns();
+      final lim = meta.baseCount * o.lsmFoldRatio;
+      final d = meta.deltaCount;
+      if (fold && d > o.lsmFoldMin && d > lim) foldDeltas();
+    }
+  }
+
+  // size tiered: the newest runs of the same size class (a factor of 4)
+  // are merged when there are 8 of them, or when there are too many runs
+  // (8 rather than 4 halves the rewrites: 125k to 161k random puts/s into
+  // a 1M tree; puts do not read the runs, gets skip them by their filters)
+  void _mergeRuns() {
+    final o = txn.store.options;
+    int tier(int c) => c.bitLength >> 1;
+    for (;;) {
+      final runs = meta.runs;
+      if (runs.length < 2) return;
+      final t0 = tier(runs[0].count);
+      var n = 1;
+      while (n < runs.length && tier(runs[n].count) <= t0) {
+        n++;
+      }
+      if (n < 8 && runs.length <= o.lsmMaxRuns) return;
+      if (n < 2) n = 2;
+      final part = runs.sublist(0, n);
+      final rw = TreeWriter(txn, 0, 0, _pageSize, meta.tag, blobs: txn);
+      var bytes = 0, ops = 0;
+      txn._depth++;
+      try {
+        final c = MergeCursor(
+            (f, t) => [
+                  for (final r in part)
+                    RunSource(TreeCursor(() => txn, () => r.root, _check))
+                ],
+            _check,
+            keepDeletions: true);
+        while (c.moveNext()) {
+          final v = c.value;
+          rw.put(c.key, deltaEncode(v));
+          bytes += c.key.length + v.length + 1;
+          if ((++ops & 1023) == 0) txn._maybeSpill();
+        }
+        for (final r in part) {
+          TreeWriter(txn, r.root, r.count, _pageSize, meta.tag, blobs: txn)
+              .drop();
+        }
+      } finally {
+        txn._depth--;
+      }
+      meta.runs = [DeltaRun(rw.root, rw.count, bytes), ...runs.sublist(n)];
+    }
+  }
+
+  /// Merges every run into the base tree in one sorted pass.
+  void foldDeltas() {
+    _flushMem(fold: false);
+    final runs = meta.runs;
+    if (runs.isEmpty) return;
+    final w = _w;
+    var ops = 0;
+    txn._depth++;
+    try {
+      final c = MergeCursor(
+          (f, t) => [
+                for (final r in runs)
+                  RunSource(TreeCursor(() => txn, () => r.root, _check))
+              ],
+          _check,
+          keepDeletions: true);
+      while (c.moveNext()) {
+        final v = c.value;
+        if (identical(v, deltaTomb)) {
+          w.delete(c.key);
+        } else {
+          w.put(c.key, v);
+        }
+        if ((++ops & 1023) == 0) txn._maybeSpill();
+      }
+      for (final r in runs) {
+        TreeWriter(txn, r.root, r.count, _pageSize, meta.tag, blobs: txn)
+            .drop();
+      }
+    } finally {
+      txn._depth--;
+    }
+    meta.runs = [];
+    meta.root = w.root;
+    meta.baseCount = w.count;
+    if (!meta.countExact) {
+      meta.count = w.count;
+      meta.countExact = true;
+    } else if (meta.count != w.count) {
+      throw ZxDbException(
+          'tree "${meta.name}": ${meta.count} entries expected, '
+          '${w.count} after merging its delta runs',
+          ZxDbError.corrupt);
+    }
+    _baseLastKnown = false;
+    _mods++;
+    txn.changed.add(meta.name);
+    txn._touched = true;
   }
 }

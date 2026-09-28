@@ -10,6 +10,8 @@ import 'package:flutter/material.dart';
 import 'package:zx/zx.dart';
 
 import '../archive_model.dart';
+import '../db_session.dart';
+import '../dialogs/db_dialogs.dart';
 import 'format_utils.dart';
 
 const _maxPreviewBytes = 512 * 1024;
@@ -17,7 +19,11 @@ const _maxTextChars = 64 * 1024;
 
 class PreviewPane extends StatefulWidget {
   final ArchiveModel model;
-  const PreviewPane({super.key, required this.model});
+
+  /// The archive's database: the file's metadata is shown above the
+  /// preview.
+  final DbSession? db;
+  const PreviewPane({super.key, required this.model, this.db});
 
   @override
   State<PreviewPane> createState() => _PreviewPaneState();
@@ -274,6 +280,23 @@ class _PreviewPaneState extends State<PreviewPane> {
           ),
         ),
         Divider(height: 1, color: cs.outlineVariant),
+        if (widget.db != null &&
+            widget.db!.available &&
+            item != null &&
+            !item.isDir)
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 260),
+            child: SingleChildScrollView(
+              child: FileMetaView(
+                key: const Key('preview-meta'),
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                divider: true,
+                session: widget.db!,
+                path: item.path,
+                delay: const Duration(milliseconds: 180),
+              ),
+            ),
+          ),
         Expanded(child: body),
       ],
     );

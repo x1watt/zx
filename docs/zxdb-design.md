@@ -408,6 +408,45 @@ architecture: `docs/architecture.md` section 17.
   every leaf holding a large value. With pages, a compaction only
   rewrites map pages. Values are not deduplicated against the files of
   the archive (open item).
+- **Delta layer for random writes (LSM style, `engine/delta.dart`).** A
+  tree of at least `lsmMinEntries` (64k) entries, or one that has runs,
+  takes the writes of a transaction into a memtable (a sorted map in
+  memory, `lsmMemBytes` at most before it is written). At commit the
+  memtable goes into the tree directly when it has no runs and the
+  writes are an append after its last key or at least 1/8 of its
+  entries; otherwise it becomes a sorted run: a small B+tree of the same
+  pages, written once and full, whose values are `0, value` or `1` (a
+  deletion), recorded newest first in the tree's catalog record (version
+  2, docs/zx-format.md 16.5). Reads merge memtable, runs and base (a get
+  asks the runs newest first, then the base; a scan is a merge cursor
+  that follows the writes of its transaction like TreeCursor). Runs of
+  the same size class (a factor of 4) are merged when there are 8 of
+  them, or when a tree has more than 20 runs (size tiered), and all of a tree's runs are folded into its base
+  in one sorted pass when they exceed half of its entries, and at every
+  `fold()` (so ZxDatabaseAsync folds them in its second isolate:
+  `foldBacklogBytes` counts them) and vacuum. A fold writes each touched
+  base page once. Every run is part of its generation's catalog, so
+  snapshots and AS OF read them like pages. Puts are blind: they do not
+  read the key (except that a key after the last key of a tree without
+  runs is known to be new). The catalog record then marks the entry
+  count as not exact (an upper bound, `ZxLengthEstimate.estimatedLength`,
+  which the SQL planner uses); `length` settles it when asked (the
+  delta's keys looked up in the base, in key order, cached by the
+  snapshot, and written with the transaction's next commit), and a fold
+  makes it exact. A delete still reads the key (it returns whether it
+  was there). Each committed run has a Bloom filter (10 bits a key, built
+  on first use from its keys, cached by the run's place in the file) so
+  that a lookup skips the runs without the key. Pages of a sequential
+  load are split at the right edge 7/8 to 1/8 instead of in the middle
+  (appends leave full pages).
+- **Incremental Index.** A database commit writes an Index with the
+  records it changes and a reference to the last full Index (record
+  0x4B, docs/zx-format.md 9.1.2) when that is less than half the size of
+  the full one, and a full Index (a checkpoint) every
+  `indexCheckpointCommits` (64) commits. Readers (the store, the
+  archive reader, the pipe reader) resolve it with one more Index read;
+  file updates and compactions write full Indexes, so the chain is never
+  longer than one.
 - **The write buffer is page based.** Pages of trees whose policy is not
   `store` or `fast` are written at commit with LZ4 and flagged; `fold()`
   codes them again with the tree's chain, in 256 KiB blocks (the unit of
@@ -456,7 +495,8 @@ about 150 bytes of JSON, `durable: false`:
 | KV get, 100k hot keys spread over 1M | 2.6 us | |
 | KV get, cold (caches dropped, LZ4 pages) | 133 us | |
 | KV put, batches of 10k, ascending keys | 267k puts/s | > 200k/s |
-| KV put, batches of 10k, random keys into 1M | 10.8k puts/s (1.3 GB before vacuum) | |
+| KV put, batches of 10k, random keys into 1M | 10.8k puts/s (1.3 GB before vacuum); with the delta layer 100k puts/s, 116 MiB | |
+| KV put, 500k random keys into a 1M tree, batches of 10k | 161k puts/s (blind puts, 128 MiB page cache), file +28 MiB; the fold after them 5.3 s | 150k/s |
 | 20k JSON records, 2.4 MiB: sqlite3 | 2,680 KiB | |
 | same, zxdb fast / balanced / max | 638 / 272 / 158 KiB (4.2 / 9.9 / 17 times smaller) | 5 to 20 times (max) |
 | 200k JSON records, 24 MiB: sqlite3 | 26,712 KiB | |
@@ -476,17 +516,26 @@ keys of 1M, but slower cold reads (90 us) and appends.
 
 ### 11.4 Open items
 
-- Random writes into a large tree: each commit rewrites every page it
-  touched (copy-on-write), so batches of random keys into a tree much
-  larger than a batch cost about a page per key per commit, and the file
-  grows until a vacuum (1M keys in batches of 10k: 10k puts/s and 1.3
-  GB before vacuum; ascending keys: 270k puts/s). An LSM style delta
-  layer (sorted runs merged at fold, as section 3 sketches) would make
-  such writes cheap; not done.
-- Every commit writes the whole Index of the archive (file entries, the
-  generation list): many files or many generations make commits larger.
-  A database with frequent small commits should use group commit and
-  vacuum from time to time.
+- Random writes into a large tree go through the delta layer (11.2).
+  Runs are built by TreeWriter puts and merged runs are written again
+  about log8(delta / batch) times; a bulk page builder would make both
+  cheaper. `length` of a tree with blind puts costs a base lookup per
+  delta key until the next fold.
+- An autocommit statement costs about 1 ms (a generation: page blocks,
+  map pages, Index, Footer, file reopened for append); sqlite3 takes 85
+  us with synchronous=OFF. Group commit is the answer for many small
+  writes.
+- The full Index still holds the whole generation list, so a checkpoint
+  every 64 commits writes it (about 40 bytes a generation); incremental
+  Indexes hold only the generations since their base.
+- Shared dictionaries per tree (section 3): measured, not kept. Priming
+  with a dictionary of the tree's own pages (measured as the coded size
+  of dictionary plus block less that of the dictionary, JSON records)
+  makes 4 KiB blocks 15% (LZ4) to 35% (LZMA2) smaller and 16 KiB blocks
+  5 to 15% smaller, but the blocks zxdb writes are 64 KiB at commit and
+  256 KiB at fold, where the gain is 1.6 to 4% (64 KiB) and 0.4 to 1.4%
+  (256 KiB): not worth a preset dictionary in the format and the
+  encoders.
 - Overflow values are not deduplicated against file content or by chunks
   (only whole values).
 - The TLSH band index: the persisted form's query reads the 35 byte
@@ -503,3 +552,114 @@ keys of 1M, but slower cold reads (90 us) and appends.
   were when it was made (`resetSql`); SQL writes to KV stores are not
   seen by `watch`.
 
+
+## 12. Implementation notes: time series (phase 5)
+
+Code: `lib/src/db/ts/` (`ts_codec.dart` the column encodings,
+`ts_store.dart` definitions, buffer, seal, retention and the scan,
+`ts_rollup.dart`, `ts_sql.dart` the SQL tables and statements,
+`ts_api.dart` the Dart API, `ts_import.dart` the importers). Tests:
+`test/zxdb_ts_test.dart`. Benchmark: `tool/zxdb_bench_ts.dart`. SQL:
+`docs/zxdb-sql.md`, "Time series".
+
+### 12.1 Layout
+
+Every structure is a tree of the storage contract, so snapshots, AS OF,
+transactions and the write buffer of the store apply unchanged:
+
+- `zx$ts`: the definitions (JSON by name) and per series its counters
+  (next buffer block, next segment id, buffered rows and blocks).
+- `ts:<name>:buf` (`fast`, 64 KiB pages): appended rows in blocks of
+  about 12 KiB (count, time range, then per row the time as a zigzag
+  varint and the tagged values of the other columns). Blocks stay inline
+  in the leaves: an overflow value would be hashed for deduplication at
+  every put. Row by row INSERTs make tiny blocks; past 1024 of them they
+  are written again as big ones.
+- `ts:<name>:dir` (`fast`): key (partition start, segment id), value the
+  segment header: rows, time range, bytes per column, a Bloom filter per
+  tag column (10 bits per distinct value, 4 probes).
+- `ts:<name>:seg` (`store`: already coded): key (segment id, column),
+  value the column blob.
+- `ts:<name>:fts` (`fast`): key (segment id, term), value the rows of the
+  segment holding the term (varint deltas). Keyed by segment first, so a
+  segment's postings go with one range delete, and a query looks the
+  words up in the segments it reads.
+- `zx$rollup` and `rollup:<name>` (key (bucket, group values) with
+  `keycodec.dart`, value the aggregate states).
+
+### 12.2 Column encodings
+
+One blob per column and segment (`ts_codec.dart`): a kind, the row
+count, a null bitmap when some values are NULL, then sections. The time
+column: delta of delta, zigzag varints. Integers: deltas, zigzag
+varints. Floats: XOR with the previous value's bits, byte aligned (a
+control byte gives the leading and trailing zero bytes, then the
+meaningful bytes), which keeps Gorilla's idea without a bit writer.
+Strings: a dictionary per segment when it has at most a quarter as many
+distinct values as rows (or at most 16), else plain; the text of either
+is joined with newlines when no value holds one (the form context models
+like best), else length prefixed. Mixed types (an int among texts, a
+BLOB) use tagged values. The kind is chosen per column and segment from
+the values, so every value comes back with its type (an INTEGER column
+may hold 3 and 3.0 apart).
+
+Text sections (plain text, dictionaries, tagged values) are coded with
+the series' compression chain (`zxDbChainFor`, `max` = zcm by default);
+number and index sections with LZ4. A section keeps its raw form when
+coding does not save bytes. The seal codes the big text sections in
+worker isolates (`SyncJobPool`, as many as fit in the memory limit), the
+small ones inline.
+
+### 12.3 Seal, order, retention
+
+`seal()` (also at VACUUM, `ZxDatabase.sealAllSeries`, and at an append
+that leaves `seal_rows` rows buffered) reads the buffer, gives the rows
+to the rollups, drops the rows of partitions past the retention, groups
+the rest by partition, merges each partition's last segment when it has
+fewer than half of `segment_rows`, sorts by time (stable) and writes
+segments of at most `segment_rows` rows with new ids. Then partitions
+whose end is before now minus the retention lose their segments.
+
+The row order of a scan is time, then append order: segment ids grow
+with seals and only the last segment of a partition is merged with newer
+rows, so (time, segment id, row) is that order, and buffered rows come
+after sealed rows of the same time. A scan builds each partition's row
+list (per segment the time range by binary search, the full-text and
+equality filters), and sorts it only when the sources overlap in time.
+
+Decoded columns are kept in a process wide LRU cache (256 MiB by
+default, `zxTsCacheBudget`), keyed by the series' random uid, the segment
+id and the column: a segment never changes once written and ids are not
+reused, so the cache needs no invalidation, and AS OF snapshots share it.
+
+### 12.4 SQL wiring
+
+`zxTsRegisterSql` (from `ZxDatabase.sql`) resolves series and rollups by
+name at the statement's snapshot and registers the four statements. The
+planner now passes ORDER BY terms to virtual tables (`ZxIndexInfo
+.orderBy`) and skips the sort when `orderByConsumed` is set; a series
+consumes `ORDER BY ts [DESC]`, a rollup `ORDER BY ts [DESC]`. The parser
+takes `ON series` in CREATE ROLLUP and name lists in options (`tags =
+(a, b)`).
+
+### 12.5 Open items
+
+- `HISTORY OF` a series is not supported (AS OF is).
+- Time constraints with text values are applied by the scan, but the
+  executor tests them again with SQL comparison rules (an integer is
+  below any text), so they must be written with `zx_ns(...)`.
+- A rollup's WHERE is limited to comparisons with literals; rows in the
+  write buffer reach rollups only at the seal.
+- A cold read of a `max` (zcm) text column decodes at zcm's speed (about
+  85 KB/s at level 4); scans of time and number columns do not touch the
+  text sections.
+
+### 12.6 Measured
+
+See docs/performance.md, "zxdb time series": 1M synthetic log lines
+append at 480k to 530k rows/s into the buffer; archives are 4.9x
+(fast), 7.1x (balanced) and 8.6x (max) smaller than sqlite3; journald
+JSON with every field is 18.8x smaller than sqlite3 and 1.8x smaller
+than zstd -19 of the export (balanced). Scans of sealed segments: 600
+to 900 MB/s of raw text warm, 100 to 140 MB/s cold with LZ4 or LZMA2
+text, over 600 MB/s for time and number columns.

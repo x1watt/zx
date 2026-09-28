@@ -115,7 +115,10 @@ class ZxWriteLock {
       return null;
     }
     try {
-      mf.writeAsStringSync(_self, flush: true);
+      // no fsync: other processes see the page cache, and a marker left
+      // empty by a crash of the machine is stale after 10 s (_isStale);
+      // an fsync here cost about 6 ms a transaction
+      mf.writeAsStringSync(_self);
     } on FileSystemException {
       // the marker exists, which is what counts
     }

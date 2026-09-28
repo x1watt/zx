@@ -104,6 +104,9 @@ class TreeWriter {
   /// Overflow values go through it (deduplicated) when set.
   final BlobStore? blobs;
 
+  // the split in progress is an append at the right edge
+  bool _append = false;
+
   TreeWriter(this.p, this.root, this.count, this.pageSize, this.tag,
       {this.blobs})
       : inlineMax = pageSize ~/ 4;
@@ -182,7 +185,15 @@ class TreeWriter {
       isNew = true;
     }
     if (leaf.bytes > pageSize && leaf.keys.length > 1) {
+      // an append at the right edge of the tree (ascending keys, a bulk
+      // load) leaves the left pages full instead of half full
+      var edge = isNew && i == leaf.keys.length - 1;
+      for (var l = 0; edge && l < pathIds.length; l++) {
+        edge = pathIdx[l] == p.read(pathIds[l]).kids.length - 1;
+      }
+      _append = edge;
       _splitUp(id, leaf, pathIds, pathIdx);
+      _append = false;
     }
     return isNew;
   }
@@ -213,7 +224,9 @@ class TreeWriter {
   // moves the upper half of [n] (by bytes) to a new page; returns the
   // separator and the new page id
   (Uint8List, int) _split(Node n) {
-    final half = n.bytes ~/ 2;
+    // appending: the left page keeps all but the last entry (about 7/8 of
+    // the page, so a later insert in the middle does not split it at once)
+    final half = _append ? n.bytes - n.bytes ~/ 8 : n.bytes ~/ 2;
     var acc = 2;
     var cut = 0;
     final len = n.keys.length;

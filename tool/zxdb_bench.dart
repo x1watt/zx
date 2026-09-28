@@ -6,7 +6,7 @@
 //   dart compile exe tool/zxdb_bench.dart -o /tmp/zxdb_bench
 //   systemd-run --user --scope -q -p MemoryMax=3G -p MemorySwapMax=0 \
 //     /tmp/zxdb_bench [--dir=DIR] [--tlsh=1000000] [--skip-max]
-//     [--only=kv,size,tlsh]
+//     [--only=kv,commit,sql,levels,size,tlsh]
 //
 // Numbers go to docs/performance.md (measured in AOT, not with dart run).
 
@@ -36,16 +36,19 @@ void main(List<String> args) {
   var dir = Directory.systemTemp.createTempSync('zxdb_bench').path;
   var tlshN = 1000000;
   var skipMax = false;
-  var only = {'kv', 'size', 'tlsh'};
+  var cacheMiB = 128;
+  var only = {'kv', 'commit', 'sql', 'levels', 'size', 'tlsh'};
   for (final a in args) {
     if (a.startsWith('--only=')) only = a.substring(7).split(',').toSet();
     if (a.startsWith('--dir=')) dir = a.substring(6);
     if (a.startsWith('--tlsh=')) tlshN = int.parse(a.substring(7));
     if (a == '--skip-max') skipMax = true;
+    if (a.startsWith('--cache=')) cacheMiB = int.parse(a.substring(8));
   }
   Directory(dir).createSync(recursive: true);
   print('zxdb bench in $dir');
-  final opts = ZxDbStoreOptions(durable: false, autoFoldBytes: 0);
+  final opts = ZxDbStoreOptions(
+      durable: false, autoFoldBytes: 0, pageCacheBytes: cacheMiB << 20);
 
   // ---- KV put batched
   if (only.contains('kv')) {
@@ -81,6 +84,50 @@ void main(List<String> args) {
     }
     final s2 = sw.elapsedMicroseconds / 1e6;
     print('KV put batched (1M keys, ascending): ${fmt(n / s2 / 1000)}k puts/s');
+
+    // random puts into the 1M key tree (half overwrite existing keys,
+    // half new keys): the delta layer takes them as sorted runs, folded
+    // into the tree when they reach half its size
+    {
+      final rr = Random(5);
+      const m = 500000;
+      final rk = [
+        for (var i = 0; i < m; i++)
+          b('seq:${(rr.nextBool() ? rr.nextInt(n) : n + rr.nextInt(4 * n)).toString().padLeft(8, '0')}')
+      ];
+      final before = File(path).lengthSync();
+      sw.reset();
+      for (var i = 0; i < m; i += batch) {
+        kv2.batch((w) {
+          for (var j = i; j < i + batch; j++) {
+            w.put(rk[j], vals[j % 1000]);
+          }
+        });
+      }
+      final s3 = sw.elapsedMicroseconds / 1e6;
+      final grown = File(path).lengthSync() - before;
+      sw.reset();
+      db.store.foldDeltas();
+      final sf = sw.elapsedMicroseconds / 1e6;
+      print('KV put batched, random keys into the 1M tree (500k puts, '
+          'batches of 10k): ${fmt(m / s3 / 1000)}k puts/s (${fmt(s3, 2)} s, '
+          'folds included), file +${grown >> 20} MiB; final fold '
+          '${fmt(sf, 2)} s, file ${File(path).lengthSync() >> 20} MiB');
+      sw.reset();
+      final c = db.store.snapshot().tree('kv:seq')!.scan();
+      var cnt = 0, bytes = 0;
+      while (c.moveNext()) {
+        cnt++;
+        bytes += c.value.length;
+      }
+      final ss = sw.elapsedMicroseconds / 1e6;
+      print('  full scan: $cnt entries in ${fmt(ss, 2)} s '
+          '(${fmt(cnt / ss / 1e6, 2)} M entries/s, $bytes value bytes)');
+      sw.reset();
+      db.vacuum();
+      print('  vacuum: ${fmt(sw.elapsedMicroseconds / 1e6, 2)} s, file '
+          '${File(path).lengthSync() >> 20} MiB');
+    }
 
     // ---- KV get hot: 10k and 100k keys drawn at random from the 1M
     // (spread over every leaf), read until they are in the page cache
@@ -125,9 +172,39 @@ void main(List<String> args) {
     db.close();
   }
 
+  // ---- commit latency: autocommit, durable or not, and group commit
+  if (only.contains('commit')) {
+    for (final durable in [false, true]) {
+      for (final gc in [null, const Duration(milliseconds: 2)]) {
+        final path = '$dir/commit.zx';
+        _rm(path);
+        final o = ZxDbStoreOptions(durable: durable, autoFoldBytes: 0);
+        final db = ZxDatabase.open(path,
+            create: true, options: o, groupCommit: gc);
+        final kv = db.createKvStore('c');
+        final r = Random(6);
+        const n = 2000;
+        final sw = Stopwatch()..start();
+        for (var i = 0; i < n; i++) {
+          kv.put(b('k${r.nextInt(1 << 30)}'), b(jsonValue(i, r)));
+        }
+        db.flush();
+        final s = sw.elapsedMicroseconds / 1e6;
+        final gens = db.store.lastGeneration;
+        print('KV put autocommit, durable $durable, group commit '
+            '${gc == null ? 'off' : '2 ms'}: ${fmt(n / s)} puts/s, '
+            '${fmt(s / gens * 1e6)} us/commit ($gens generations), file '
+            '${File(path).lengthSync() >> 10} KiB');
+        db.close();
+      }
+    }
+  }
+
+  if (only.contains('sql')) _sqlBench(dir, hasSqlite: _hasSqlite());
+  if (only.contains('levels')) _levelsBench(dir, skipMax: skipMax);
+
   // ---- sizes against SQLite
-  final hasSqlite =
-      Process.runSync('sh', ['-c', 'command -v sqlite3']).exitCode == 0;
+  final hasSqlite = _hasSqlite();
   for (final n in [20000, 200000]) {
     if (!only.contains('size')) break;
     final r = Random(3);
@@ -274,5 +351,234 @@ void main(List<String> args) {
 void _rm(String p) {
   for (final f in [p, '$p.zx-lock']) {
     if (File(f).existsSync()) File(f).deleteSync();
+  }
+}
+
+bool _hasSqlite() =>
+    Process.runSync('sh', ['-c', 'command -v sqlite3']).exitCode == 0;
+
+// runs a SQL script with the sqlite3 tool; its time in seconds (the
+// process start and the parsing of each statement included)
+double _sqlite(String db, String script, String dir) {
+  final f = '$dir/script.sql';
+  File(f).writeAsStringSync(script);
+  final sw = Stopwatch()..start();
+  final r = Process.runSync('sh', ['-c', 'sqlite3 $db < $f > /dev/null']);
+  final s = sw.elapsedMicroseconds / 1e6;
+  if (r.exitCode != 0) throw StateError('sqlite3: ${r.stderr}');
+  File(f).deleteSync();
+  return s;
+}
+
+// SQL: inserts (sequential and random ids, one transaction and
+// autocommit), point selects and a scan, zxdb against sqlite3
+void _sqlBench(String dir, {required bool hasSqlite}) {
+  const n = 100000;
+  final r = Random(7);
+  final rows = [for (var i = 0; i < n; i++) jsonValue(i, r)];
+  final randomIds = [for (var i = 0; i < n; i++) r.nextInt(1 << 30) * 1024 + r.nextInt(1024)];
+  final probes = [for (var i = 0; i < 20000; i++) r.nextInt(n)];
+  final opts = ZxDbStoreOptions(durable: false, autoFoldBytes: 0);
+  print('SQL, $n rows (id INTEGER PRIMARY KEY, v TEXT of JSON):');
+  for (final random in [false, true]) {
+    final path = '$dir/sql.zx';
+    _rm(path);
+    final db = ZxDatabase.open(path, create: true, options: opts);
+    final sql = db.sql;
+    sql.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT) "
+        "WITH (compression = 'fast')");
+    final ins = sql.prepare('INSERT INTO t VALUES (?, ?)');
+    final sw = Stopwatch()..start();
+    for (var i = 0; i < n; i += 10000) {
+      sql.execute('BEGIN');
+      for (var j = i; j < i + 10000; j++) {
+        ins.execute([random ? randomIds[j] : j, rows[j]]);
+      }
+      sql.execute('COMMIT');
+    }
+    final si = sw.elapsedMicroseconds / 1e6;
+    final ids = random ? randomIds : [for (var i = 0; i < n; i++) i];
+    final sel = sql.prepare('SELECT v FROM t WHERE id = ?');
+    for (final p in probes.take(2000)) {
+      sel.select([ids[p]]);
+    }
+    sw.reset();
+    var found = 0;
+    for (final p in probes) {
+      found += sel.select([ids[p]]).length;
+    }
+    final ss = sw.elapsedMicroseconds / 1e6;
+    sw.reset();
+    final agg = sql.select('SELECT count(*), sum(length(v)) FROM t');
+    final sc = sw.elapsedMicroseconds / 1e6;
+    // autocommit inserts: each one a commit (a generation)
+    final g0 = db.store.lastGeneration;
+    sw.reset();
+    for (var j = 0; j < 1000; j++) {
+      ins.execute([(1 << 41) + (random ? randomIds[j] : j), rows[j]]);
+    }
+    final sa = sw.elapsedMicroseconds / 1e6;
+    final commits = db.store.lastGeneration - g0;
+    db.fold();
+    db.vacuum();
+    sw.reset();
+    sql.select('SELECT count(*), sum(length(v)) FROM t');
+    final sc2 = sw.elapsedMicroseconds / 1e6;
+    print('  zxdb ${random ? 'random' : 'sequential'} ids: insert '
+        '${fmt(n / si / 1000)}k rows/s (transactions of 10k), select by id '
+        '${fmt(ss / probes.length * 1e6, 2)} us ($found found), scan '
+        '${fmt(sc * 1000)} ms (${agg.first[0]} rows; ${fmt(sc2 * 1000)} ms '
+        'after fold and vacuum), autocommit insert ${fmt(sa * 1000)} us '
+        'each ($commits commits of 1000), file '
+        '${File(path).lengthSync() >> 10} KiB');
+    db.close();
+    if (!hasSqlite) continue;
+    final sq = '$dir/sql.sqlite';
+    _rm(sq);
+    final esc = [for (final v in rows) v.replaceAll("'", "''")];
+    final w = StringBuffer('PRAGMA synchronous=OFF;PRAGMA journal_mode=DELETE;'
+        'CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT);\n');
+    for (var i = 0; i < n; i += 10000) {
+      w.write('BEGIN;\n');
+      for (var j = i; j < i + 10000; j++) {
+        w.write("INSERT INTO t VALUES (${ids[j]}, '${esc[j]}');\n");
+      }
+      w.write('COMMIT;\n');
+    }
+    final qi = _sqlite(sq, w.toString(), dir);
+    final q = StringBuffer();
+    for (final p in probes) {
+      q.write('SELECT v FROM t WHERE id = ${ids[p]};\n');
+    }
+    final qs = _sqlite(sq, q.toString(), dir);
+    final qc = _sqlite(sq, 'SELECT count(*), sum(length(v)) FROM t;', dir);
+    final a = StringBuffer('PRAGMA synchronous=OFF;\n');
+    for (var j = 0; j < 1000; j++) {
+      a.write("INSERT INTO t VALUES (${(1 << 41) + ids[j]}, '${esc[j]}');\n");
+    }
+    final qa = _sqlite(sq, a.toString(), dir);
+    final a2 = StringBuffer('PRAGMA synchronous=FULL;\n');
+    for (var j = 0; j < 1000; j++) {
+      a2.write("INSERT INTO t VALUES (${(1 << 42) + ids[j]}, '${esc[j]}');\n");
+    }
+    final qa2 = _sqlite(sq, a2.toString(), dir);
+    _sqlite(sq, 'VACUUM;', dir);
+    print('  sqlite3 ${random ? 'random' : 'sequential'} ids (CLI, '
+        'synchronous=OFF): insert ${fmt(n / qi / 1000)}k rows/s, select by '
+        'id ${fmt(qs / probes.length * 1e6, 2)} us, scan ${fmt(qc * 1000)} '
+        'ms, autocommit insert ${fmt(qa * 1000)} us each '
+        '(synchronous=FULL: ${fmt(qa2 * 1000)} us), file '
+        '${File(sq).lengthSync() >> 10} KiB');
+  }
+}
+
+const _words = [
+  'the', 'archive', 'holds', 'files', 'and', 'a', 'database', 'with', 'pages',
+  'compressed', 'by', 'level', 'readers', 'see', 'every', 'generation', 'of',
+  'data', 'written', 'in', 'order', 'to', 'keep', 'history', 'small', 'fast',
+  'records', 'values', 'keys', 'time', 'user', 'report', 'network', 'error',
+];
+
+String _text(Random r) {
+  final n = 20 + r.nextInt(60);
+  final sb = StringBuffer();
+  for (var i = 0; i < n; i++) {
+    if (i > 0) sb.write(r.nextInt(12) == 0 ? '. ' : ' ');
+    sb.write(_words[r.nextInt(_words.length)]);
+  }
+  return sb.toString();
+}
+
+// file sizes per compression level on three datasets (SQL tables), with
+// cold (caches dropped) and hot point read latencies per level
+void _levelsBench(String dir, {required bool skipMax}) {
+  const n = 20000;
+  final r = Random(8);
+  final sets = <String, List<List<Object>>>{
+    'JSON records': [
+      for (var i = 0; i < n; i++) [i, jsonValue(i, r)]
+    ],
+    'text rows': [
+      for (var i = 0; i < n; i++) [i, _text(r)]
+    ],
+    'numeric rows': [
+      for (var i = 0; i < n; i++)
+        [
+          i,
+          1790000000 + i * 60 + r.nextInt(5),
+          r.nextInt(1000),
+          (r.nextDouble() * 1000).roundToDouble() / 10,
+          r.nextInt(3) - 1
+        ]
+    ],
+  };
+  final opts = ZxDbStoreOptions(durable: false, autoFoldBytes: 0);
+  for (final e in sets.entries) {
+    final rows = e.value;
+    final cols = rows.first.length;
+    final colDefs = [
+      'id INTEGER PRIMARY KEY',
+      for (var c = 1; c < cols; c++)
+        rows.first[c] is String ? 'c$c TEXT' : 'c$c ${rows.first[c] is double ? 'REAL' : 'INTEGER'}'
+    ].join(', ');
+    var raw = 0;
+    for (final row in rows) {
+      for (final v in row) {
+        raw += v.toString().length + 1;
+      }
+    }
+    print('Sizes, ${e.key}: $n rows, ${fmt(raw / 1024)} KiB as text');
+    if (_hasSqlite()) {
+      final sq = '$dir/lv.sqlite';
+      _rm(sq);
+      final w = StringBuffer('CREATE TABLE t ($colDefs);BEGIN;\n');
+      for (final row in rows) {
+        w.write('INSERT INTO t VALUES (${[
+          for (final v in row) v is String ? "'${v.replaceAll("'", "''")}'" : '$v'
+        ].join(',')});\n');
+      }
+      w.write('COMMIT;VACUUM;\n');
+      _sqlite(sq, w.toString(), dir);
+      print('  sqlite3: ${fmt(File(sq).lengthSync() / 1024)} KiB');
+    }
+    for (final level in ['store', 'fast', 'balanced', if (!skipMax) 'max']) {
+      final path = '$dir/lv-$level.zx';
+      _rm(path);
+      final db = ZxDatabase.open(path, create: true, options: opts);
+      final sql = db.sql;
+      sql.execute("CREATE TABLE t ($colDefs) WITH (compression = '$level')");
+      final ins = sql.prepare(
+          'INSERT INTO t VALUES (${List.filled(cols, '?').join(', ')})');
+      final sw = Stopwatch()..start();
+      sql.execute('BEGIN');
+      for (final row in rows) {
+        ins.execute(row);
+      }
+      sql.execute('COMMIT');
+      db.fold();
+      db.vacuum();
+      final sb = sw.elapsedMicroseconds / 1e6;
+      final size = File(path).lengthSync();
+      db.close();
+      // reads: cold (a fresh store, empty caches), then hot
+      final db2 = ZxDatabase.open(path, options: opts);
+      final sel = db2.sql.prepare('SELECT * FROM t WHERE id = ?');
+      final rr = Random(9);
+      sw.reset();
+      sel.select([rr.nextInt(n)]);
+      final cold = sw.elapsedMicroseconds;
+      for (var i = 0; i < n; i++) {
+        sel.select([i]);
+      }
+      sw.reset();
+      for (var i = 0; i < 20000; i++) {
+        sel.select([rr.nextInt(n)]);
+      }
+      final hot = sw.elapsedMicroseconds / 20000;
+      db2.close();
+      print('  zxdb $level: ${fmt(size / 1024)} KiB (${fmt(raw / size, 1)}x) '
+          'in ${fmt(sb, 1)} s; first read cold ${fmt(cold / 1000, 1)} ms, '
+          'hot ${fmt(hot, 1)} us');
+    }
   }
 }

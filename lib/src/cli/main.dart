@@ -30,6 +30,7 @@ import 'update_callback_console.dart';
 import 'wildcard.dart';
 import 'extracting_file_path.dart';
 import 'prop_id_utils.dart';
+import 'sql_command.dart';
 import 'platform.dart';
 
 const String _kVersion = '26.01';
@@ -64,6 +65,9 @@ const String _kHelpString = 'Usage: zx'
     '  i : Show information about supported formats\n'
     '  l : List contents of archive\n'
     '  rn : Rename files in archive\n'
+    '  sql : (zx) run SQL on the database of a .zx archive:\n'
+    '    zx sql <archive> ["SQL" ...]; without SQL an interactive shell with\n'
+    '    sqlite3-like dot commands (.help); zx sql -help lists the options\n'
     '  t : Test integrity of archive\n'
     '  u : Update files to archive\n'
     '  x : eXtract files with full paths\n'
@@ -458,6 +462,9 @@ int _main2(List<String> commandStrings, CliIo io) {
   if (commandStrings.isEmpty) {
     _showCopyrightAndHelp(gStdStream, true);
     return 0;
+  }
+  if (commandStrings.first.toLowerCase() == 'sql') {
+    return runSqlCommand(commandStrings.sublist(1), io);
   }
 
   final options = ArcCmdLineOptions();

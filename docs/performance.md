@@ -476,22 +476,101 @@ comparison and the TLSH band index is in docs/zxdb-design.md section 11.3.
 
 | Operation | Result |
 |---|---|
-| KV get, 10k / 100k hot keys spread over 1M | 1.4 / 2.6 us |
+| KV get, 10k / 100k hot keys spread over 1M | 1.4 / 2.8 us |
 | KV get, cold (caches dropped) | 133 us |
-| KV put, batches of 10k, ascending / random into 1M | 267k / 10.8k puts/s |
+| KV put, batches of 10k, ascending | 315k puts/s (was 267k) |
+| KV put, 1M random keys from empty, batches of 10k | 100k puts/s, 116 MiB file (was 10.8k, 1.3 GB) |
+| KV put, 500k random keys into a 1M tree, batches of 10k | 161k puts/s (128 MiB page cache), file +28 MiB; the fold after them 5.3 s |
+| full scan of 1.24M entries (with delta runs) | 0.96 s (1.3M entries/s) |
+| KV put autocommit, durable false / true | 0.89 ms / 7.5 ms a commit (was 9 ms / 15 ms) |
+| KV put with group commit (2 ms), durable false / true | 170k / 34k puts/s |
 | size, 20k JSON records (2.4 MiB): sqlite3 / fast / balanced / max | 2,680 / 638 / 272 / 158 KiB |
 | LZ4 encode (single probe, text) / decode | about 100 MB/s / 6.7 GB/s |
+
+SQL against sqlite3 3.45.1 (the `sqlite3` tool reading a script, so its
+times include parsing each statement; `synchronous=OFF`), 100k rows
+`(id INTEGER PRIMARY KEY, v TEXT)` of JSON, transactions of 10k:
+
+| | zxdb (fast) | sqlite3 |
+|---|---|---|
+| insert, sequential ids | 178k rows/s | 367k rows/s |
+| insert, random ids | 82k rows/s | 136k rows/s |
+| select by id (prepared) | 5.0 / 5.6 us | 11.9 / 12.1 us (CLI) |
+| scan, count(*) and sum(length(v)), warm | 46 / 59 ms (was 86 / 98) | 26 ms |
+| autocommit insert (each a commit) | 1.0 / 1.1 ms | 85 us (synchronous=OFF), 16 ms (FULL) |
+| file | 3,329 / 3,770 KiB | 12,288 / 12,680 KiB |
+
+Sizes and reads per compression level (SQL tables, 20k rows, after fold
+and vacuum; cold: the first select of a freshly opened archive, which
+decodes one page block; hot: select by id in the page cache):
+
+| Dataset (text size) | sqlite3 | store | fast | balanced | max |
+|---|---|---|---|---|---|
+| JSON records (2,327 KiB) | 2,444 KiB | 2,364 | 642 (3.6x) | 285 (8.2x) | 162 (14.3x) |
+| text rows (5,945 KiB) | 6,316 KiB | 6,008 | 2,856 (2.1x) | 1,174 (5.1x) | 762 (7.8x) |
+| numeric rows (538 KiB) | 496 KiB | 476 | 309 (1.7x) | 153 (3.5x) | 93 (5.8x) |
+| first read cold | | 13 to 17 ms | 13 to 16 ms | 18 to 31 ms | 1.7 to 4.5 s |
+| read hot | | 4.6 to 4.9 us | 4.6 to 4.9 us | 4.8 to 5.0 us | 4.5 to 5.0 us |
+
+- A `max` tree pays its cold zcm decode once per 256 KiB block; the page
+  and block caches keep it (hot reads are the same at every level).
+- Random writes into a large tree go through the delta layer (sorted
+  runs, docs/zxdb-design.md 11.2). A put checks whether its key exists
+  (exact entry count): with the base in the page cache that is about
+  Puts are blind (no read of the key; the entry count is settled when
+  asked or at the fold). Reading the key to keep the count exact at each
+  put gave 27k puts/s into a 1M tree with the default 128 MiB page cache
+  (the base did not fit: a cold page read a put), 85k with 512 MiB.
+- Runs are merged when 8 of a size class exist (4: 125k puts/s, more
+  rewrites).
+- SQL scans: a scanned row is decoded on first use (`LazyRow`), so
+  count(*) does not decode records (24 to 11 ms for 100k rows, the
+  tree scan alone is 4.4 ms); `length()` counts code units in one pass
+  instead of `String.runes` (sum(length(v)) 62 to 40 ms). The rest is
+  the record decode (11 ms, mostly UTF-8) and the expression evaluation.
+- The earlier table said 1.1 ms per 1000 autocommit inserts: a unit
+  error (seconds printed as ms); each insert is a commit of 1 ms.
+- The writer lock wrote its marker with an fsync: 6 ms a transaction.
+  Removed (the marker only names the process; an empty one is stale
+  after 10 s).
 
 - A cold read decodes the whole page block of the page (64 KiB at commit,
   256 KiB after a fold) and checks it (xxHash64): about 60 us for LZ4
   blocks, seconds for zcm blocks.
-- Random writes into a tree much larger than a batch rewrite about one
-  page per key per commit (copy-on-write): larger batches, sorted keys,
-  or smaller pages (`TreeOptions.pageSize`) help; a vacuum takes the
-  space back.
+- Sequential loads split the right edge page 7/8 to 1/8, so appended
+  pages are full (random loads leave pages about 70% full).
 - The page cache keeps pages flat (keys and values in two buffers):
   before that, one object per key and value made 100k hot keys of 1M cost
   50 us a get (the working set did not fit).
+
+### zxdb time series
+
+`tool/zxdb_bench_ts.dart` (AOT, `durable: false`, 4 seal workers, the
+machine shared with other work), docs/zxdb-design.md section 12.
+Synthetic web/server log: 1M lines, 146.5 MiB of text over 5.8 days
+(zstd -19: 17.38 MiB, xz -9: 16.77 MiB, sqlite3 with an index on ts:
+153.9 MiB). Scan speeds are MB/s of the raw text the rows stand for.
+
+| Compression | Append (batches of 100k) | Seal | Archive | vs sqlite3 | Scan all cols cold / one day warm | ts + numbers cold |
+|---|---|---|---|---|---|---|
+| fast | 480k rows/s | 4.5 s | 31.7 MiB | 4.9x smaller | 143 / 875 MB/s | 724 MB/s |
+| balanced | 520k rows/s | 11.5 s | 21.8 MiB | 7.1x smaller | 107 / 617 MB/s | 637 MB/s |
+| max (zcm) | 531k rows/s | 267 s | 17.8 MiB | 8.6x smaller | minutes (zcm decode) | fast |
+
+Real logs, `journalctl -o json -n 200000` (every field kept; JSON export
+198 MiB, zstd -19 14.1 MiB, xz -9 14.5 MiB, sqlite3 148.9 MiB): fast
+19.9 MiB, balanced 7.9 MiB (1.8x smaller than zstd -19 of the JSON,
+18.8x smaller than sqlite3), append 140k rows/s (about 1 KB of fields
+per row). The max run did not finish in the time given (a cold scan of
+zcm text runs at zcm's decode speed).
+
+- The column split beats xz on the journal (repeated field names and
+  values become dictionaries) but not on the synthetic access log, whose
+  text is one free column (max: 0.94 of xz's size ratio).
+- A full warm scan of 1M rows exceeds the decoded column cache (256 MiB)
+  and runs at cold speed; a day fits (875 MB/s).
+- The buffer blocks stay under 16 KiB so the tree keeps them inline: as
+  overflow values each was hashed (SHA-256) for deduplication at put.
 
 ## 2. Rules for keeping it fast
 

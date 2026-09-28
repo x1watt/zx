@@ -99,6 +99,13 @@ abstract class ZxWritableTree implements ZxTree {
 /// deleted ahead of it. A cursor of a snapshot sees that snapshot only.
 /// [key] and [value] are only valid after a [moveNext] that returned
 /// true, and the arrays must not be modified.
+/// A tree whose exact [ZxTree.length] may cost reading its delta (the
+/// engine's trees after blind writes): [estimatedLength] is free and at
+/// least the true count (the SQL planner's estimates use it).
+abstract class ZxLengthEstimate {
+  int get estimatedLength;
+}
+
 abstract class ZxCursor {
   /// Advances; false at the end.
   bool moveNext();

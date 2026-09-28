@@ -64,6 +64,19 @@ class ZxDatabaseAsync {
     throw _error(m as List);
   }
 
+  /// Whether the archive at [archivePath] holds a database (checked in a
+  /// background isolate, which reads the archive's last Index).
+  static Future<bool> hasDatabase(String archivePath, {String? password}) =>
+      Isolate.run(() {
+        final s = ZxDbStore.open(archivePath,
+            password: password, readOnly: true);
+        try {
+          return s.root != null;
+        } finally {
+          s.close();
+        }
+      });
+
   static Object _error(List m) {
     final kind = m[1] as int;
     if (kind < 0) return StateError(m[0] as String);
@@ -141,6 +154,14 @@ class ZxDatabaseAsync {
         [for (final r in l[1] as List) (r as List).cast<Object?>()],
         l[2] as int, l[3] as int);
   }
+
+  /// The names of the time series (ZxDatabase.seriesNames).
+  Future<List<String>> seriesNames() async =>
+      (await _call('series') as List).cast<String>();
+
+  /// Makes a new SQL session (ZxDatabase.resetSql): it sees the files the
+  /// archive has now (after an update of the archive).
+  Future<void> resetSql() => _call('resetSql');
 
   /// The rows of a query.
   Future<List<List<Object?>>> select(String sql, [Object? params]) async =>
@@ -274,7 +295,7 @@ void _worker(List<Object?> args) {
   void maybeFold() {
     final limit = options.autoFoldBytes;
     if (limit <= 0 || folding != null || readOnly) return;
-    if (db.store.unfoldedBytes <= limit) return;
+    if (db.store.foldBacklogBytes <= limit) return;
     folding = Isolate.run(() {
       final s = ZxDbStore.open(path, password: password, options: options);
       try {
@@ -342,6 +363,10 @@ void _worker(List<Object?> args) {
         case 'sql':
           final res = db.sql.execute(l[2] as String, l[3]);
           r = [res.columns, res.rows, res.changes, res.lastInsertRowid];
+        case 'series':
+          r = db.seriesNames;
+        case 'resetSql':
+          db.resetSql();
         case 'generations':
           r = [
             for (final g in db.generations) [g.generation, g.timeNs, g.comment]

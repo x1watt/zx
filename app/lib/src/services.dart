@@ -7,6 +7,7 @@ import 'package:file_selector/file_selector.dart' as fs;
 
 import 'package:zx/zx.dart' show ZxArchive;
 
+import 'db_session.dart';
 import 'dialogs/zx_compression.dart' show Estimator;
 import 'integration.dart';
 import 'settings.dart';
@@ -53,6 +54,9 @@ abstract class FilePicker {
 
   /// A folder (to add, or to extract to).
   Future<String?> pickFolder({String? initialDirectory, String? title});
+
+  /// Where to save a file (an export).
+  Future<String?> saveFile({String? initialDirectory, String? suggestedName});
 }
 
 class SystemFilePicker implements FilePicker {
@@ -110,6 +114,19 @@ class SystemFilePicker implements FilePicker {
         initialDirectory: initialDirectory,
         confirmButtonText: title,
       );
+
+  @override
+  Future<String?> saveFile({
+    String? initialDirectory,
+    String? suggestedName,
+  }) async {
+    final l = await fs.getSaveLocation(
+      initialDirectory: initialDirectory,
+      suggestedName: suggestedName,
+      confirmButtonText: 'Save',
+    );
+    return l?.path;
+  }
 }
 
 /// Everything the app needs from outside, in one place.
@@ -123,6 +140,9 @@ class AppServices {
   /// The estimate of a .zx compression (a fake in the tests).
   final Estimator estimator;
 
+  /// Opens the database of a .zx archive (a fake in the tests).
+  final DbOpener dbOpener;
+
   AppServices({
     required this.paths,
     required this.settings,
@@ -130,5 +150,6 @@ class AppServices {
     required this.picker,
     required this.integration,
     this.estimator = ZxArchive.estimate,
+    this.dbOpener = openAsyncDb,
   });
 }

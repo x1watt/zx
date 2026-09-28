@@ -686,6 +686,17 @@ class Parser {
         } else if (t.type == Tok.ident) {
           v = t.text;
           _i++;
+        } else if (t.type == Tok.op && t.text == '(') {
+          // a list of names: tags = (host, level)
+          _i++;
+          final l = <String>[];
+          if (!_acceptOp(')')) {
+            do {
+              l.add(_name());
+            } while (_acceptOp(','));
+            _expectOp(')');
+          }
+          v = l;
         } else {
           throw _error();
         }
@@ -761,11 +772,14 @@ class Parser {
         } while (_acceptOp(','));
         _expectOp(')');
       }
-      String? every, ret;
+      String? every, ret, on;
       var opts = <String, Object?>{};
       void tail() {
         while (true) {
-          if (_cur.kw == 'EVERY') {
+          if (_cur.kw == 'ON' && on == null) {
+            _i++;
+            on = _qualifiedName();
+          } else if (_cur.kw == 'EVERY') {
             _i++;
             every = _stringLit();
           } else if (_cur.kw == 'RETENTION') {
@@ -785,7 +799,7 @@ class Parser {
       _expectKw('AS');
       final sel = _select();
       tail();
-      return CreateRollupStmt(ine, name, cols, sel, every, ret, opts);
+      return CreateRollupStmt(ine, name, cols, sel, every, ret, opts, on: on);
     }
     throw _error();
   }

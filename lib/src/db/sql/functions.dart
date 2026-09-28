@@ -262,8 +262,22 @@ Object? _length(Object? v) {
   if (v == null) return null;
   if (v is Uint8List) return v.length;
   if (v is String) {
-    final z = v.indexOf('\u0000');
-    return (z >= 0 ? v.substring(0, z) : v).runes.length;
+    // characters up to the first NUL, a surrogate pair counting once (one
+    // pass over the code units; String.runes was 0.4 us a row)
+    final n = v.length;
+    var count = 0;
+    for (var i = 0; i < n; i++) {
+      final c = v.codeUnitAt(i);
+      if (c == 0) break;
+      if (c >= 0xD800 &&
+          c <= 0xDBFF &&
+          i + 1 < n &&
+          (v.codeUnitAt(i + 1) & 0xFC00) == 0xDC00) {
+        i++;
+      }
+      count++;
+    }
+    return count;
   }
   return _text(v)!.length;
 }

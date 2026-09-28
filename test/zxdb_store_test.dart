@@ -237,6 +237,16 @@ ZxDbStoreOptions small({int pageSize = 4096}) => ZxDbStoreOptions(
     refreshMicros: 0,
     threads: 1);
 
+// every write through the delta layer, small memtables, many runs,
+// frequent folds
+ZxDbStoreOptions lsm({int pageSize = 4096}) => small(pageSize: pageSize)
+  ..lsmMinEntries = 0
+  ..lsmDirectRatio = 0
+  ..lsmMemBytes = 6000
+  ..lsmMaxRuns = 3
+  ..lsmFoldRatio = 0.6
+  ..lsmFoldMin = 0;
+
 // the lock holder of the isolate test: begins, tells, waits, commits
 void _holdLock(List<Object> args) {
   final path = args[0] as String;
@@ -258,6 +268,9 @@ void main() {
   contractTests('memory', () => ZxMemoryStore());
   contractTests(
       'engine', () => ZxDbStore.open(newPath(), create: true, options: small()));
+  contractTests('engine (delta layer)',
+      () => ZxDbStore.open(newPath(), create: true, options: lsm()));
+  deltaAndIndexTests();
 
   group('B+tree against a reference', () {
     for (final pageSize in [4096, 16384]) {
@@ -752,3 +765,316 @@ void main() {
     st2.close();
   });
 }
+
+// the delta layer (random operations against a model, folds interleaved,
+// AS OF across folds) and the incremental Index (crash truncation at every
+// stage of a commit, file updates and compaction in between)
+void deltaAndIndexTests() {
+  group('delta layer', () {
+    for (final seed in [1, 2]) {
+      test('random operations with folds against a model (seed $seed)', () {
+        final st = ZxDbStore.open(newPath(), create: true, options: lsm());
+        final rnd = Random(seed);
+        final ref = <String, Uint8List>{};
+        final snaps = <int, Map<String, Uint8List>>{};
+        var sawRuns = 0, folds = 0;
+        String key() => 'k${rnd.nextInt(1500).toString().padLeft(4, '0')}'
+            '${'y' * rnd.nextInt(4)}';
+        Uint8List value() {
+          final r = rnd.nextInt(100);
+          final len = r < 95 ? rnd.nextInt(120) : 3000 + rnd.nextInt(80000);
+          final v = Uint8List(len);
+          for (var i = 0; i < len; i += 5) {
+            v[i] = rnd.nextInt(256);
+          }
+          return v;
+        }
+
+        for (var g = 0; g < 60; g++) {
+          final t = st.begin();
+          final tt = t.tree('t') ?? t.createTree('t');
+          final ops = 20 + rnd.nextInt(g < 5 ? 600 : 150);
+          for (var i = 0; i < ops; i++) {
+            final op = rnd.nextInt(20);
+            final kk = key();
+            if (op < 13) {
+              final v = value();
+              tt.put(k(kk), v);
+              ref[kk] = v;
+            } else if (op < 18) {
+              expect(tt.delete(k(kk)), ref.remove(kk) != null);
+            } else if (op < 19) {
+              final a = key(), b = key();
+              final lo = a.compareTo(b) < 0 ? a : b;
+              final hi = a.compareTo(b) < 0 ? b : a;
+              final want = ref.keys
+                  .where((x) => x.compareTo(lo) >= 0 && x.compareTo(hi) < 0)
+                  .length;
+              expect(tt.deleteRange(from: k(lo), to: k(hi)), want);
+              ref.removeWhere(
+                  (x, _) => x.compareTo(lo) >= 0 && x.compareTo(hi) < 0);
+            } else {
+              // reads inside the transaction see its writes
+              expect(tt.get(k(kk)), ref[kk]);
+            }
+          }
+          // (asked in a third of the transactions only: the others
+          // commit a count settled later, by a snapshot or a fold)
+          if (g % 3 == 0) expect(tt.length, ref.length);
+          // a bounded scan inside the transaction
+          final a = key(), b = key();
+          final lo = a.compareTo(b) < 0 ? a : b;
+          final hi = a.compareTo(b) < 0 ? b : a;
+          final want = (ref.keys
+                  .where((x) => x.compareTo(lo) >= 0 && x.compareTo(hi) < 0)
+                  .toList()
+                ..sort())
+              .reversed
+              .toList();
+          expect(
+              scanAll(tt, from: k(lo), to: k(hi), reverse: true)
+                  .map((e) => e.$1)
+                  .toList(),
+              want);
+          final gen = t.commit();
+          final m = st.root; // the catalog holds the runs
+          expect(m, isNotNull);
+          final tr0 = st.snapshot().tree('t')!;
+          if (_runsOf(st) > 0) sawRuns++;
+          expect(tr0.length, ref.length);
+          if (g % 6 == 0) snaps[gen] = Map.of(ref);
+          if (g % 9 == 8) {
+            st.fold();
+            folds++;
+            expect(_runsOf(st), 0);
+          }
+          final sn = st.snapshot();
+          final tr = sn.tree('t')!;
+          expect(tr.length, ref.length);
+          final keys = ref.keys.toList()..sort();
+          final got = scanAll(tr);
+          expect(got.map((e) => e.$1).toList(), keys);
+          for (var i = 0; i < 40 && keys.isNotEmpty; i++) {
+            final kk = keys[rnd.nextInt(keys.length)];
+            expect(tr.get(k(kk)), ref[kk]);
+          }
+          expect(tr.get(k('absent')), isNull);
+        }
+        expect(sawRuns, greaterThan(10));
+        expect(folds, greaterThan(3));
+        // AS OF: the generations before and after folds are unchanged
+        void checkSnaps(ZxDbStore st) {
+          snaps.forEach((gen, m) {
+            final tr = st.snapshot(generation: gen).tree('t')!;
+            expect(tr.length, m.length);
+            final got = scanAll(tr);
+            final keys = m.keys.toList()..sort();
+            expect(got.map((e) => e.$1).toList(), keys);
+            for (final e in got) {
+              expect(latin1.encode(e.$2), m[e.$1]);
+            }
+          });
+        }
+
+        checkSnaps(st);
+        final path = st.path;
+        st.close();
+        final st2 = ZxDbStore.open(path, options: lsm());
+        checkSnaps(st2);
+        // a vacuum keeping everything, then the last state only
+        st2.vacuum(keep: 1000);
+        checkSnaps(st2);
+        st2.vacuum();
+        final tr = st2.snapshot().tree('t')!;
+        expect(tr.length, ref.length);
+        for (final e in ref.entries) {
+          expect(tr.get(k(e.key)), e.value);
+        }
+        st2.close();
+      });
+    }
+
+    test('drop a tree with runs, large values in runs', () {
+      final st = ZxDbStore.open(newPath(), create: true, options: lsm());
+      final big = Uint8List(100000)..fillRange(0, 100000, 7);
+      for (var g = 0; g < 6; g++) {
+        final t = st.begin();
+        final a = t.tree('a') ?? t.createTree('a');
+        for (var i = 0; i < 300; i++) {
+          a.put(k('a${(i * 37 + g) % 997}'), k('v$g'));
+        }
+        a.put(k('big$g'), big);
+        t.commit();
+      }
+      expect(_runsOf(st), greaterThan(0));
+      expect(st.snapshot().tree('a')!.get(k('big3')), big);
+      final t = st.begin();
+      t.dropTree('a');
+      t.commit();
+      expect(st.snapshot().tree('a'), isNull);
+      final t2 = st.begin();
+      t2.createTree('a').put(k('x'), k('y'));
+      t2.commit();
+      expect(scanAll(st.snapshot().tree('a')!), [('x', 'y')]);
+      st.close();
+    });
+  });
+
+  group('incremental Index', () {
+    // an archive with many files (a large full Index) and a database
+    String filesArchive() {
+      final path = newPath();
+      final h = ZxHandler();
+      h.options.write.threads = 1;
+      h.updateFile(path, 300, _Items([
+        for (var i = 0; i < 300; i++) (0, 'dir/file$i.txt', textBytes(200, i))
+      ], h));
+      h.close();
+      return path;
+    }
+
+    test('commits write deltas, checkpoints, reopen, files kept', () {
+      final path = filesArchive();
+      final st = ZxDbStore.open(path,
+          options: small()..indexCheckpointCommits = 5);
+      final sizes = <int>[];
+      var deltas = 0;
+      for (var g = 0; g < 13; g++) {
+        final before = File(path).lengthSync();
+        final t = st.begin();
+        (t.tree('kv') ?? t.createTree('kv')).put(k('g$g'), k('v$g'));
+        t.commit();
+        sizes.add(File(path).lengthSync() - before);
+        final r = st.root;
+        expect(r, isNotNull);
+      }
+      // most commits are small deltas; one in about 6 is a checkpoint
+      final sorted = List.of(sizes)..sort();
+      final small0 = sorted.first;
+      for (final x in sizes) {
+        if (x < small0 * 3) deltas++;
+      }
+      expect(deltas, greaterThanOrEqualTo(9));
+      expect(sorted.last, greaterThan(small0 * 3));
+      final gens = st.generations;
+      st.close();
+      final st2 = ZxDbStore.open(path, options: small());
+      expect(st2.generations.map((g) => g.generation),
+          gens.map((g) => g.generation));
+      for (var g = 0; g < 13; g++) {
+        expect(s(st2.snapshot().tree('kv')!.get(k('g$g'))!), 'v$g');
+      }
+      // every generation opens (AS OF through deltas)
+      for (final g in gens) {
+        final sn = st2.snapshot(generation: g.generation);
+        final n = sn.tree('kv')?.length ?? 0;
+        expect(n, lessThanOrEqualTo(13));
+      }
+      st2.close();
+      // the handler lists the files at the last generation (a delta)
+      final files = extractAll(
+          openMem(Uint8List.fromList(File(path).readAsBytesSync())));
+      expect(files.length, 300, reason: files.keys.take(5).join(','));
+      expect(files['dir/file7.txt'], textBytes(200, 7));
+    });
+
+    test('crash truncation at every stage of delta commits', () {
+      final path = filesArchive();
+      final st = ZxDbStore.open(path,
+          options: small()..indexCheckpointCommits = 3);
+      final ends = <int>[];
+      final gens = <int>[];
+      for (var g = 0; g < 5; g++) {
+        final t = st.begin();
+        final a = t.tree('kv') ?? t.createTree('kv');
+        for (var i = 0; i < 50; i++) {
+          a.put(k('k$i'), k('g$g'));
+        }
+        gens.add(t.commit());
+        ends.add(File(path).lengthSync());
+      }
+      st.close();
+      final full = File(path).readAsBytesSync();
+      final start = ends.first;
+      // every cut between the end of the first commit and the end
+      var tried = 0;
+      final cuts = <int>{
+        for (var c = start; c <= full.length; c += 29) c,
+        for (final e in ends) ...[e - 1, e, e + 1, e - 20, e - 32, e - 33],
+        for (var c = full.length - 64; c <= full.length; c++) c,
+      }.where((c) => c >= start && c <= full.length).toList()
+        ..sort();
+      for (final cut in cuts) {
+        File(path).writeAsBytesSync(Uint8List.sublistView(full, 0, cut));
+        var want = 0;
+        for (var i = 0; i < ends.length; i++) {
+          if (ends[i] <= cut) want = i;
+        }
+        final s2 = ZxDbStore.open(path, options: small());
+        expect(s2.snapshot().generation, gens[want], reason: 'cut $cut');
+        expect(s(s2.snapshot().tree('kv')!.get(k('k7'))!), 'g$want');
+        s2.close();
+        tried++;
+      }
+      expect(tried, greaterThan(50));
+      // the next commit after a cut in the middle cuts the partial one
+      final mid = (ends[2] + ends[3]) ~/ 2;
+      File(path).writeAsBytesSync(Uint8List.sublistView(full, 0, mid));
+      final s3 = ZxDbStore.open(path, options: small());
+      final t = s3.begin();
+      t.tree('kv')!.put(k('k7'), k('after'));
+      t.commit();
+      s3.close();
+      final s4 = ZxDbStore.open(path, options: small());
+      expect(s(s4.snapshot().tree('kv')!.get(k('k7'))!), 'after');
+      expect(s(s4.snapshot().tree('kv')!.get(k('k8'))!), 'g2');
+      s4.close();
+      final files = extractAll(
+          openMem(Uint8List.fromList(File(path).readAsBytesSync())));
+      expect(files.length, 300);
+    });
+
+    test('file updates and compaction between delta commits', () {
+      final path = filesArchive();
+      final st = ZxDbStore.open(path, options: small());
+      for (var g = 0; g < 4; g++) {
+        final t = st.begin();
+        (t.tree('kv') ?? t.createTree('kv')).put(k('a$g'), k('1'));
+        t.commit();
+      }
+      // a file update (a full Index) then more deltas
+      final s0 = FileInStream.open(path);
+      final h = ZxHandler()..options.write.threads = 1;
+      expect(h.open(s0, path: path), true);
+      h.updateFile(path, 2,
+          _Items([(-1, 'dir/file1.txt', null), (0, 'new.txt', k('new'))], h),
+          releaseInput: s0.close);
+      h.close();
+      s0.close();
+      for (var g = 4; g < 8; g++) {
+        final t = st.begin();
+        t.tree('kv')!.put(k('a$g'), k('1'));
+        t.commit();
+      }
+      var files = extractAll(
+          openMem(Uint8List.fromList(File(path).readAsBytesSync())));
+      expect(files.keys.toSet(), {'dir/file1.txt', 'new.txt'});
+      final g4 = st.generations[st.generations.length - 5].generation;
+      expect(st.snapshot(generation: g4).tree('kv')!.length, 4);
+      // compaction keeping 3 generations
+      st.vacuum(keep: 3);
+      expect(st.snapshot().tree('kv')!.length, 8);
+      expect(st.generations.length, 3);
+      files = extractAll(
+          openMem(Uint8List.fromList(File(path).readAsBytesSync())));
+      expect(files.keys.toSet(), {'dir/file1.txt', 'new.txt'});
+      final t = st.begin();
+      t.tree('kv')!.put(k('z'), k('1'));
+      t.commit();
+      st.close();
+    });
+  });
+}
+
+// the delta runs of tree 't' (or 'a') in the last generation
+int _runsOf(ZxDbStore st) => st.deltaRunCount('t') + st.deltaRunCount('a');

@@ -347,6 +347,30 @@ class TableReader {
   }
 }
 
+/// A row of a table scan decoded on first use (count(*) and filters on
+/// the rowid do not decode the record).
+class LazyRow extends ListBase<Object?> {
+  final TableReader rd;
+  final int rowid;
+  final Uint8List rec;
+  List<Object?>? _r;
+  LazyRow(this.rd, this.rowid, this.rec);
+
+  List<Object?> get _row => _r ??= rd.decode(rowid, rec);
+
+  @override
+  int get length => _r?.length ?? rd.td.columns.length + 1;
+
+  @override
+  set length(int n) => _row.length = n;
+
+  @override
+  Object? operator [](int i) => _row[i];
+
+  @override
+  void operator []=(int i, Object? v) => _row[i] = v;
+}
+
 // ------------------------------------------------------------ cursors
 
 abstract class LevelCursor {
@@ -444,7 +468,7 @@ class RowidRangeCursor extends LevelCursor {
   bool next(Frame f) {
     if (_empty || _c == null) return false;
     if (!_c!.moveNext()) return false;
-    f.rows[slot] = rd.decode(decodeRowid(_c!.key), _c!.value);
+    f.rows[slot] = LazyRow(rd, decodeRowid(_c!.key), _c!.value);
     return true;
   }
 
@@ -2561,10 +2585,7 @@ class Planner {
         ? '${src.display} AS ${src.alias}'
         : src.display;
     if (src.table != null) return _tableAccess(l, level, order, name);
-    if (src.vtab != null) {
-      _vtabAccess(l, level, name);
-      return false;
-    }
+    if (src.vtab != null) return _vtabAccess(l, level, order, name);
     // Materialized or streamed rows.
     List<List<Object?>> Function(Frame f) loader;
     if (src.rowsLoader != null) {
@@ -2616,7 +2637,8 @@ class Planner {
     return false;
   }
 
-  void _vtabAccess(Level l, int level, String name) {
+  // returns true when the table says its rows come in [order]
+  bool _vtabAccess(Level l, int level, List<_OrderCol>? order, String name) {
     final src = l.src;
     final vt = src.vtab!;
     final terms = _terms(l, level);
@@ -2651,7 +2673,18 @@ class Planner {
       cons.add(ZxIndexConstraint(col, o, true));
       vals.add(t.value!);
     }
-    final info = ZxIndexInfo(cons, const [], Set.of(src.used));
+    final ob = <ZxIndexOrderBy>[];
+    if (order != null) {
+      for (final o in order) {
+        // only plain orders (default NULL placement and collation)
+        if (o.coll != null || o.nullsFirst == o.desc) {
+          ob.clear();
+          break;
+        }
+        ob.add(ZxIndexOrderBy(o.col, o.desc));
+      }
+    }
+    final info = ZxIndexInfo(cons, ob, Set.of(src.used));
     vt.bestIndex(info);
     final argv = <int, Ev>{};
     for (var i = 0; i < cons.length; i++) {
@@ -2675,6 +2708,7 @@ class Planner {
     if (ctx.eqp != null) {
       ctx.explain('SCAN $name VIRTUAL TABLE INDEX ${info.idxNum}:${info.idxStr ?? ''}');
     }
+    return ob.isNotEmpty && info.orderByConsumed;
   }
 
   bool _coverable(TableDef td, int col) {
@@ -2690,7 +2724,11 @@ class Planner {
     final snap = src.snap ?? ctx.snap;
     final tree = snap.tree(td.treeName);
     final rd = TableReader(td, tree ?? _EmptyTree(), tableDefaults(td));
-    final nrows = tree?.length ?? 0;
+    final nrows = tree == null
+        ? 0
+        : tree is ZxLengthEstimate
+            ? (tree as ZxLengthEstimate).estimatedLength
+            : tree.length;
     final terms = src.notIndexed ? const <_Term>[] : _terms(l, level);
     final rowidCols = {src.rowidCol, if (td.ipk >= 0) td.ipk};
 
@@ -2908,7 +2946,12 @@ class Planner {
       // narrower than the table, but we keep it simple.
       return null;
     }
-    final n = (src.snap ?? ctx.snap).tree(td.treeName)?.length ?? 0;
+    final tr = (src.snap ?? ctx.snap).tree(td.treeName);
+    final n = tr == null
+        ? 0
+        : tr is ZxLengthEstimate
+            ? (tr as ZxLengthEstimate).estimatedLength
+            : tr.length;
     var rows = n.toDouble() + 1;
     for (final t in eq) {
       rows = (t.op == 'IN' || t.op == 'INSUB')

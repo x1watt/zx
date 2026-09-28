@@ -2406,8 +2406,20 @@ class ZxSeqReader {
         all.add(p);
       }
       try {
-        lastIndex =
+        var idx =
             ZxIndex.decode(all.toBytes(), multiVolume: header.multiVolume);
+        if (idx.base != null) {
+          // an incremental Index (database commits): the files are those
+          // of the generation before it, whose Index was met already
+          final prev = lastIndex;
+          if (prev == null) {
+            throw const SevenZipException(
+                'zx: an incremental Index without its base',
+                SevenZipError.headers);
+          }
+          idx = idx.resolveWith(prev);
+        }
+        lastIndex = idx;
         _lastIndexAt = footers;
       } on SevenZipException {
         // a damaged Index: the state of this generation is not known

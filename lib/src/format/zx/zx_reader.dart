@@ -502,7 +502,8 @@ class ZxArchiveReader {
 
   /// Reads and decodes the Index at [loc].
   static ZxIndex readIndex(
-      ZxVolumes vols, ZxHeader header, ZxKeys? keys, ZxIndexLoc loc) {
+      ZxVolumes vols, ZxHeader header, ZxKeys? keys, ZxIndexLoc loc,
+      {bool resolve = true}) {
     final raw = vols.readAt(loc.volume, loc.offset, loc.size);
     final parts = <Uint8List>[];
     var pos = 0;
@@ -531,7 +532,15 @@ class ZxArchiveReader {
       all.setRange(o, o + p.length, p);
       o += p.length;
     }
-    return ZxIndex.decode(all, multiVolume: header.multiVolume);
+    final idx = ZxIndex.decode(all, multiVolume: header.multiVolume);
+    final b = idx.base;
+    if (b == null || !resolve) return idx;
+    // an incremental Index (section 9.1.2): the rest is in its base
+    final full = readIndex(
+        vols, header, keys, ZxIndexLoc(loc.volume, b.offset, b.size),
+        resolve: false);
+    if (full.base != null) zxDamaged('the base of an Index is incremental');
+    return idx.resolveWith(full);
   }
 
   /// The chain of a metadata block: 0 (store) or the Header's record 0x0B.

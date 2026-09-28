@@ -496,6 +496,47 @@ final old = await ZxArchive.open('backup.zpaq', version: 1);
 await old.extract('/restore-v1');
 ```
 
+### Database (zxdb) and `zx sql`
+
+A `.zx` archive can hold a database next to its files (zxdb,
+docs/zxdb-design.md): SQL tables in SQLite's dialect, key-value stores,
+metadata tables keyed by content (descriptions, tags, subtitles,
+screenshots) and read-only system tables over the archive (`zx_files`,
+`zx_generations`, `zx_file_history`, `similar()`, `fts_search()`). Every
+commit is a generation of the archive, so any table can be read as it was
+(`SELECT ... FROM t AS OF '2026-09-01'`). The SQL reference is
+docs/zxdb-sql.md.
+
+`zx sql` (a zx extension command) runs SQL on it, like the `sqlite3`
+program: statements given on the command line run in order; without them
+it reads statements from the standard input, an interactive shell with
+line editing and history on a terminal. The output modes and the dot
+commands are sqlite3's (`.tables`, `.schema`, `.indexes`, `.mode
+list|csv|json|line|table|box|markdown|quote|tabs`, `.headers`, `.import`,
+`.export`, `.read`, `.param`, `.timer`...), plus `.asof GEN|DATE` (the
+session reads an older generation), `.generations`, `.kv`, `.vacuum
+[ultra]`, `.import-arca` / `.export-arca DIR` (arca manifests, subtitles
+and previews) and `.import-sqlite` / `.export-sqlite FILE` (SQLite
+database files, read and written by a pure Dart implementation of the
+SQLite file format):
+
+```sh
+zx sql notes.zx "CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)"
+zx sql notes.zx "INSERT INTO t (body) VALUES ('first')"
+zx sql -table notes.zx "SELECT * FROM t"
+zx sql -json backup.zx "SELECT path, size FROM zx_files WHERE size > 1e6"
+zx sql backup.zx "SELECT path, distance FROM similar('docs/a.pdf', 20)"
+zx sql notes.zx ".export-sqlite notes.db"      # sqlite3 notes.db works
+zx sql notes.zx < script.sql                   # a script, errors with lines
+zx sql notes.zx                                # the shell (.help)
+```
+
+From Dart, `ZxDatabase.open(path)` gives the synchronous API (`db.sql`,
+`db.kv(name)`) and `ZxDatabaseAsync.open(path)` the same in a worker
+isolate for Flutter apps; `sqliteImport` and `sqliteExport`
+(`lib/src/db/sqlite_io/sqlite_io.dart`) move tables between a session
+and a SQLite file.
+
 ### Installing
 
 - With the Dart SDK: `dart pub global activate --source path <repo>` puts

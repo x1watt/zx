@@ -6,6 +6,8 @@ import 'package:path/path.dart' as p;
 import 'package:zx/zx.dart';
 
 import '../archive_model.dart';
+import '../db_session.dart';
+import 'db_dialogs.dart';
 import '../ui/format_utils.dart';
 
 /// The formats whose comment is text a person wrote.
@@ -240,8 +242,9 @@ class _ArchiveInfoDialogState extends State<_ArchiveInfoDialog> {
 Future<void> showItemPropertiesDialog(
   BuildContext context,
   ArchiveModel model,
-  List<ZxItem> items,
-) {
+  List<ZxItem> items, {
+  DbSession? db,
+}) {
   return showDialog<void>(
     context: context,
     builder: (context) {
@@ -306,7 +309,30 @@ Future<void> showItemPropertiesDialog(
         title: Text(title),
         content: SizedBox(
           width: 520,
-          child: SingleChildScrollView(child: _table(context, rows)),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _table(context, rows),
+                if (db != null &&
+                    db.available &&
+                    items.length == 1 &&
+                    !items.first.isDir) ...[
+                  const Divider(height: 24),
+                  Text(
+                    'Metadata',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 6),
+                  FileMetaView(
+                    session: db,
+                    path: items.first.path,
+                    showEmpty: true,
+                  ),
+                ],
+              ],
+            ),
+          ),
         ),
         actions: [
           FilledButton(

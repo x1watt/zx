@@ -156,6 +156,7 @@ abstract final class ZxRec {
   static const volumeTable = 0x45;
   static const requirements = 0x46;
   static const database = 0x49;
+  static const indexBase = 0x4B;
 
   // entry attributes
   static const path = 0x51;
@@ -1282,6 +1283,12 @@ class ZxIndex {
   /// The database root (record 0x49, section 16), null without one.
   ZxDbRoot? database;
 
+  /// An incremental Index (record 0x4B, section 9.1.2): the full Index it
+  /// takes the rest from and that Index's generation. Set on an Index
+  /// read from a delta (also once resolved), null for a full Index.
+  ZxIndexLoc? base;
+  int baseGeneration = 0;
+
   /// Non-critical records this reader does not know.
   final List<ZxRecord> other = [];
 
@@ -1412,6 +1419,109 @@ class ZxIndex {
     return w.toBytes();
   }
 
+  /// The incremental Index of this state (section 9.1.2): the records a
+  /// database commit changes (requirements, generation, previous Index,
+  /// the generations after [baseGeneration], chains, database root) and
+  /// record 0x4B naming the full Index at [baseLoc] that holds the rest.
+  /// The block table, entries, lookup tables, chunk records and volume
+  /// table must be those of that Index.
+  Uint8List encodeDelta(ZxIndexLoc baseLoc, int baseGeneration) {
+    final w = ZxBytes(512);
+    w.rec(ZxRec.indexBase, (x) {
+      x.vint(baseLoc.offset);
+      x.vint(baseLoc.size);
+      x.vint(baseGeneration);
+    });
+    final mr = minReaderVersion;
+    if (mr != null) {
+      w.rec(ZxRec.requirements, (x) {
+        x.version(mr);
+        x.u64(requiredFeatures);
+        x.u64(optionalFeatures);
+      });
+    }
+    final g = generation;
+    if (g != null) {
+      w.rec(ZxRec.generation, (x) {
+        x.vint(g.number);
+        x.vint(g.time);
+        x.string(g.comment);
+      });
+    }
+    final p = previous;
+    if (p != null) {
+      w.rec(ZxRec.prevIndex, (x) {
+        x.vint(p.offset);
+        x.vint(p.size);
+      });
+    }
+    final tail = [
+      for (final gen in generations)
+        if (gen.number > baseGeneration) gen
+    ];
+    w.rec(ZxRec.generationList, (x) {
+      x.vint(tail.length);
+      for (final gen in tail) {
+        x.vint(gen.number);
+        x.vint(gen.time);
+        final l = gen.index;
+        x.vint(l?.volume ?? 0);
+        x.vint(l?.offset ?? 0);
+        x.vint(l?.size ?? 0);
+        x.string(gen.comment);
+        x.vint(gen.added);
+        x.vint(gen.deleted);
+        x.vint(gen.packed);
+      }
+    });
+    final ids = chains.keys.toList()..sort();
+    for (final id in ids) {
+      if (id == 0) continue;
+      w.rec(ZxRec.chain, chains[id]!.write);
+    }
+    final db = database;
+    if (db != null) w.rec(ZxRec.database, db.write);
+    return w.toBytes();
+  }
+
+  /// This incremental Index completed with the full Index [full] it names
+  /// (read at [base]): the state of its generation.
+  ZxIndex resolveWith(ZxIndex full) {
+    final bl = base!;
+    final out = ZxIndex();
+    out.chains.addAll(full.chains);
+    out.chains.addAll(chains);
+    out.blocks = full.blocks;
+    out.entries = full.entries;
+    out.shaTable = full.shaTable;
+    out.tlshList = full.tlshList;
+    out.chunkTable = full.chunkTable;
+    out.chunkRuns = full.chunkRuns;
+    out.blockTableHash = full.blockTableHash;
+    out.volumes = full.volumes;
+    out.other.addAll(full.other);
+    out.other.addAll(other);
+    out.previous = previous;
+    out.generation = generation;
+    out.minReaderVersion = minReaderVersion;
+    out.requiredFeatures = requiredFeatures;
+    out.optionalFeatures = optionalFeatures;
+    out.database = database;
+    out.base = bl;
+    out.baseGeneration = baseGeneration;
+    final gens = <ZxGeneration>[];
+    for (final g in full.generations) {
+      if (g.number > baseGeneration) break;
+      gens.add(g.number == baseGeneration && g.index == null ? g.at(bl) : g);
+    }
+    if (gens.isEmpty || gens.last.number != baseGeneration) {
+      zxDamaged('the base of an incremental Index does not match');
+    }
+    gens.addAll(generations);
+    out.generations = gens;
+    return out;
+  }
+
   static ZxIndex decode(Uint8List b, {required bool multiVolume}) {
     final idx = ZxIndex();
     var sawEntry = false;
@@ -1451,6 +1561,12 @@ class ZxIndex {
           idx.chunkRuns = ZxChunkRuns.read(r, multiVolume);
         case ZxRec.database:
           idx.database = ZxDbRoot.read(r);
+        case ZxRec.indexBase:
+          if (multiVolume) {
+            zxDamaged('an incremental Index in a multi-volume set');
+          }
+          idx.base = ZxIndexLoc(0, r.vint(), r.vint());
+          idx.baseGeneration = r.vint();
         case ZxRec.prevIndex:
           final vol = multiVolume ? r.vint() : 0;
           idx.previous = ZxIndexLoc(vol, r.vint(), r.vint());

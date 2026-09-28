@@ -1,5 +1,44 @@
 ## Unreleased
 
+- **zxdb time series** (`lib/src/db/ts/`, docs/zxdb-design.md section 12,
+  docs/zxdb-sql.md "Time series"): `CREATE TIMESERIES ... PARTITION BY
+  HOUR|DAY|WEEK|MONTH RETENTION '400d' WITH (compression, fts, tags)`,
+  `DROP TIMESERIES`, `CREATE ROLLUP name ON series EVERY '1h' AS SELECT
+  ... GROUP BY ...` (materialized, kept up to date at each seal) and
+  `DROP ROLLUP`, and the Dart API `db.series(name)` (`appendAll`, `seal`,
+  `scan`/`query` by time range, columns, tag equality and full-text
+  words, AS OF by generation or time). Rows are buffered, then sealed per
+  partition into column segments: delta of delta timestamps, delta
+  integers, XOR floats, per segment dictionaries, text coded with the
+  series' compression (zcm by default), Bloom filters on tag columns, an
+  optional full-text index. SQL scans read only the partitions, segments
+  and columns they need and give `ORDER BY ts` without a sort (the
+  planner passes ORDER BY to virtual tables now). Retention drops whole
+  partitions at seal and VACUUM. Importers for JSON lines, CSV, syslog
+  (RFC 3164 and 5424) and `journalctl -o json`. Benchmark:
+  `tool/zxdb_bench_ts.dart`.
+- **`zx sql`** (zx extension command, docs/zxdb-sql.md "The zx sql
+  shell"): SQL on the database of a `.zx` archive from the command line,
+  in batch (`zx sql x.zx "SELECT ..."`) or as a shell reading the
+  standard input (scripts with line numbers in errors; on a terminal line
+  editing and history). sqlite3's output modes (list, csv, json, line,
+  table, box, markdown, quote, tabs, checked against sqlite3) and dot
+  commands (`.tables`, `.schema`, `.indexes`, `.mode`, `.headers`,
+  `.import` CSV/JSON, `.export`, `.read`, `.param`, `.timer`, `.bail`...),
+  plus `.asof`, `.generations`, `.kv`, `.vacuum [ultra]`,
+  `.import-arca` / `.export-arca` and `.import-sqlite` / `.export-sqlite`.
+- **SQLite import and export** (`lib/src/db/sqlite_io/`): a pure Dart
+  reader and writer of SQLite database files (all page sizes, overflow
+  pages, WITHOUT ROWID tables, UTF-8/16; exported files pass sqlite3's
+  `PRAGMA integrity_check`).
+- **App: Data view** for archives with a database: tables, views, KV
+  stores, time series and system tables; a table browser with paging and
+  sorting; a query box with CSV/JSON export; file metadata (description,
+  tags, subtitles, screenshots) in Properties and the preview; Find
+  similar files, Find by SHA-256 and Archive > New database. Nested and
+  older-version views are read only. All database work runs in a worker
+  isolate (`ZxDatabaseAsync`).
+
 - **zxdb storage engine** (`lib/src/db/engine`, docs/zxdb-design.md
   section 11): a database inside any `.zx` archive, next to its files.
   Copy-on-write B+trees of logical pages (4 to 64 KiB, prefix-compressed

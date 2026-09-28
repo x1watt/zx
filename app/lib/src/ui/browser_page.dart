@@ -13,6 +13,8 @@ import 'package:path/path.dart' as p;
 import 'package:zx/zx.dart';
 
 import '../archive_model.dart';
+import '../db_session.dart';
+import '../dialogs/db_dialogs.dart';
 import '../dialogs/add_dialogs.dart';
 import '../dialogs/common_dialogs.dart';
 import '../dialogs/extract_dialog.dart';
@@ -24,6 +26,7 @@ import 'file_list.dart';
 import 'format_utils.dart';
 import 'panels.dart';
 import 'preview_pane.dart';
+import 'data_view.dart';
 import 'settings_page.dart';
 
 /// Files that are zip or similar inside but documents to the user: they
@@ -68,10 +71,24 @@ class BrowserPageState extends State<BrowserPage> {
   double _treeWidth = 230;
   double _previewWidth = 300;
 
+  /// The database of the shown .zx archive (checked when it is opened).
+  DbSession? _db;
+  String? _dbKey;
+  int _seenGeneration = -1;
+
+  /// The Data view is shown instead of the files.
+  bool _dataTab = false;
+
   AppServices get _s => widget.services;
 
   /// The open archive (for tests).
   ArchiveModel? get model => _model;
+
+  /// The database session of the open archive (for tests).
+  DbSession? get database => _db;
+
+  /// Shows the Data view (true) or the files.
+  void showData(bool on) => setState(() => _dataTab = on);
 
   @override
   void initState() {
@@ -109,6 +126,10 @@ class BrowserPageState extends State<BrowserPage> {
     final m = _model;
     if (m != null) _closeLevels(m);
     _model?.removeListener(_syncFilter);
+    _model?.removeListener(_onModelGeneration);
+    final db = _db;
+    _db = null;
+    if (db != null) unawaited(db.close().catchError((Object _) {}));
     _listFocus.dispose();
     _filterFocus.dispose();
     _filter.dispose();
@@ -122,10 +143,161 @@ class BrowserPageState extends State<BrowserPage> {
 
   void _setModel(ArchiveModel? m) {
     _model?.removeListener(_syncFilter);
+    _model?.removeListener(_onModelGeneration);
     _model = m;
     m?.addListener(_syncFilter);
+    m?.addListener(_onModelGeneration);
+    _seenGeneration = m?.generation ?? -1;
     _filter.text = '';
+    _syncDb(m);
     _setWindowTitle(m == null ? 'zx' : '${titleOf(m)} - zx');
+  }
+
+  // ---- the database of a .zx archive ----
+
+  /// The model's archive changed (files added...): the SQL session reads
+  /// the archive again.
+  void _onModelGeneration() {
+    final m = _model;
+    if (m == null || m.generation == _seenGeneration) return;
+    _seenGeneration = m.generation;
+    final db = _db;
+    if (db != null && db.available) {
+      unawaited(db.archiveChanged().catchError((Object _) {}));
+    }
+  }
+
+  /// Opens (or keeps, or closes) the database session for [m]: one per
+  /// archive file, version and read-only reason.
+  void _syncDb(ArchiveModel? m) {
+    final root = m?.root;
+    String? key;
+    if (m != null && root!.archive.format == 'zx') {
+      key =
+          '${root.archive.path}\n${root.archive.version}\n'
+          '${root.isOldVersion}\n${m.readOnlyWhy}';
+    }
+    if (key == _dbKey) return;
+    final old = _db;
+    _db = null;
+    _dbKey = key;
+    _dataTab = false;
+    if (old != null) unawaited(old.close().catchError((Object _) {}));
+    if (key == null || m == null) return;
+    final a = root!.archive;
+    final db = DbSession(
+      a.path,
+      password: a.password,
+      readOnlyWhy: m.readOnlyWhy,
+      asOfGeneration: root.isOldVersion ? a.version : null,
+      opener: _s.dbOpener,
+    );
+    db.onWrite = _afterDbWrite;
+    db.addListener(() {
+      if (mounted && _db == db) setState(() {});
+    });
+    _db = db;
+    unawaited(db.start());
+  }
+
+  /// A SQL write appended a generation: the listing is read again, so the
+  /// archive's own writes see the current file.
+  Future<void> _afterDbWrite() async {
+    final m = _model;
+    if (m == null || m.parent != null || m.archive.flattened) return;
+    final old = m.archive;
+    try {
+      final a = await ZxArchive.open(
+        old.path,
+        password: old.password,
+        onPassword: _askPassword,
+      );
+      if (!mounted || _model != m) {
+        await a.close();
+        return;
+      }
+      _seenGeneration = m.generation + 1;
+      m.refresh(archive: a);
+      await old.close();
+    } on SevenZipException {
+      // the listing stays as it was
+    }
+  }
+
+  /// Why the database actions are not available, or null.
+  String? _whyNotDb() {
+    final m = _model;
+    if (m == null) return 'Open an archive first';
+    if (m.root.archive.format != 'zx') {
+      return 'Only .zx archives hold a database';
+    }
+    final db = _db;
+    if (db == null || !db.checked) return 'Checking for a database';
+    if (!db.available) return 'The archive has no database';
+    if (m.parent != null) return 'Inside a nested archive';
+    return null;
+  }
+
+  String? _whyNotNewDb() {
+    final m = _model;
+    if (m == null) return 'Open an archive first';
+    if (m.archive.format != 'zx' || m.parent != null) {
+      return 'Only a .zx archive file can hold a database';
+    }
+    final ro = m.readOnlyReason;
+    if (ro != null) return ro;
+    final db = _db;
+    if (db == null || !db.checked) return 'Checking for a database';
+    if (db.available) return 'The archive has a database';
+    return null;
+  }
+
+  Future<void> newDatabase() async {
+    final db = _db;
+    if (db == null || _whyNotNewDb() != null) return;
+    try {
+      await db.create();
+      if (!mounted) return;
+      setState(() => _dataTab = true);
+      _snack('Created a database in ${p.basename(db.path)}');
+    } catch (e) {
+      if (mounted) {
+        await showErrorDialog(
+          context,
+          title: 'New database',
+          message: dbErrorText(e),
+        );
+      }
+    }
+  }
+
+  /// Shows the file at [path] in the file list (selected).
+  void _reveal(String path) {
+    final m = _model;
+    if (m == null) return;
+    final k = path.lastIndexOf('/');
+    final dir = k < 0 ? '' : path.substring(0, k);
+    if (m.dir != dir) m.navigate(dir);
+    m.selectPaths([path]);
+    setState(() => _dataTab = false);
+    _listFocus.requestFocus();
+  }
+
+  Future<void> findSimilar([ZxItem? item]) async {
+    final m = _model;
+    final db = _db;
+    final it =
+        item ?? (m?.selectedItems.length == 1 ? m!.selectedItems.first : null);
+    if (db == null || it == null || it.isDir || _whyNotDb() != null) return;
+    final r = await showSimilarFilesDialog(context, db, it.path);
+    if (r != null && mounted) _reveal(r);
+  }
+
+  Future<void> findBySha() async {
+    final db = _db;
+    if (db == null || _whyNotDb() != null) return;
+    final r = await showFindShaDialog(context, db);
+    if (r != null && mounted) _reveal(r);
   }
 
   /// The chain of archives of [m] for the title bar:
@@ -890,7 +1062,12 @@ class BrowserPageState extends State<BrowserPage> {
     if (sel.isEmpty) {
       await info();
     } else {
-      await showItemPropertiesDialog(context, m, sel);
+      await showItemPropertiesDialog(
+        context,
+        m,
+        sel,
+        db: m.parent == null ? _db : null,
+      );
     }
   }
 
@@ -980,6 +1157,8 @@ class BrowserPageState extends State<BrowserPage> {
           'Extract here',
         ),
         entry('copy-path', Icons.content_copy_rounded, 'Copy path'),
+        if (item != null && !item.isDir && _whyNotDb() == null)
+          entry('similar', Icons.compare_arrows_rounded, 'Find similar files'),
         const PopupMenuDivider(),
         entry(
           'rename',
@@ -1037,6 +1216,8 @@ class BrowserPageState extends State<BrowserPage> {
         await extractHere();
       case 'copy-path':
         copyPath();
+      case 'similar':
+        if (item != null) await findSimilar(item);
       case 'rename':
         await rename();
       case 'delete':
@@ -1493,6 +1674,40 @@ class BrowserPageState extends State<BrowserPage> {
                 ],
                 child: const Text('Show version'),
               ),
+            if (m != null && m.root.archive.format == 'zx') ...[
+              const Divider(height: 1),
+              if (_db?.available != true)
+                item(
+                  'New database',
+                  newDatabase,
+                  icon: Icons.storage_rounded,
+                  why: _whyNotNewDb(),
+                )
+              else
+                CheckboxMenuButton(
+                  value: _dataTab,
+                  onChanged: _whyNotDb() == null
+                      ? (v) => showData(v ?? false)
+                      : null,
+                  child: const Text('Data view'),
+                ),
+              item(
+                'Find similar files',
+                findSimilar,
+                icon: Icons.compare_arrows_rounded,
+                why:
+                    _whyNotDb() ??
+                    (m.selectedItems.length == 1 && !m.selectedItems.first.isDir
+                        ? null
+                        : 'Select one file'),
+              ),
+              item(
+                'Find by SHA-256...',
+                findBySha,
+                icon: Icons.fingerprint_rounded,
+                why: _whyNotDb(),
+              ),
+            ],
             if (m != null && m.parent != null)
               item(
                 'Leave the nested archive',
@@ -1562,6 +1777,32 @@ class BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  /// Files | Data, above the view of an archive with a database.
+  Widget _viewSwitch(ColorScheme cs) => Container(
+    color: cs.surfaceContainerLow,
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+    alignment: Alignment.centerLeft,
+    child: SegmentedButton<bool>(
+      key: const Key('view-switch'),
+      showSelectedIcon: false,
+      style: const ButtonStyle(visualDensity: VisualDensity.compact),
+      segments: const [
+        ButtonSegment(
+          value: false,
+          icon: Icon(Icons.folder_outlined, size: 16),
+          label: Text('Files', key: Key('tab-files')),
+        ),
+        ButtonSegment(
+          value: true,
+          icon: Icon(Icons.storage_rounded, size: 16),
+          label: Text('Data', key: Key('tab-data')),
+        ),
+      ],
+      selected: {_dataTab},
+      onSelectionChanged: (v) => showData(v.first),
+    ),
+  );
+
   Widget _splitter(void Function(double dx) onDrag) => MouseRegion(
     cursor: SystemMouseCursors.resizeColumn,
     child: GestureDetector(
@@ -1595,9 +1836,28 @@ class BrowserPageState extends State<BrowserPage> {
             onOpenRecent: openArchive,
             onRemoveRecent: _s.settings.removeRecent,
           );
+        } else if (_dataTab && _whyNotDb() == null) {
+          content = Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _viewSwitch(cs),
+              Divider(height: 1, color: cs.outlineVariant),
+              Expanded(
+                child: DataView(
+                  session: _db!,
+                  picker: _s.picker,
+                  exportDirectory: p.dirname(m.root.archive.path),
+                ),
+              ),
+            ],
+          );
         } else {
           content = Column(
             children: [
+              if (_whyNotDb() == null) ...[
+                _viewSwitch(cs),
+                Divider(height: 1, color: cs.outlineVariant),
+              ],
               PathBar(
                 model: m,
                 filter: _filter,
@@ -1640,7 +1900,10 @@ class BrowserPageState extends State<BrowserPage> {
                       ),
                       SizedBox(
                         width: _previewWidth,
-                        child: PreviewPane(model: m),
+                        child: PreviewPane(
+                          model: m,
+                          db: m.parent == null ? _db : null,
+                        ),
                       ),
                     ],
                   ],

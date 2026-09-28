@@ -22,10 +22,13 @@ import 'storage_api.dart';
 import 'system/archive_view.dart';
 import 'system/sql_adapter.dart';
 import 'system/tlsh_index.dart';
+import 'ts/ts_api.dart';
+import 'ts/ts_sql.dart';
 
 export 'engine/store.dart' show ZxDbStore, ZxDbStoreOptions, ZxDbFoldResult;
 export 'kv.dart';
 export 'storage_api.dart';
+export 'ts/ts_api.dart';
 
 Uint8List _utf8(String s) => Uint8List.fromList(utf8.encode(s));
 
@@ -273,6 +276,7 @@ class ZxDatabase {
     final v = _view = ZxArchiveView.open(store.path, password: _password);
     ZxSystemSql(archive: v, database: true)
         .register(q.registerVirtualTable, q.functions);
+    zxTsRegisterSql(q, nowMs: () => nowMs());
     zxKvRegisterSql(q,
         vacuum: (ultra) => vacuum(ultra: ultra, recompress: ultra));
     return _sql = q;
@@ -447,6 +451,7 @@ class ZxDatabase {
     for (final s in _expiringStores()) {
       kvPurge(s);
     }
+    if (!readOnly) sealAllSeries(); // time series: segments, retention
     _snap?.close();
     _snap = null;
     return store.vacuum(keep: keep, recompress: recompress, ultra: ultra);

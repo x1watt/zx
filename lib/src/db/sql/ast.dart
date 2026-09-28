@@ -436,8 +436,8 @@ class CreateTimeseriesStmt extends Stmt {
       this.partitionBy, this.retention, this.options);
 }
 
-/// CREATE ROLLUP name [(cols)] AS select EVERY '...' [RETENTION '...']
-/// [WITH (...)].
+/// CREATE ROLLUP name [(cols)] [ON series] [EVERY '...'] [RETENTION '...']
+/// [WITH (...)] AS select (the clauses may also follow the select).
 class CreateRollupStmt extends Stmt {
   final bool ifNotExists;
   final String name;
@@ -446,8 +446,11 @@ class CreateRollupStmt extends Stmt {
   final String? every;
   final String? retention;
   final Map<String, Object?> options;
+
+  /// The series of `ON series` (else the select's FROM names it).
+  final String? on;
   CreateRollupStmt(this.ifNotExists, this.name, this.columns, this.select,
-      this.every, this.retention, this.options);
+      this.every, this.retention, this.options, {this.on});
 }
 
 class VacuumStmt extends Stmt {

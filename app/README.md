@@ -45,6 +45,24 @@ native code of its own besides the runners and uses three small packages:
 - **Versions** (zpaq): the status bar shows "Version N of M"; click it
   (or Archive, Show version) to list the versions with their dates and
   open an older one, read-only.
+- **Data** (.zx archives with a database, zxdb): a Files | Data switch
+  appears above the view. The Data view lists the tables, views, KV
+  stores, time series and the system tables (zx_files, zx_generations,
+  zx_file_history, zx_meta, zx_layers, zx_media, zx_fingerprints) in
+  groups; a table opens in a browser with pages of 100 rows and sorting
+  by a click on a column (DATETIME columns are shown as dates). "SQL
+  query" runs any SQL (Ctrl+Enter), shows the rows or the error, and
+  CSV or JSON export saves the rows (a whole table from the browser).
+  Archive, **New database** creates one in a .zx archive that has none.
+  Writes are refused in read-only views (a nested archive, the inner
+  filesystems view, an older version, which reads the database as of
+  that generation). The metadata of a file (title, description, tags,
+  subtitles and other layers with their language, screenshots) is shown
+  above its preview and in its Properties. **Find similar files**
+  (context menu, Archive menu) lists the 20 nearest files by TLSH
+  distance, **Find by SHA-256** the files with that content; a click
+  shows the file in the list. The queries run in the database's worker
+  isolate (`ZxDatabaseAsync`), never on the UI isolate.
 - **Extract** (Ctrl+E): destination (default: a folder named after the
   archive, next to it), all files or the selection (relative to the
   current folder), keep paths or not, what to do with existing files

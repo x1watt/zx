@@ -274,6 +274,7 @@ location is given by the Footer. The content is a sequence of records:
 | 0x45 | yes | volume table (section 10.2) |
 | 0x46 | no | requirements of this generation: version min_reader_version, u64 required_features, u64 optional_features |
 | 0x49 | yes | database root (section 16.1) |
+| 0x4B | yes | incremental Index: the full Index it completes (section 9.1.2) |
 
 Chain declarations and the block table MUST appear before the first entry.
 A reader MUST check the requirements record (section 3.1) before it reads
@@ -693,6 +694,47 @@ Entry attribute for timelines:
 |---|---|---|
 | 0x76 | no | since generation: vint, the generation that wrote this content of the entry (unchanged entries carry the value forward; a rename writes the current generation) |
 
+### 9.1.2 Incremental Index
+
+A generation that changes only the database (section 16) MAY write an
+incremental Index instead of a full one: record 0x4B names a full Index
+of an earlier generation (the base), and the incremental Index holds only
+what differs from it.
+
+| Type | Crit | Content |
+|---|---|---|
+| 0x4B | yes | base Index: vint offset, vint index_size, vint base generation number |
+
+- The base is a full Index (it has no record 0x4B) of the same file; a
+  database lives in single-file archives only, so there is no volume.
+- An incremental Index holds records 0x4B, 0x46, 0x42, 0x40 (the Index
+  just before it, as in every generation), 0x44, its chain declarations
+  and 0x49. Its 0x44 lists only the generations after the base
+  generation, this one last (with offset and size 0).
+- The state of its generation is the base Index with these records put
+  in place: the block table, the entries, the lookup tables (0x30, 0x32),
+  the chunk records (0x34, 0x36), the volume table and the unknown
+  non-critical records of the base; the chains of both; requirements,
+  generation, previous Index and database root of the incremental Index;
+  the generation list of the base up to the base generation (the base
+  generation located at the base) followed by the list of the incremental
+  Index.
+- A writer MUST NOT write an incremental Index for a generation that
+  changes entries, blocks or anything else the base holds; such a
+  generation writes a full Index, which later incremental ones may name.
+- A reader resolves one level: the base of an incremental Index that is
+  itself incremental is damage. An Index whose base does not decode is
+  not valid (the Footer before it is the last valid one, section 9.1).
+  A reader of a non-seekable input takes the state of the previous
+  generation as the base (a generation with an incremental Index comes
+  after its base, and only database commits are between them).
+- zx (informative) writes an incremental Index for a database commit
+  when it is less than half the size of the base, and a full Index (a
+  checkpoint) at least every 64 commits (a setting), so an Index read
+  costs at most two Index reads, and a database commit does not write
+  the file entries or the whole generation list. A compaction writes full
+  Indexes.
+
 An update in place appends to the file. When the file can not be opened
 for writing (another program holds it, for example without sharing
 writing on Windows), a writer MAY write the file again, its bytes up to the
@@ -1080,6 +1122,22 @@ generations before the first database commit stay readable by them):
     and an update or a compaction refuses an archive that another writer
     appended to after it was opened.
 
+Changes made after the first database release (the format version does
+not change; the new records are critical, so readers that do not know
+them refuse the generations that use them, which require `database`
+already):
+
+31. **Incremental Index** (record 0x4B, section 9.1.2): a database
+    commit writes the records it changes (database root, generation,
+    requirements, chains, the generations since the base) and names the
+    last full Index for the rest, instead of the whole Index with every
+    file entry and the whole generation list. Readers resolve it with
+    one extra Index read; a writer writes a full Index (a checkpoint)
+    periodically and at every file update or compaction.
+32. **Catalog record version 2** (section 16.5): a tree may have delta
+    runs (sorted changes merged into the tree at a fold), so that random
+    writes into a large tree do not rewrite its pages at every commit.
+
 ## 16. Database (zxdb)
 
 Required feature `database`. An archive may hold a database next to its
@@ -1196,11 +1254,26 @@ The catalog is a tree (root `catalog_root`): key the UTF-8 name of a
 tree, value
 
 ```
-CatalogRecord = vint version (1), vint tree_number, vint root_page_id
+CatalogRecord = vint version (1 or 2), vint tree_number, vint root_page_id
                 (0: empty), vint entry_count, vint page_size (0: the
                 store's default), vint has_compression,
-                [ string compression, when has_compression is 1 ]
+                [ string compression, when has_compression is 1 ],
+                version 2 only: vint base_count, vint run_count,
+                run_count x ( vint run_root, vint run_entries,
+                              vint run_bytes )
 ```
+
+Version 2 records a tree with a delta layer (informative about why:
+docs/zxdb-design.md 11.2): the tree at `root_page_id` is the base,
+holding `base_count` entries, and each run is a tree of the same page
+format holding changes of keys, newest run first. A value in a run is
+`u8 0, value` (the key is set to value) or `u8 1` alone (the key is
+deleted). The tree's content is the base with the runs applied from the
+oldest to the newest; `entry_count` is the number of keys of that
+content, `run_entries` the entries of a run (deletions included) and
+`run_bytes` the bytes of its keys and values (a hint for folding). Runs
+never hold two entries for one key. A writer writes version 1 when a tree
+has no runs and its base count is its entry count.
 
 `compression` names the tree's policy: `store`, `fast`, `balanced`,
 `max`, `ultra`, or a coder chain as the `-m` switch writes it (for

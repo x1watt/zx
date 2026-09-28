@@ -13,6 +13,7 @@ import '../../format/zx/zx_reader.dart';
 import '../../io/streams.dart' show SevenZipException;
 import '../storage_api.dart';
 import 'cache.dart';
+import 'delta.dart';
 import 'page.dart';
 
 /// One opened archive file (a store opens it again when another process
@@ -34,6 +35,23 @@ class DbFile {
 
   /// Decoded map pages, by [ZxDbLoc.cacheKey].
   final LruCache<Uint8List> maps;
+
+  /// Bloom filters of delta runs, by the [ZxDbLoc.cacheKey] of their root.
+  final Map<int, RunFilter> runFilters = {};
+
+  /// The filter of the committed run [r] read through [view].
+  RunFilter? runFilter(DbView view, DeltaRun r) {
+    if (r.count < 64) return null;
+    final loc = view.locOf(r.root);
+    if (loc == null) return null;
+    final key = loc.cacheKey;
+    final hit = runFilters[key];
+    if (hit != null) return hit;
+    final f = RunFilter.build(view, r.root, r.count);
+    if (runFilters.length >= 256) runFilters.remove(runFilters.keys.first);
+    runFilters[key] = f;
+    return f;
+  }
 
   DbFile(this.path, this.raf, this.header, this.keys,
       {int pageCacheBytes = 64 << 20, int blockCacheBytes = 16 << 20})
@@ -67,7 +85,7 @@ class DbFile {
   int get length => raf.lengthSync();
 
   /// Reads and decodes the Index at [loc] (as ZxArchiveReader.readIndex).
-  ZxIndex readIndex(ZxIndexLoc loc) {
+  ZxIndex readIndex(ZxIndexLoc loc, {bool resolve = true}) {
     try {
       final raw = readAt(loc.offset, loc.size);
       final parts = <Uint8List>[];
@@ -95,7 +113,12 @@ class DbFile {
       }
       final idx = ZxIndex.decode(all, multiVolume: header.multiVolume);
       addChains(idx.chains);
-      return idx;
+      final b = idx.base;
+      if (b == null || !resolve) return idx;
+      // an incremental Index: the rest is in its base (a full Index)
+      final full = readIndex(ZxIndexLoc(0, b.offset, b.size), resolve: false);
+      if (full.base != null) zxDamaged('the base of an Index is incremental');
+      return idx.resolveWith(full);
     } on SevenZipException catch (e) {
       zxDbCorrupt(e);
     }
@@ -178,7 +201,7 @@ class DbFile {
 }
 
 /// Resolves page ids of one generation's database (its page map).
-class DbView implements PageReader {
+class DbView implements PageReader, RunFilters {
   final DbFile file;
   final ZxDbRoot? root;
 
@@ -205,6 +228,9 @@ class DbView implements PageReader {
 
   @override
   Node read(int id) => page(id);
+
+  @override
+  RunFilter? filterOf(DeltaRun r) => file.runFilter(this, r);
 
   Node page(int id) {
     final hit = _memo[id];

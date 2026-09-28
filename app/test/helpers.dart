@@ -6,6 +6,9 @@
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
+import 'package:zx/src/db/sql/zx_sql.dart' show ZxSqlResult;
+import 'package:zx/src/db/zxdb.dart';
+import 'package:zx_app/src/db_session.dart';
 import 'package:zx_app/src/integration.dart';
 import 'package:zx_app/src/services.dart';
 import 'package:zx_app/src/settings.dart';
@@ -25,6 +28,7 @@ class FakePicker implements FilePicker {
   final archives = <String?>[];
   final fileLists = <List<String>>[];
   final folderAnswers = <String?>[];
+  final saveAnswers = <String?>[];
 
   @override
   Future<String?> openArchive({String? initialDirectory}) async =>
@@ -37,6 +41,12 @@ class FakePicker implements FilePicker {
   @override
   Future<String?> pickFolder({String? initialDirectory, String? title}) async =>
       folderAnswers.isEmpty ? null : folderAnswers.removeAt(0);
+
+  @override
+  Future<String?> saveFile({
+    String? initialDirectory,
+    String? suggestedName,
+  }) async => saveAnswers.isEmpty ? null : saveAnswers.removeAt(0);
 }
 
 class FakeIntegration implements DesktopIntegration {
@@ -96,6 +106,7 @@ AppServices testServices(
   FakeLauncher? launcher,
   FakePicker? picker,
   Settings? settings,
+  DbOpener? dbOpener,
 }) {
   final paths = testPaths(root);
   return AppServices(
@@ -104,6 +115,7 @@ AppServices testServices(
     launcher: launcher ?? FakeLauncher(),
     picker: picker ?? FakePicker(),
     integration: integration ?? FakeIntegration(),
+    dbOpener: dbOpener ?? syncDbOpener,
   );
 }
 
@@ -128,4 +140,68 @@ String makeTree(String root) {
     ..parent.createSync(recursive: true)
     ..writeAsBytesSync(List.generate(3000, (i) => (i * 7) & 0xFF));
   return base;
+}
+
+/// A [DbConnection] that runs ZxDatabase on the test's isolate
+/// (synchronously, so the widget tests need no runAsync for the queries).
+class SyncDbConnection implements DbConnection {
+  final ZxDatabase db;
+  final calls = <String>[];
+  SyncDbConnection(this.db);
+
+  @override
+  Future<ZxSqlResult> execute(String sql, [Object? params]) async {
+    calls.add(sql);
+    return db.sql.execute(sql, params);
+  }
+
+  @override
+  Future<List<String>> kvStores() async => db.kvStores;
+
+  @override
+  Future<List<String>> seriesNames() async => db.seriesNames;
+
+  @override
+  Future<void> resetSql() async => db.resetSql();
+
+  @override
+  Future<void> close() async => db.close();
+}
+
+/// The connections the tests opened (closed by [closeTestDbs]).
+final openTestDbs = <SyncDbConnection>[];
+
+Future<DbConnection?> syncDbOpener(
+  String path, {
+  String? password,
+  bool readOnly = false,
+  bool create = false,
+}) async {
+  if (!create) {
+    final s = ZxDbStore.open(path, password: password, readOnly: true);
+    final has = s.root != null;
+    s.close();
+    if (!has) return null;
+  }
+  final c = SyncDbConnection(
+    ZxDatabase.open(
+      path,
+      password: password,
+      readOnly: readOnly,
+      create: create,
+    ),
+  );
+  openTestDbs.add(c);
+  return c;
+}
+
+Future<void> closeTestDbs() async {
+  for (final c in openTestDbs) {
+    try {
+      c.db.close();
+    } on StateError {
+      // closed
+    }
+  }
+  openTestDbs.clear();
 }
