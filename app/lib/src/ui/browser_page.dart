@@ -1,5 +1,5 @@
-// The main window: menu bar, toolbar, path bar, folder tree, file list,
-// preview and status bar, and every action on the open archive. The
+// The main window: the header (navigation, path bar, search, view, the
+// menu), the action bar, folder tree, file list, preview and status bar, and every action on the open archive. The
 // archive work runs in the background isolates of ZxArchive; this file
 // only asks the questions and shows the results.
 
@@ -122,6 +122,7 @@ class BrowserPageState extends State<BrowserPage> {
   /// The search field of a phone is open.
   bool _narrowSearch = false;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+  final _menu = MenuController();
 
   void _update(VoidCallback f) {
     if (mounted) setState(f);
@@ -1465,6 +1466,8 @@ class BrowserPageState extends State<BrowserPage> {
       _setShowHidden(!_s.settings.showHidden);
     } else if (k == LogicalKeyboardKey.f5) {
       _refresh();
+    } else if (k == LogicalKeyboardKey.f10) {
+      _toggleMenu();
     } else if (ctrl && k == LogicalKeyboardKey.keyQ) {
       exit(0);
     } else if (alt && k == LogicalKeyboardKey.arrowLeft) {
@@ -1560,224 +1563,217 @@ class BrowserPageState extends State<BrowserPage> {
 
   // ---- layout ----
 
-  List<ToolAction?> _toolActions() {
+  /// The actions that apply now, in a slim bar under the header: the
+  /// selection (and the clipboard) in a folder; the archive and its
+  /// selection inside an archive. Null when nothing applies, so the
+  /// header stays one row.
+  Widget? _actionBar(ColorScheme cs) {
     final m = _model;
     final clip = _clip;
-    final pasteWhy = clip == null
-        ? 'Nothing to paste'
-        : m == null
+    final label = TextStyle(fontSize: 13, color: cs.onSurfaceVariant);
+    Widget closeButton(String key, String tip, VoidCallback f) => IconButton(
+      key: Key(key),
+      tooltip: tip,
+      visualDensity: VisualDensity.compact,
+      onPressed: f,
+      icon: const Icon(Icons.close_rounded, size: 18),
+    );
+    final pasteAction = clip == null
         ? null
-        : _whyNot('add');
-    final view = ToolAction(
-      'view',
-      _s.settings.gridView ? Icons.view_list_rounded : Icons.grid_view_rounded,
-      _s.settings.gridView ? 'Details' : 'Icons',
-      _s.settings.gridView
-          ? 'Show the details list'
-          : 'Show icons and thumbnails',
-      null,
-      () => _s.settings.gridView = !_s.settings.gridView,
-    );
-    final start = [
-      ToolAction(
-        'open',
-        Icons.folder_open_rounded,
-        'Open',
-        'Open an archive (Ctrl+O)',
-        null,
-        _openDialog,
-      ),
-      ToolAction(
-        'new',
-        Icons.add_circle_outline_rounded,
-        'New',
-        'Create a new archive (Ctrl+N)',
-        null,
-        () => newArchive(),
-      ),
-      null,
-    ];
-    final settings = ToolAction(
-      'settings',
-      Icons.settings_outlined,
-      'Settings',
-      'Settings and desktop integration',
-      null,
-      openSettings,
-    );
+        : ToolAction(
+            'paste',
+            Icons.content_paste_rounded,
+            'Paste',
+            'Paste ${clip.label} here (Ctrl+V)',
+            paste,
+          );
     if (m == null) {
       final sel = _fs.selectedEntries;
-      final none = sel.isEmpty ? 'Select items first' : null;
-      final archives = sel
-          .where(
-            (e) =>
-                !e.isDir &&
-                (looksLikeArchive(e.name) || isDiskImageName(e.name)),
-          )
-          .length;
-      return [
-        ...start,
-        ToolAction(
-          'folder',
-          Icons.create_new_folder_outlined,
-          'New folder',
-          'Create a folder here',
+      if (sel.isEmpty) {
+        if (pasteAction == null) return null;
+        return ActionBar(
+          leading: Padding(
+            padding: const EdgeInsets.only(left: 8, right: 8),
+            child: Text('Clipboard: ${clip!.label}', style: label),
+          ),
+          actions: [pasteAction],
+          trailing: closeButton(
+            'clip-clear',
+            'Empty the clipboard',
+            () => _update(() => _clip = null),
+          ),
+        );
+      }
+      final archives = sel.any(
+        (e) =>
+            !e.isDir && (looksLikeArchive(e.name) || isDiskImageName(e.name)),
+      );
+      return ActionBar(
+        key: const Key('selection-actions'),
+        leading: Padding(
+          padding: const EdgeInsets.only(left: 8, right: 8),
+          child: Text('${sel.length} selected', style: label),
+        ),
+        actions: [
+          ToolAction(
+            'cut',
+            Icons.content_cut_rounded,
+            'Cut',
+            'Cut the selection (Ctrl+X)',
+            () => copySelection(cut: true),
+          ),
+          ToolAction(
+            'copy',
+            Icons.content_copy_rounded,
+            'Copy',
+            'Copy the selection (Ctrl+C)',
+            copySelection,
+          ),
+          ?pasteAction,
+          if (sel.length == 1)
+            ToolAction(
+              'rename',
+              Icons.drive_file_rename_outline_rounded,
+              'Rename',
+              'Rename the selected item (F2)',
+              renameFs,
+            ),
+          ToolAction(
+            'delete',
+            Icons.delete_outline_rounded,
+            'Delete',
+            _trashAvailable
+                ? 'Move the selection to the trash (Del)'
+                : 'Delete the selection (Del)',
+            deleteFs,
+          ),
           null,
-          newFolderFs,
+          ToolAction(
+            'compress',
+            Icons.archive_outlined,
+            'Compress',
+            'Compress the selection to a .zx archive',
+            compressFs,
+          ),
+          if (archives)
+            ToolAction(
+              'extract',
+              Icons.unarchive_outlined,
+              'Extract',
+              'Extract the selected archives, each into its own folder',
+              extractFsArchives,
+            ),
+          ToolAction(
+            'properties',
+            Icons.info_outline_rounded,
+            'Properties',
+            'Size, dates, permissions and SHA-256 (Alt+Enter)',
+            propertiesFs,
+          ),
+        ],
+        trailing: closeButton(
+          'selection-clear',
+          'Clear the selection (Esc)',
+          _fs.clearSelection,
         ),
-        null,
-        ToolAction(
-          'cut',
-          Icons.content_cut_rounded,
-          'Cut',
-          'Cut the selection (Ctrl+X)',
-          none,
-          () => copySelection(cut: true),
-        ),
-        ToolAction(
-          'copy',
-          Icons.content_copy_rounded,
-          'Copy',
-          'Copy the selection (Ctrl+C)',
-          none,
-          copySelection,
-        ),
-        ToolAction(
-          'paste',
-          Icons.content_paste_rounded,
-          'Paste',
-          clip == null ? 'Paste (Ctrl+V)' : 'Paste ${clip.label} here (Ctrl+V)',
-          pasteWhy,
-          paste,
-        ),
-        null,
-        ToolAction(
-          'rename',
-          Icons.drive_file_rename_outline_rounded,
-          'Rename',
-          'Rename the selected item (F2)',
-          sel.length == 1 ? null : 'Select one item to rename',
-          renameFs,
-        ),
-        ToolAction(
-          'delete',
-          Icons.delete_outline_rounded,
-          'Delete',
-          _trashAvailable
-              ? 'Move the selection to the trash (Del)'
-              : 'Delete the selection (Del)',
-          none,
-          deleteFs,
-        ),
-        null,
-        ToolAction(
-          'compress',
-          Icons.archive_outlined,
-          'Compress',
-          'Compress the selection to a .zx archive',
-          none,
-          compressFs,
-        ),
+      );
+    }
+    final readOnly = _whyNot('add');
+    final selected = m.selection.isNotEmpty;
+    return ActionBar(
+      key: const Key('archive-actions'),
+      leading: selected
+          ? Padding(
+              padding: const EdgeInsets.only(left: 8, right: 8),
+              child: Text('${m.selection.length} selected', style: label),
+            )
+          : null,
+      actions: [
         ToolAction(
           'extract',
           Icons.unarchive_outlined,
           'Extract',
-          'Extract the selected archives, each into its own folder',
-          archives == 0 ? 'Select archives first' : null,
-          extractFsArchives,
+          'Extract files (Ctrl+E)',
+          () => extract(),
         ),
-        null,
-        view,
+        if (readOnly == null)
+          ToolAction(
+            'add',
+            Icons.add_box_outlined,
+            'Add',
+            'Add files and folders to the current folder',
+            () => add(),
+          ),
         ToolAction(
-          'properties',
-          Icons.info_outline_rounded,
-          'Properties',
-          'Size, dates, permissions and SHA-256 (Alt+Enter)',
-          null,
-          propertiesFs,
+          'test',
+          Icons.fact_check_outlined,
+          'Test',
+          'Test the archive for errors',
+          test,
         ),
-        settings,
-      ];
-    }
-    return [
-      ...start,
-      ToolAction(
-        'add',
-        Icons.add_box_outlined,
-        'Add',
-        'Add files and folders to the current folder',
-        _whyNot('add'),
-        () => add(),
-      ),
-      ToolAction(
-        'extract',
-        Icons.unarchive_outlined,
-        'Extract',
-        'Extract files (Ctrl+E)',
-        null,
-        () => extract(),
-      ),
-      ToolAction(
-        'test',
-        Icons.fact_check_outlined,
-        'Test',
-        'Test the archive for errors',
-        null,
-        test,
-      ),
-      null,
-      ToolAction(
-        'copy',
-        Icons.content_copy_rounded,
-        'Copy',
-        'Copy the selection, to paste in a folder (Ctrl+C)',
-        m.selection.isEmpty ? 'Select items first' : null,
-        copySelection,
-      ),
-      ToolAction(
-        'paste',
-        Icons.content_paste_rounded,
-        'Paste',
-        'Paste into the archive (Ctrl+V)',
-        pasteWhy,
-        paste,
-      ),
-      ToolAction(
-        'delete',
-        Icons.delete_outline_rounded,
-        'Delete',
-        'Delete the selected items (Del)',
-        _whyNot('delete'),
-        delete,
-      ),
-      ToolAction(
-        'rename',
-        Icons.drive_file_rename_outline_rounded,
-        'Rename',
-        'Rename the selected item (F2)',
-        _whyNot('rename'),
-        rename,
-      ),
-      ToolAction(
-        'folder',
-        Icons.create_new_folder_outlined,
-        'New folder',
-        'Create a folder here',
-        _whyNot('folder'),
-        newFolder,
-      ),
-      null,
-      view,
-      ToolAction(
-        'info',
-        Icons.info_outline_rounded,
-        'Info',
-        'Archive properties and comment',
-        null,
-        info,
-      ),
-      settings,
-    ];
+        ToolAction(
+          'info',
+          Icons.info_outline_rounded,
+          'Info',
+          'Archive properties and comment',
+          info,
+        ),
+        if (selected || (pasteAction != null && readOnly == null)) null,
+        if (selected)
+          ToolAction(
+            'copy',
+            Icons.content_copy_rounded,
+            'Copy',
+            'Copy the selection, to paste in a folder (Ctrl+C)',
+            copySelection,
+          ),
+        if (readOnly == null) ?pasteAction,
+        if (selected && _whyNot('rename') == null && m.selection.length == 1)
+          ToolAction(
+            'rename',
+            Icons.drive_file_rename_outline_rounded,
+            'Rename',
+            'Rename the selected item (F2)',
+            rename,
+          ),
+        if (selected && _whyNot('delete') == null)
+          ToolAction(
+            'delete',
+            Icons.delete_outline_rounded,
+            'Delete',
+            'Delete the selected items (Del)',
+            delete,
+          ),
+      ],
+      trailing: readOnly == null
+          ? null
+          : Tooltip(
+              key: const Key('read-only'),
+              message: readOnly,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: cs.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.lock_outline_rounded,
+                      size: 14,
+                      color: cs.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 4),
+                    Text('Read-only', style: label.copyWith(fontSize: 12)),
+                  ],
+                ),
+              ),
+            ),
+    );
   }
 
   /// Shows version [n] of the zpaq archive (read-only unless it is the
@@ -1846,354 +1842,345 @@ class BrowserPageState extends State<BrowserPage> {
     );
   }
 
-  Widget _menuBar() {
+  /// The one menu of the header (also F10): everything that is not in
+  /// the action bar, the context menu or a shortcut. An item that does
+  /// not apply now is left out. The anchor builds the items into
+  /// elements only while it is open.
+  Widget _appMenu() => MenuAnchor(
+    controller: _menu,
+    menuChildren: _menuItems(),
+    builder: (context, c, _) => IconButton(
+      key: const Key('app-menu'),
+      tooltip: 'Menu (F10)',
+      visualDensity: VisualDensity.compact,
+      isSelected: c.isOpen,
+      onPressed: _toggleMenu,
+      icon: const Icon(Icons.menu_rounded, size: 20),
+    ),
+  );
+
+  void _toggleMenu() {
+    if (_menu.isOpen) {
+      _menu.close();
+    } else {
+      _menu.open();
+    }
+  }
+
+  List<Widget> _menuItems() {
     final m = _model;
     final st = _s.settings;
     MenuItemButton item(
       String label,
       VoidCallback? onPressed, {
+      Key? key,
       IconData? icon,
       MenuSerializableShortcut? shortcut,
-      String? why,
     }) => MenuItemButton(
-      onPressed: why == null ? onPressed : null,
+      key: key,
+      onPressed: onPressed,
       shortcut: shortcut,
       leadingIcon: icon == null ? null : Icon(icon, size: 18),
       child: Text(label),
     );
-    return MenuBar(
-      style: const MenuStyle(
-        backgroundColor: WidgetStatePropertyAll(Colors.transparent),
-        elevation: WidgetStatePropertyAll(0),
-        padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 4)),
+    const div = Divider(height: 1);
+    final canFolder = m == null || _whyNot('folder') == null;
+    final canPaste =
+        _clip != null && (m == null || _whyNot('add') == null);
+    return [
+      item(
+        'Open archive...',
+        _openDialog,
+        key: const Key('tool-open'),
+        icon: Icons.folder_open_rounded,
+        shortcut: const SingleActivator(LogicalKeyboardKey.keyO, control: true),
       ),
-      children: [
-        SubmenuButton(
-          menuChildren: [
-            item(
-              'Open...',
-              _openDialog,
-              icon: Icons.folder_open_rounded,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyO,
-                control: true,
-              ),
-            ),
-            item(
-              'New archive...',
-              () => newArchive(),
-              icon: Icons.add_circle_outline_rounded,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyN,
-                control: true,
-              ),
-            ),
-            SubmenuButton(
-              leadingIcon: const Icon(Icons.history_rounded, size: 18),
-              menuChildren: [
-                if (st.recent.isEmpty) item('No recent archives', null),
-                for (final r in st.recent) item(r, () => openArchive(r)),
-                if (st.recent.isNotEmpty) ...[
-                  const Divider(height: 1),
-                  item('Clear the list', st.clearRecent),
-                ],
-              ],
-              child: const Text('Recent'),
-            ),
-            item(
-              'Close archive',
-              m == null ? null : closeArchive,
-              icon: Icons.close_rounded,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyW,
-                control: true,
-              ),
-            ),
-            const Divider(height: 1),
-            item(
-              'Quit',
-              () => exit(0),
-              icon: Icons.logout_rounded,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyQ,
-                control: true,
-              ),
-            ),
+      item(
+        'New archive...',
+        () => newArchive(),
+        key: const Key('tool-new'),
+        icon: Icons.add_circle_outline_rounded,
+        shortcut: const SingleActivator(LogicalKeyboardKey.keyN, control: true),
+      ),
+      SubmenuButton(
+        leadingIcon: const Icon(Icons.history_rounded, size: 18),
+        menuChildren: [
+          if (st.recent.isEmpty) item('No recent archives', null),
+          for (final r in st.recent) item(r, () => openArchive(r)),
+          if (st.recent.isNotEmpty) ...[
+            div,
+            item('Clear the list', st.clearRecent),
           ],
-          child: const Text('File'),
+        ],
+        child: const Text('Recent archives'),
+      ),
+      if (m != null)
+        item(
+          'Close archive',
+          closeArchive,
+          icon: Icons.close_rounded,
+          shortcut: const SingleActivator(
+            LogicalKeyboardKey.keyW,
+            control: true,
+          ),
         ),
-        SubmenuButton(
-          menuChildren: [
-            item(
-              'Cut',
-              () => copySelection(cut: true),
-              icon: Icons.content_cut_rounded,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyX,
-                control: true,
-              ),
-            ),
-            item(
-              'Copy',
-              copySelection,
-              icon: Icons.content_copy_rounded,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyC,
-                control: true,
-              ),
-            ),
-            item(
-              'Paste',
-              _clip == null ? null : paste,
-              icon: Icons.content_paste_rounded,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyV,
-                control: true,
-              ),
-            ),
-            const Divider(height: 1),
-            item(
-              'Select all',
-              m?.selectAll ?? _fs.selectAll,
-              icon: Icons.select_all_rounded,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyA,
-                control: true,
-              ),
-            ),
-            item(
-              'Copy path',
-              m == null || m.selection.isEmpty ? null : copyPath,
-              icon: Icons.link_rounded,
-            ),
-            item(
-              'Rename',
-              m == null ? renameFs : rename,
-              icon: Icons.drive_file_rename_outline_rounded,
-              why: m == null ? null : _whyNot('rename'),
-              shortcut: const SingleActivator(LogicalKeyboardKey.f2),
-            ),
-            item(
-              'Delete',
-              m == null ? deleteFs : delete,
-              icon: Icons.delete_outline_rounded,
-              why: m == null ? null : _whyNot('delete'),
-              shortcut: const SingleActivator(LogicalKeyboardKey.delete),
-            ),
-            item(
-              'New folder',
-              m == null ? newFolderFs : newFolder,
-              icon: Icons.create_new_folder_outlined,
-              why: m == null ? null : _whyNot('folder'),
-            ),
-            item(
-              'Go to path',
-              () => _pathEdit.editing = true,
-              icon: Icons.edit_location_alt_outlined,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyL,
-                control: true,
-              ),
-            ),
-            item(
-              'Find in folder',
-              _filterFocus.requestFocus,
-              icon: Icons.search_rounded,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyF,
-                control: true,
-              ),
-            ),
-          ],
-          child: const Text('Edit'),
+      div,
+      if (canFolder)
+        item(
+          'New folder',
+          m == null ? newFolderFs : newFolder,
+          key: const Key('tool-folder'),
+          icon: Icons.create_new_folder_outlined,
         ),
-        SubmenuButton(
-          menuChildren: [
-            item(
-              'Add files...',
-              () => add(),
-              icon: Icons.add_box_outlined,
-              why: _whyNot('add'),
+      if (canPaste)
+        item(
+          'Paste',
+          paste,
+          icon: Icons.content_paste_rounded,
+          shortcut: const SingleActivator(
+            LogicalKeyboardKey.keyV,
+            control: true,
+          ),
+        ),
+      item(
+        'Select all',
+        m?.selectAll ?? _fs.selectAll,
+        icon: Icons.select_all_rounded,
+        shortcut: const SingleActivator(LogicalKeyboardKey.keyA, control: true),
+      ),
+      if (m != null && m.selection.isNotEmpty)
+        item('Copy path', copyPath, icon: Icons.link_rounded),
+      item(
+        'Go to path',
+        () => _pathEdit.editing = true,
+        icon: Icons.edit_location_alt_outlined,
+        shortcut: const SingleActivator(LogicalKeyboardKey.keyL, control: true),
+      ),
+      item(
+        'Find in folder',
+        _filterFocus.requestFocus,
+        icon: Icons.search_rounded,
+        shortcut: const SingleActivator(LogicalKeyboardKey.keyF, control: true),
+      ),
+      div,
+      if (m != null) _archiveSubmenu(m, item),
+      SubmenuButton(
+        leadingIcon: const Icon(Icons.visibility_outlined, size: 18),
+        menuChildren: [
+          CheckboxMenuButton(
+            key: const Key('menu-grid'),
+            value: st.gridView,
+            onChanged: (v) => st.gridView = v ?? false,
+            child: const Text('Icons and thumbnails'),
+          ),
+          CheckboxMenuButton(
+            key: const Key('menu-hidden'),
+            value: st.showHidden,
+            onChanged: (v) => _setShowHidden(v ?? false),
+            shortcut: const SingleActivator(
+              LogicalKeyboardKey.keyH,
+              control: true,
             ),
-            item(
-              'Extract...',
-              m == null ? null : () => extract(),
-              icon: Icons.unarchive_outlined,
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyE,
-                control: true,
-              ),
-            ),
-            item(
-              'Extract here',
-              m == null ? null : extractHere,
-              icon: Icons.drive_folder_upload_outlined,
-            ),
-            item(
-              'Test',
-              m == null ? null : test,
-              icon: Icons.fact_check_outlined,
-            ),
-            item(
-              'Archive info and comment',
-              m == null ? null : info,
-              icon: Icons.info_outline_rounded,
-            ),
-            if (m != null && m.root.archive.numVersions > 0)
-              SubmenuButton(
-                leadingIcon: const Icon(Icons.history_rounded, size: 18),
-                menuChildren: [
-                  for (final v in m.root.allVersions.reversed)
-                    RadioMenuButton<int>(
-                      value: v.number,
-                      groupValue:
-                          m.root.archive.version ?? m.root.archive.numVersions,
-                      onChanged: (n) => showVersion(n ?? v.number),
-                      child: Text(versionLabel(v, m.root.archive.numVersions)),
-                    ),
-                ],
-                child: const Text('Show version'),
-              ),
-            if (m != null && m.root.archive.format == 'zx') ...[
-              const Divider(height: 1),
-              if (_db?.available != true)
-                item(
-                  'New database',
-                  newDatabase,
-                  icon: Icons.storage_rounded,
-                  why: _whyNotNewDb(),
-                )
-              else
-                CheckboxMenuButton(
-                  value: _dataTab,
-                  onChanged: _whyNotDb() == null
-                      ? (v) => showData(v ?? false)
-                      : null,
-                  child: const Text('Data view'),
+            child: const Text('Show hidden files'),
+          ),
+          SubmenuButton(
+            menuChildren: [
+              for (final (k, label) in const [
+                (FsSort.name, 'Name'),
+                (FsSort.size, 'Size'),
+                (FsSort.type, 'Type'),
+                (FsSort.modified, 'Modified'),
+              ])
+                RadioMenuButton<FsSort>(
+                  value: k,
+                  groupValue: _fs.sort,
+                  onChanged: (v) => _fs.sortBy(v ?? k),
+                  child: Text(label),
                 ),
-              item(
-                'Find similar files',
-                findSimilar,
-                icon: Icons.compare_arrows_rounded,
-                why:
-                    _whyNotDb() ??
-                    (m.selectedItems.length == 1 && !m.selectedItems.first.isDir
-                        ? null
-                        : 'Select one file'),
-              ),
-              item(
-                'Find by SHA-256...',
-                findBySha,
-                icon: Icons.fingerprint_rounded,
-                why: _whyNotDb(),
-              ),
             ],
-            if (m != null && m.parent != null)
-              item(
-                'Leave the nested archive',
-                leaveNested,
-                icon: Icons.arrow_upward_rounded,
-              ),
-          ],
-          child: const Text('Archive'),
-        ),
-        SubmenuButton(
-          menuChildren: [
-            CheckboxMenuButton(
-              key: const Key('menu-grid'),
-              value: st.gridView,
-              onChanged: (v) => st.gridView = v ?? false,
-              child: const Text('Icons and thumbnails'),
-            ),
-            CheckboxMenuButton(
-              key: const Key('menu-hidden'),
-              value: st.showHidden,
-              onChanged: (v) => _setShowHidden(v ?? false),
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyH,
-                control: true,
-              ),
-              child: const Text('Show hidden files'),
-            ),
-            SubmenuButton(
-              menuChildren: [
-                for (final (k, label) in const [
-                  (FsSort.name, 'Name'),
-                  (FsSort.size, 'Size'),
-                  (FsSort.type, 'Type'),
-                  (FsSort.modified, 'Modified'),
-                ])
-                  RadioMenuButton<FsSort>(
-                    value: k,
-                    groupValue: _fs.sort,
-                    onChanged: (v) => _fs.sortBy(v ?? k),
-                    child: Text(label),
-                  ),
-              ],
-              child: const Text('Sort folders by'),
-            ),
-            item(
-              'Refresh',
-              _refresh,
-              icon: Icons.refresh_rounded,
-              shortcut: const SingleActivator(LogicalKeyboardKey.f5),
-            ),
-            const Divider(height: 1),
-            CheckboxMenuButton(
-              value: st.showPreview,
-              onChanged: (v) => st.showPreview = v ?? true,
-              child: const Text('Preview pane'),
-            ),
-            CheckboxMenuButton(
-              key: const Key('menu-show-inner'),
-              value: st.showInnerFilesystems,
-              onChanged: (v) => _setShowInner(v ?? false),
-              child: const Text('Show inner filesystems'),
-            ),
-            SubmenuButton(
-              menuChildren: [
-                for (final t in ThemeMode.values)
-                  RadioMenuButton<ThemeMode>(
-                    value: t,
-                    groupValue: st.theme,
-                    onChanged: (v) => st.theme = v ?? ThemeMode.system,
-                    child: Text(switch (t) {
-                      ThemeMode.system => 'System',
-                      ThemeMode.light => 'Light',
-                      ThemeMode.dark => 'Dark',
-                    }),
-                  ),
-              ],
-              child: const Text('Theme'),
-            ),
-            const Divider(height: 1),
-            item('Settings...', openSettings, icon: Icons.settings_outlined),
-          ],
-          child: const Text('View'),
-        ),
-        SubmenuButton(
-          menuChildren: [
-            item(
-              'About zx',
-              () => showAboutDialog(
-                context: context,
-                applicationName: 'zx',
-                applicationVersion: '0.5.0',
-                applicationIcon: Image.asset(
-                  'assets/icon/zx-64.png',
-                  width: 48,
+            child: const Text('Sort folders by'),
+          ),
+          item(
+            'Refresh',
+            _refresh,
+            icon: Icons.refresh_rounded,
+            shortcut: const SingleActivator(LogicalKeyboardKey.f5),
+          ),
+          div,
+          CheckboxMenuButton(
+            value: st.showPreview,
+            onChanged: (v) => st.showPreview = v ?? true,
+            child: const Text('Preview pane'),
+          ),
+          CheckboxMenuButton(
+            key: const Key('menu-show-inner'),
+            value: st.showInnerFilesystems,
+            onChanged: (v) => _setShowInner(v ?? false),
+            child: const Text('Show inner filesystems'),
+          ),
+          SubmenuButton(
+            menuChildren: [
+              for (final t in ThemeMode.values)
+                RadioMenuButton<ThemeMode>(
+                  value: t,
+                  groupValue: st.theme,
+                  onChanged: (v) => st.theme = v ?? ThemeMode.system,
+                  child: Text(switch (t) {
+                    ThemeMode.system => 'System',
+                    ThemeMode.light => 'Light',
+                    ThemeMode.dark => 'Dark',
+                  }),
                 ),
-                applicationLegalese:
-                    'BSD 3-clause. A pure Dart port of 7-Zip (the public '
-                    'domain LZMA SDK) with zip, rar, tar, gzip, bzip2, lzh, '
-                    'arj, zpaq, disc and file system images and firmware.',
-              ),
-              icon: Icons.info_outline_rounded,
-            ),
-          ],
-          child: const Text('Help'),
+            ],
+            child: const Text('Theme'),
+          ),
+        ],
+        child: const Text('View'),
+      ),
+      div,
+      item(
+        'Settings...',
+        openSettings,
+        key: const Key('tool-settings'),
+        icon: Icons.settings_outlined,
+      ),
+      item(
+        'About zx',
+        () => showAboutDialog(
+          context: context,
+          applicationName: 'zx',
+          applicationVersion: '0.5.0',
+          applicationIcon: Image.asset('assets/icon/zx-64.png', width: 48),
+          applicationLegalese:
+              'BSD 3-clause. A pure Dart port of 7-Zip (the public '
+              'domain LZMA SDK) with zip, rar, tar, gzip, bzip2, lzh, '
+              'arj, zpaq, disc and file system images and firmware.',
         ),
+        icon: Icons.info_outline_rounded,
+      ),
+      item(
+        'Quit',
+        () => exit(0),
+        icon: Icons.logout_rounded,
+        shortcut: const SingleActivator(LogicalKeyboardKey.keyQ, control: true),
+      ),
+    ];
+  }
+
+  /// The archive part of the menu (what the action bar does not show).
+  Widget _archiveSubmenu(
+    ArchiveModel m,
+    MenuItemButton Function(
+      String label,
+      VoidCallback? onPressed, {
+      Key? key,
+      IconData? icon,
+      MenuSerializableShortcut? shortcut,
+    })
+    item,
+  ) {
+    final zx = m.root.archive.format == 'zx';
+    return SubmenuButton(
+      leadingIcon: const Icon(Icons.inventory_2_outlined, size: 18),
+      menuChildren: [
+        item(
+          'Extract...',
+          () => extract(),
+          icon: Icons.unarchive_outlined,
+          shortcut: const SingleActivator(
+            LogicalKeyboardKey.keyE,
+            control: true,
+          ),
+        ),
+        item(
+          'Extract here',
+          extractHere,
+          icon: Icons.drive_folder_upload_outlined,
+        ),
+        if (_whyNot('add') == null)
+          item('Add files...', () => add(), icon: Icons.add_box_outlined),
+        item('Test', test, icon: Icons.fact_check_outlined),
+        item(
+          'Archive info and comment',
+          info,
+          icon: Icons.info_outline_rounded,
+        ),
+        if (m.root.archive.numVersions > 0)
+          SubmenuButton(
+            leadingIcon: const Icon(Icons.history_rounded, size: 18),
+            menuChildren: [
+              for (final v in m.root.allVersions.reversed)
+                RadioMenuButton<int>(
+                  value: v.number,
+                  groupValue:
+                      m.root.archive.version ?? m.root.archive.numVersions,
+                  onChanged: (n) => showVersion(n ?? v.number),
+                  child: Text(versionLabel(v, m.root.archive.numVersions)),
+                ),
+            ],
+            child: const Text('Show version'),
+          ),
+        if (zx && _whyNotNewDb() == null)
+          item('New database', newDatabase, icon: Icons.storage_rounded),
+        if (zx && _whyNotDb() == null) ...[
+          CheckboxMenuButton(
+            value: _dataTab,
+            onChanged: (v) => showData(v ?? false),
+            child: const Text('Data view'),
+          ),
+          if (m.selectedItems.length == 1 && !m.selectedItems.first.isDir)
+            item(
+              'Find similar files',
+              findSimilar,
+              icon: Icons.compare_arrows_rounded,
+            ),
+          item(
+            'Find by SHA-256...',
+            findBySha,
+            icon: Icons.fingerprint_rounded,
+          ),
+        ],
+        if (m.parent != null)
+          item(
+            'Leave the nested archive',
+            leaveNested,
+            icon: Icons.arrow_upward_rounded,
+          ),
       ],
+      child: const Text('Archive'),
+    );
+  }
+
+  /// The view items of [rows], kept while the rows (the models cache
+  /// them until a change) and [key] are the same: a rebuild of the page
+  /// (a click, a selection, the menu) does not format every row again.
+  List<ViewItem> _itemsOf<T>(
+    List<T> rows,
+    Object key,
+    ViewItem Function(T row) make,
+  ) {
+    if (identical(rows, _itemsRows) && key == _itemsKey) return _items;
+    _itemsRows = rows;
+    _itemsKey = key;
+    return _items = [for (final r in rows) make(r)];
+  }
+
+  Object? _itemsRows;
+  Object? _itemsKey;
+  List<ViewItem> _items = const [];
+
+  /// Details or icons, at the end of the header.
+  Widget _viewToggle() {
+    final grid = _s.settings.gridView;
+    return IconButton(
+      key: const Key('tool-view'),
+      tooltip: grid ? 'Show the details list' : 'Show icons and thumbnails',
+      visualDensity: VisualDensity.compact,
+      onPressed: () => _s.settings.gridView = !grid,
+      icon: Icon(
+        grid ? Icons.view_list_rounded : Icons.grid_view_rounded,
+        size: 20,
+      ),
     );
   }
 
@@ -2276,7 +2263,11 @@ class BrowserPageState extends State<BrowserPage> {
     }
 
     if (m == null) {
-      final items = [for (final e in _fs.rows) _fsItem(e, cs)];
+      final items = _itemsOf(
+        _fs.rows,
+        (cs, _fs.inSearch, _fs.dir),
+        (FsEntry e) => _fsItem(e, cs),
+      );
       final h = _fsHandlers(narrow: narrow);
       final hint = _fs.loading
           ? 'Reading...'
@@ -2306,7 +2297,11 @@ class BrowserPageState extends State<BrowserPage> {
       );
     }
     if (grid || narrow) {
-      final items = [for (final i in m.rows) _archiveItem(m, i, cs)];
+      final items = _itemsOf(
+        m.rows,
+        (cs, m),
+        (ZxItem i) => _archiveItem(m, i, cs),
+      );
       final h = _archiveHandlers(m, narrow: narrow);
       final hint = m.filter.isNotEmpty
           ? 'No items match the filter'
@@ -2484,6 +2479,7 @@ class BrowserPageState extends State<BrowserPage> {
     final cs = Theme.of(context).colorScheme;
     final m = _model;
     final (fsLeft, fsRight) = m == null ? _fsStatus() : ('', '');
+    final bar = _actionBar(cs);
     return Scaffold(
       body: SafeArea(
         child: Stack(
@@ -2493,19 +2489,22 @@ class BrowserPageState extends State<BrowserPage> {
               children: [
                 Container(
                   color: cs.surfaceContainerLow,
-                  child: Row(children: [Expanded(child: _menuBar())]),
+                  child: Row(
+                    children: [
+                      Expanded(child: _pathBar(false)),
+                      _viewToggle(),
+                      _appMenu(),
+                      const SizedBox(width: 8),
+                    ],
+                  ),
                 ),
-                Container(
-                  color: cs.surfaceContainerLow,
-                  child: Toolbar(actions: _toolActions()),
-                ),
+                if (bar != null)
+                  ColoredBox(color: cs.surfaceContainerLow, child: bar),
                 Divider(height: 1, color: cs.outlineVariant),
                 if (m != null && _whyNotDb() == null) ...[
                   _viewSwitch(cs),
                   Divider(height: 1, color: cs.outlineVariant),
                 ],
-                _pathBar(false),
-                Divider(height: 1, color: cs.outlineVariant),
                 Expanded(
                   child: Row(
                     children: [

@@ -119,6 +119,17 @@ void main() {
 
   Finder row(String path) => find.byKey(ValueKey('row:$path'));
 
+  /// Picks [key] in the header menu (in its [submenu]).
+  Future<void> menu(WidgetTester tester, String key, {String? submenu}) async {
+    await tester.tap(find.byKey(const Key('app-menu')));
+    await tester.pumpAndSettle();
+    if (submenu != null) {
+      await tester.tap(find.text(submenu));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.byKey(Key(key)).last);
+  }
+
   Future<void> click(WidgetTester tester, Finder f) async {
     await tester.tap(f);
     await tester.pump();
@@ -149,7 +160,7 @@ void main() {
   ) async {
     final st = await start(tester);
     picker.archives.add(path);
-    await tester.tap(find.byKey(const Key('tool-open')));
+    await menu(tester, 'tool-open');
     await pumpUntil(tester, () => st.model != null, what: 'the archive');
     return st;
   }
@@ -353,7 +364,7 @@ void main() {
     expect(st.model!.selection, {'project/extra.txt'});
 
     // new folder
-    await tester.tap(find.byKey(const Key('tool-folder')));
+    await menu(tester, 'tool-folder');
     await pumpFor(tester, find.byKey(const Key('text-input')));
     await tester.enterText(find.byKey(const Key('text-input')), 'fresh');
     await tester.tap(find.byKey(const Key('text-input-ok')));
@@ -476,7 +487,7 @@ void main() {
       } else {
         picker.folderAnswers.add(tree);
       }
-      await tester.tap(find.byKey(const Key('tool-new')));
+      await menu(tester, 'tool-new');
       await pumpFor(tester, find.byKey(const Key('new-dialog')));
       await tester.enterText(find.byKey(const Key('new-folder')), tmp.path);
       await tester.tap(find.byKey(const Key('new-format')));
@@ -515,7 +526,7 @@ void main() {
     }
     // the password and encrypted names of a new 7z
     picker.folderAnswers.add(tree);
-    await tester.tap(find.byKey(const Key('tool-new')));
+    await menu(tester, 'tool-new');
     await pumpFor(tester, find.byKey(const Key('new-dialog')));
     await tester.enterText(find.byKey(const Key('new-folder')), tmp.path);
     await tester.tap(find.byKey(const Key('new-format')));
@@ -543,7 +554,7 @@ void main() {
     tester,
   ) async {
     await start(tester);
-    await tester.tap(find.byKey(const Key('tool-settings')));
+    await menu(tester, 'tool-settings');
     await pumpFor(tester, find.byKey(const Key('set-assoc')));
     final integ = services.integration as LinuxIntegration;
     await pumpUntil(
@@ -677,15 +688,11 @@ void main() {
     expect(BrowserPageState.titleOf(fs), '${p.basename(pak)} > rootfs');
     expect(rows(tester), containsAll(['bin', 'etc', 'lib', 'usr']));
     expect(find.byKey(const Key('nest-boundary-1')), findsOneWidget);
-    final add = tester.widget<Tooltip>(
-      find
-          .ancestor(
-            of: find.byKey(const Key('tool-add')),
-            matching: find.byType(Tooltip),
-          )
-          .first,
+    expect(find.byKey(const Key('tool-add')), findsNothing);
+    expect(
+      tester.widget<Tooltip>(find.byKey(const Key('read-only'))).message,
+      'Inside a nested archive (read-only)',
     );
-    expect(add.message, 'Inside a nested archive (read-only)');
 
     await doubleClick(tester, row('etc'));
     await pumpUntil(tester, () => fs.dir == 'etc');
@@ -738,9 +745,7 @@ void main() {
     expect(root.selection, {'rootfs'});
 
     // the inner file systems as folders
-    await tester.tap(find.text('View'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('menu-show-inner')).last);
+    await menu(tester, 'menu-show-inner', submenu: 'View');
     await pumpUntil(
       tester,
       () => st.model?.archive.flattened ?? false,

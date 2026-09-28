@@ -162,18 +162,16 @@ void main() {
     final st = await pumpApp(tester, testServices(tmp.path));
     st.showArchive(a);
     await tester.pump();
-    Tooltip tip(String id) => tester.widget<Tooltip>(
-      find
-          .ancestor(
-            of: find.byKey(Key('tool-$id')),
-            matching: find.byType(Tooltip),
-          )
-          .first,
+    // a read only archive: no Add, Delete or New folder, and the reason
+    // on the read-only mark instead of a wall of disabled buttons
+    expect(
+      tester.widget<Tooltip>(find.byKey(const Key('read-only'))).message,
+      'A xz file holds exactly one file',
     );
-    expect(tip('add').message, 'A xz file holds exactly one file');
-    expect(tip('folder').message, 'A xz file holds exactly one file');
-    expect(tip('delete').message, 'A xz file holds exactly one file');
-    expect(tip('extract').message, isNot(contains('first')));
+    for (final id in ['add', 'delete', 'folder']) {
+      expect(find.byKey(Key('tool-$id')), findsNothing);
+    }
+    expect(find.byKey(const Key('tool-extract')), findsOneWidget);
 
     final row = find.byKey(ValueKey('row:${a.items.first.path}'));
     await tester.tap(

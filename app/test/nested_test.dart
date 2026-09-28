@@ -85,16 +85,20 @@ void main() {
     return out;
   }
 
-  String? tip(WidgetTester tester, String id) => tester
-      .widget<Tooltip>(
-        find
-            .ancestor(
-              of: find.byKey(Key('tool-$id')),
-              matching: find.byType(Tooltip),
-            )
-            .first,
-      )
-      .message;
+  /// Why the archive shown can not change (the read-only mark), or null.
+  String? readOnly(WidgetTester tester) {
+    final f = find.byKey(const Key('read-only'));
+    if (f.evaluate().isEmpty) return null;
+    return tester.widget<Tooltip>(f).message;
+  }
+
+  /// Opens the View part of the header menu.
+  Future<void> viewMenu(WidgetTester tester) async {
+    await tester.tap(find.byKey(const Key('app-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('View').last);
+    await tester.pumpAndSettle();
+  }
 
   Future<void> open(WidgetTester tester, BrowserPageState st, String path) =>
       tester.runAsync(() async {
@@ -114,7 +118,7 @@ void main() {
     await tester.pump();
     expect(rows(tester), ['inner.zip', 'note.txt', 'wrap.tar']);
     final root = st.model!;
-    expect(tip(tester, 'add'), isNot(contains('nested')));
+    expect(readOnly(tester), isNull);
 
     // Enter on inner.zip opens it as a nested level
     await tester.tap(find.byKey(const ValueKey('row:inner.zip')));
@@ -131,10 +135,11 @@ void main() {
     expect(find.byKey(const Key('nest-boundary-1')), findsOneWidget);
     expect(find.byKey(const Key('crumb:')), findsOneWidget);
     // read-only, with the reason
+    expect(readOnly(tester), 'Inside a nested archive (read-only)');
     for (final id in ['add', 'delete', 'rename', 'folder']) {
-      expect(tip(tester, id), 'Inside a nested archive (read-only)');
+      expect(find.byKey(Key('tool-$id')), findsNothing);
     }
-    expect(tip(tester, 'extract'), isNot(contains('read-only')));
+    expect(find.byKey(const Key('tool-extract')), findsOneWidget);
     expect(find.textContaining('read-only'), findsWidgets);
 
     // folders of the nested archive, then Backspace up and out
@@ -195,8 +200,7 @@ void main() {
     await tester.pump();
     expect(st.model!.archive.flattened, isFalse);
 
-    await tester.tap(find.text('View'));
-    await tester.pumpAndSettle();
+    await viewMenu(tester);
     await tester.tap(find.byKey(const Key('menu-show-inner')).last);
     await tester.pump();
     await waitFor(tester, () => st.model?.archive.flattened ?? false);
@@ -207,9 +211,8 @@ void main() {
     expect(m.archive['inner.zip']!.nestedFormat, 'zip');
     expect(m.archive['wrap.tar/project/README.md'], isNotNull);
     expect(rows(tester), ['inner.zip', 'wrap.tar', 'note.txt']);
-    for (final id in ['add', 'delete', 'rename', 'folder']) {
-      expect(tip(tester, id), 'Inner filesystems are shown (read-only)');
-    }
+    expect(readOnly(tester), 'Inner filesystems are shown (read-only)');
+    expect(find.byKey(const Key('tool-add')), findsNothing);
     await tester.tap(find.byKey(const ValueKey('row:inner.zip')));
     await tester.tap(find.byKey(const ValueKey('row:inner.zip')));
     await tester.pump();
@@ -217,8 +220,7 @@ void main() {
     expect(rows(tester), ['project']);
 
     // and back: the folder of a nested archive does not exist then
-    await tester.tap(find.text('View'));
-    await tester.pumpAndSettle();
+    await viewMenu(tester);
     await tester.tap(find.byKey(const Key('menu-show-inner')).last);
     await tester.pump();
     await waitFor(tester, () => !(st.model?.archive.flattened ?? true));
@@ -237,7 +239,7 @@ void main() {
     await tester.pump();
     expect(rows(tester), ['project', 'later.txt']);
     expect(find.text('Version 2 of 2'), findsOneWidget);
-    expect(tip(tester, 'add'), isNot(contains('version')));
+    expect(readOnly(tester), isNull);
 
     await tester.tap(find.byKey(const Key('version-picker')));
     await tester.pumpAndSettle();
@@ -255,7 +257,7 @@ void main() {
     final m = st.model!;
     expect(rows(tester), ['project']);
     expect(find.text('Version 1 of 2 (read-only)'), findsOneWidget);
-    expect(tip(tester, 'add'), 'An older version is shown (read-only)');
+    expect(readOnly(tester), 'An older version is shown (read-only)');
     expect(BrowserPageState.titleOf(m), 'backup.zpaq (version 1 of 2)');
     expect(m.allVersions, hasLength(2));
 
@@ -277,7 +279,7 @@ void main() {
     await tester.pump();
     expect(st.model!.archive.flattened, isFalse);
     expect(find.text('Version 2 of 2'), findsOneWidget);
-    expect(tip(tester, 'add'), isNot(contains('read-only')));
+    expect(readOnly(tester), isNull);
     st.closeArchive();
     await tester.pump();
   });

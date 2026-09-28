@@ -343,86 +343,75 @@ class PathBar extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Toolbar
+// Action bar: the slim row of the actions that apply now (the selection,
+// the archive shown). Actions that do not apply are left out, not greyed.
 
 class ToolAction {
   final String id;
   final IconData icon;
   final String label;
   final String tooltip;
-
-  /// Why the action is not available, or null when it is.
-  final String? disabledReason;
   final VoidCallback onPressed;
-  const ToolAction(
-    this.id,
-    this.icon,
-    this.label,
-    this.tooltip,
-    this.disabledReason,
-    this.onPressed,
-  );
+  const ToolAction(this.id, this.icon, this.label, this.tooltip, this.onPressed);
 }
 
-class Toolbar extends StatelessWidget {
+class ActionBar extends StatelessWidget {
+  /// Shown first (what the actions apply to).
+  final Widget? leading;
   final List<ToolAction?> actions; // null: a separator
-  const Toolbar({super.key, required this.actions});
+  final Widget? trailing;
+  const ActionBar({
+    super.key,
+    this.leading,
+    required this.actions,
+    this.trailing,
+  });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Container(
-      height: 64,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            for (final a in actions)
-              if (a == null)
-                Container(
-                  width: 1,
-                  height: 36,
-                  margin: const EdgeInsets.symmetric(horizontal: 6),
-                  color: cs.outlineVariant,
-                )
-              else
-                Tooltip(
-                  message: a.disabledReason ?? a.tooltip,
-                  waitDuration: const Duration(milliseconds: 400),
-                  child: _ToolButton(action: a),
-                ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ToolButton extends StatelessWidget {
-  final ToolAction action;
-  const _ToolButton({required this.action});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final enabled = action.disabledReason == null;
-    final color = enabled ? cs.onSurface : cs.onSurface.withValues(alpha: 0.35);
-    return InkWell(
-      key: Key('tool-${action.id}'),
-      borderRadius: BorderRadius.circular(8),
-      onTap: enabled ? action.onPressed : null,
-      child: Container(
-        constraints: const BoxConstraints(minWidth: 64),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(action.icon, size: 24, color: enabled ? cs.primary : color),
-            const SizedBox(height: 3),
-            Text(action.label, style: TextStyle(fontSize: 12, color: color)),
-          ],
-        ),
+      height: 40,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Row(
+        children: [
+          ?leading,
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final a in actions)
+                    if (a == null)
+                      Container(
+                        width: 1,
+                        height: 20,
+                        margin: const EdgeInsets.symmetric(horizontal: 6),
+                        color: cs.outlineVariant,
+                      )
+                    else
+                      Tooltip(
+                        message: a.tooltip,
+                        waitDuration: const Duration(milliseconds: 500),
+                        child: TextButton.icon(
+                          key: Key('tool-${a.id}'),
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            foregroundColor: cs.onSurface,
+                            textStyle: const TextStyle(fontSize: 13),
+                          ),
+                          onPressed: a.onPressed,
+                          icon: Icon(a.icon, size: 18, color: cs.primary),
+                          label: Text(a.label),
+                        ),
+                      ),
+                ],
+              ),
+            ),
+          ),
+          ?trailing,
+        ],
       ),
     );
   }
