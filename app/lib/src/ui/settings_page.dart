@@ -2,6 +2,8 @@
 // archives (Auto or Manual), confirmations, and the
 // desktop integration toggles (file associations, file manager menu).
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../formats.dart';
@@ -328,69 +330,72 @@ class _SettingsPageState extends State<SettingsPage> {
                       onChanged: (v) => s.openFolderAfterExtract = v,
                     ),
                   ]),
-                  section('Desktop integration', [
-                    if (!_integration.supported)
-                      ListTile(
-                        leading: const Icon(Icons.info_outline_rounded),
-                        title: const Text('Not available here'),
-                        subtitle: Text(_integration.unsupportedReason),
-                      )
-                    else ...[
-                      SwitchListTile(
-                        key: const Key('set-assoc'),
-                        secondary: const Icon(Icons.link_rounded),
-                        title: const Text(
-                          'Associate archive file types with zx',
-                        ),
-                        subtitle: const Text(
-                          'Double clicking an archive in the file manager opens it in zx',
-                        ),
-                        value: st?.associations ?? false,
-                        onChanged: st == null || _working
-                            ? null
-                            : (v) => _toggle(
-                                () => _integration.setAssociations(v),
-                              ),
-                      ),
-                      SwitchListTile(
-                        key: const Key('set-menu'),
-                        secondary: const Icon(Icons.menu_open_rounded),
-                        title: const Text(
-                          'Add "Extract to folder" to the file manager right-click menu',
-                        ),
-                        subtitle: const Text('Nautilus and Thunar'),
-                        value: st?.contextMenu ?? false,
-                        onChanged: st == null || _working
-                            ? null
-                            : (v) =>
-                                  _toggle(() => _integration.setContextMenu(v)),
-                      ),
-                      if (_working) const LinearProgressIndicator(minHeight: 2),
-                      for (final n in st?.notes ?? const <String>[])
+                  if (!Platform.isAndroid)
+                    section('Desktop integration', [
+                      if (!_integration.supported)
                         ListTile(
-                          dense: true,
-                          leading: Icon(
-                            Icons.info_outline_rounded,
-                            size: 20,
-                            color: cs.onSurfaceVariant,
+                          leading: const Icon(Icons.info_outline_rounded),
+                          title: const Text('Not available here'),
+                          subtitle: Text(_integration.unsupportedReason),
+                        )
+                      else ...[
+                        SwitchListTile(
+                          key: const Key('set-assoc'),
+                          secondary: const Icon(Icons.link_rounded),
+                          title: const Text(
+                            'Associate archive file types with zx',
                           ),
-                          title: Text(
-                            n,
-                            style: TextStyle(color: cs.onSurfaceVariant),
+                          subtitle: const Text(
+                            'Double clicking an archive in the file manager opens it in zx',
                           ),
+                          value: st?.associations ?? false,
+                          onChanged: st == null || _working
+                              ? null
+                              : (v) => _toggle(
+                                  () => _integration.setAssociations(v),
+                                ),
                         ),
-                      if (_error != null)
-                        ListTile(
-                          key: const Key('set-error'),
-                          dense: true,
-                          leading: Icon(Icons.error_outline, color: cs.error),
-                          title: Text(
-                            _error!,
-                            style: TextStyle(color: cs.error),
+                        SwitchListTile(
+                          key: const Key('set-menu'),
+                          secondary: const Icon(Icons.menu_open_rounded),
+                          title: const Text(
+                            'Add "Extract to folder" to the file manager right-click menu',
                           ),
+                          subtitle: const Text('Nautilus and Thunar'),
+                          value: st?.contextMenu ?? false,
+                          onChanged: st == null || _working
+                              ? null
+                              : (v) => _toggle(
+                                  () => _integration.setContextMenu(v),
+                                ),
                         ),
-                    ],
-                  ]),
+                        if (_working)
+                          const LinearProgressIndicator(minHeight: 2),
+                        for (final n in st?.notes ?? const <String>[])
+                          ListTile(
+                            dense: true,
+                            leading: Icon(
+                              Icons.info_outline_rounded,
+                              size: 20,
+                              color: cs.onSurfaceVariant,
+                            ),
+                            title: Text(
+                              n,
+                              style: TextStyle(color: cs.onSurfaceVariant),
+                            ),
+                          ),
+                        if (_error != null)
+                          ListTile(
+                            key: const Key('set-error'),
+                            dense: true,
+                            leading: Icon(Icons.error_outline, color: cs.error),
+                            title: Text(
+                              _error!,
+                              style: TextStyle(color: cs.error),
+                            ),
+                          ),
+                      ],
+                    ]),
                 ],
               ),
             ),

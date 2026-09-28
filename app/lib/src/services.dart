@@ -10,6 +10,7 @@ import 'package:zx/zx.dart' show ZxArchive;
 import 'db_session.dart';
 import 'dialogs/zx_compression.dart' show Estimator;
 import 'integration.dart';
+import 'platform/places.dart';
 import 'settings.dart';
 
 /// Opens files and folders with the programs of the desktop.
@@ -143,6 +144,9 @@ class AppServices {
   /// Opens the database of a .zx archive (a fake in the tests).
   final DbOpener dbOpener;
 
+  /// The places of the sidebar, free space, open with, share.
+  final PlatformPlaces places;
+
   AppServices({
     required this.paths,
     required this.settings,
@@ -151,5 +155,6 @@ class AppServices {
     required this.integration,
     this.estimator = ZxArchive.estimate,
     this.dbOpener = openAsyncDb,
-  });
+    PlatformPlaces? places,
+  }) : places = places ?? PlatformPlaces.forPlatform();
 }

@@ -121,6 +121,17 @@ class DbRows {
   /// as dates).
   final Set<String> datetimeColumns;
   const DbRows(this.columns, this.rows, {this.datetimeColumns = const {}});
+
+  /// The rows of a SQL result, with its DATETIME columns (from the
+  /// declared types of the result: tables, views and time series alike).
+  factory DbRows.of(ZxSqlResult r) => DbRows(
+    r.columns,
+    r.rows,
+    datetimeColumns: {
+      for (var i = 0; i < r.columns.length; i++)
+        if (r.isDatetime(i)) r.columns[i],
+    },
+  );
 }
 
 /// The quoted SQL identifier of [name].
@@ -304,19 +315,7 @@ class DbSession extends ChangeNotifier {
     final r = await _c.execute(
       'SELECT * FROM ${from(table)}$order LIMIT $limit OFFSET $offset',
     );
-    final dt = <String>{};
-    try {
-      final info = await _c.execute('PRAGMA table_info(${sqlIdent(table)})');
-      for (final row in info.rows) {
-        final t = '${row[2]}'.toUpperCase();
-        if (t.contains('DATETIME') || t.contains('TIMESTAMP')) {
-          dt.add('${row[1]}');
-        }
-      }
-    } on ZxDbException {
-      // a virtual table without table_info
-    }
-    return DbRows(r.columns, r.rows, datetimeColumns: dt);
+    return DbRows.of(r);
   }
 
   /// All rows of [table] (for an export).
@@ -446,14 +445,12 @@ String _hex(Uint8List b) {
   return sb.toString();
 }
 
-/// A DATETIME value (ns since 1970 UTC) as text.
+/// A DATETIME value (ns since 1970 UTC) as ISO-8601 text in local time
+/// (`2026-09-28 14:05:00`, with the fraction of a second when there is
+/// one).
 String nsDateText(int ns) {
-  final d = DateTime.fromMicrosecondsSinceEpoch(ns ~/ 1000, isUtc: true);
-  String two(int x) => x.toString().padLeft(2, '0');
-  final frac = ns % 1000000000;
-  return '${d.year}-${two(d.month)}-${two(d.day)} '
-      '${two(d.hour)}:${two(d.minute)}:${two(d.second)}'
-      '${frac == 0 ? '' : '.${frac.toString().padLeft(9, '0')}'}';
+  final offset = DateTime.fromMicrosecondsSinceEpoch(ns ~/ 1000).timeZoneOffset;
+  return zxFormatDatetimeNs(ns + offset.inMicroseconds * 1000);
 }
 
 /// A value as the grid shows it.

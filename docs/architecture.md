@@ -582,6 +582,27 @@ input differences, never by reading or disassembling their code.
   archive has a new generation, and the handler refuses to write over a
   generation it has not seen); after a change of the archive the SQL
   session is made again (`resetSql`) so the system tables see the files.
+- The explorer (`app/lib/src/fs`, `ui/explorer.dart`): with no archive
+  shown, the page shows a folder of the file system (`FsModel`); an
+  archive opened from it becomes the `ArchiveModel` shown, and leaving
+  its top level (Back, Up, a crumb of the file system, Ctrl+W) returns
+  to the folder. Listing a folder, the recursive search, copy, move,
+  delete, the trash, folder sizes and SHA-256 run in worker isolates
+  (`fs_ops.dart`: `Isolate.run`, or a spawned isolate with a port for
+  progress, the conflict questions and cancel); the UI isolate only
+  sorts and filters the rows. Thumbnails are `ResizeImage(FileImage)`:
+  the engine decodes them at tile size off the UI isolate and keeps them
+  in the image cache. Copy, cut, paste and drag carry a `Transfer`
+  (paths of the file system, or items of an archive level with the
+  folder they are relative to); a paste is a copy or move between
+  folders, an extract (archive to folder), an add with the default
+  settings (folder to archive) or both through a temporary folder. The
+  levels of an archive the clipboard holds stay open until the
+  clipboard changes. The device is behind `PlatformPlaces`
+  (`platform/places.dart`: places, volumes, free space, permission,
+  open with, share); the tests use a fake. Below 600 pixels of width the
+  same page lays out for a phone (drawer, touch rows, long press
+  selection, bottom actions).
 - Same text rules as the library: plain ASCII in comments, docs and
   strings of the UI.
 

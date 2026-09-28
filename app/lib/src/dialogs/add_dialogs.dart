@@ -10,6 +10,7 @@ import 'package:zx/zx.dart';
 import '../formats.dart';
 import '../services.dart';
 import '../settings.dart';
+import 'common_dialogs.dart';
 import 'compression_form.dart';
 import 'zx_compression.dart';
 
@@ -385,6 +386,10 @@ class _NewArchiveDialogState extends State<_NewArchiveDialog> {
     if (!mounted) return;
     if (e != null) {
       setState(() => _error = e);
+      // on a phone the line under the form may be out of sight
+      if (MediaQuery.sizeOf(context).width < 600) {
+        await showErrorDialog(context, title: 'New archive', message: e);
+      }
       return;
     }
     Navigator.of(

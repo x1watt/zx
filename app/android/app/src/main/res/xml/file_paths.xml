@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The folders whose files zx hands to other apps (open with, share). The
+     root entry covers the shared storage, SD cards and USB volumes that zx
+     reaches with "All files access". -->
+<paths>
+    <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
+    <external-path name="external" path="." />
+    <external-files-path name="external_files" path="." />
+    <external-cache-path name="external_cache" path="." />
+    <root-path name="root" path="." />
+</paths>

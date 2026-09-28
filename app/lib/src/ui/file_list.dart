@@ -8,6 +8,8 @@ import 'package:zx/zx.dart';
 
 import '../archive_model.dart';
 import 'format_utils.dart';
+import 'transfer.dart';
+import 'views.dart' show DragSourceItem, FolderDropTarget;
 
 const double kRowHeight = 26;
 
@@ -43,12 +45,20 @@ class FileList extends StatefulWidget {
   final void Function(ZxItem item) onOpen;
   final void Function(ZxItem? item, Offset globalPosition) onContextMenu;
 
+  /// What a drag of an item carries (null: no drag).
+  final Transfer? Function(ZxItem item)? dragData;
+
+  /// A drop on the folder [folder] (null: the folder shown).
+  final void Function(ZxItem? folder, Transfer t)? onDrop;
+
   const FileList({
     super.key,
     required this.model,
     required this.focusNode,
     required this.onOpen,
     required this.onContextMenu,
+    this.dragData,
+    this.onDrop,
   });
 
   @override
@@ -169,32 +179,51 @@ class _FileListState extends State<FileList> {
                         widget.onContextMenu(null, e.position);
                       }
                     },
-                    child: rows.isEmpty
-                        ? _EmptyHint(filtered: m.filter.isNotEmpty)
-                        : Scrollbar(
-                            controller: _scroll,
-                            thumbVisibility: true,
-                            child: ListView.builder(
-                              key: const Key('file-list'),
+                    child: _dropHere(
+                      rows.isEmpty
+                          ? _EmptyHint(filtered: m.filter.isNotEmpty)
+                          : Scrollbar(
                               controller: _scroll,
-                              itemExtent: kRowHeight,
-                              itemCount: rows.length,
-                              itemBuilder: (context, i) {
-                                final item = rows[i];
-                                return Listener(
-                                  onPointerDown: (e) => _pointerDown(e, item),
-                                  child: _Row(
+                              thumbVisibility: true,
+                              child: ListView.builder(
+                                key: const Key('file-list'),
+                                controller: _scroll,
+                                itemExtent: kRowHeight,
+                                itemCount: rows.length,
+                                itemBuilder: (context, i) {
+                                  final item = rows[i];
+                                  Widget row = _Row(
                                     key: ValueKey('row:${item.path}'),
                                     columns: cols,
                                     model: m,
                                     item: item,
                                     selected: sel.contains(item.path),
                                     odd: i.isOdd,
-                                  ),
-                                );
-                              },
+                                  );
+                                  final drag = widget.dragData;
+                                  if (drag != null) {
+                                    row = DragSourceItem(
+                                      id: item.path,
+                                      data: (_) => drag(item),
+                                      child: row,
+                                    );
+                                  }
+                                  final drop = widget.onDrop;
+                                  if (drop != null && item.isDir) {
+                                    row = FolderDropTarget(
+                                      id: item.path,
+                                      onDrop: (t) => drop(item, t),
+                                      child: row,
+                                    );
+                                  }
+                                  return Listener(
+                                    onPointerDown: (e) => _pointerDown(e, item),
+                                    child: row,
+                                  );
+                                },
+                              ),
                             ),
-                          ),
+                    ),
                   ),
                 ),
               ],
@@ -202,6 +231,17 @@ class _FileListState extends State<FileList> {
           },
         );
       },
+    );
+  }
+}
+
+extension on _FileListState {
+  Widget _dropHere(Widget child) {
+    final drop = widget.onDrop;
+    if (drop == null) return child;
+    return DragTarget<Transfer>(
+      onAcceptWithDetails: (d) => drop(null, d.data),
+      builder: (context, _, _) => child,
     );
   }
 }

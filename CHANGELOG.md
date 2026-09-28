@@ -1,5 +1,42 @@
 ## Unreleased
 
+- **The app is a file explorer** (app/README.md "Using it",
+  docs/architecture.md section 11): a sidebar with the places, drives and
+  volumes, pinned folders and recent archives; breadcrumbs with an
+  editable path (Ctrl+L, also into archives); Back, Forward, Up; details
+  or icons with image thumbnails; hidden files; filter and a recursive
+  search in a worker isolate; free space in the status bar. File
+  operations: open, open with, cut, copy, paste, drag and drop, rename,
+  new folder, move to the freedesktop.org trash, permanent delete,
+  properties with SHA-256; in worker isolates with progress, cancel and
+  a Replace / Skip / Keep both question. Archives open as folders in
+  place: copy out is an extract, paste in is an add with the default
+  settings, the breadcrumbs go on into the archive and nested archives;
+  Compress to .zx, Extract here and Extract to "name/" in the context
+  menu. A phone layout below 600 pixels (drawer, large rows, long press
+  selection, bottom actions, Paste here). The places, free space, open
+  with and share are behind `PlatformPlaces` (app/lib/src/platform).
+- **Data view**: DATETIME columns (tables, views, time series and query
+  results) come from the declared types of the SQL result and show in
+  local time; the version selector lists the versions written after the
+  archive was opened.
+- **Android app** (app/android, app/lib/src/platform/android_*.dart,
+  app/README.md "Android"): Android 7.0 (API 24) and later, APKs per ABI
+  (arm64-v8a, armeabi-v7a, x86_64). Storage through "All files access"
+  (MANAGE_EXTERNAL_STORAGE, asked for after an in-app explanation; the
+  runtime storage permissions on Android 7 to 10) with the Storage Access
+  Framework as the fallback (document tree picker; list, copy in and out,
+  delete, rename and make folders through the `zx/android` channel).
+  Places: internal storage and its standard folders, SD cards and USB
+  drives (StorageManager), the app's own folder. zx opens archives from
+  other apps (ACTION_VIEW by MIME type and extension: zip, 7z, rar, tar,
+  gz, bz2, xz, lzma, lzh, arj, zpaq, iso, zx, split volumes), "Share to
+  zx" compresses the shared files into a new archive, and files open
+  with other apps and are shared out through a FileProvider. TMPDIR and
+  HOME point into the app's private storage, so the library's temporary
+  files and the settings work unchanged. zcm Auto reads /proc/meminfo on
+  Android (checked on an emulator with 678 MB available: level 5 with
+  64 MiB).
 - **zxdb time series** (`lib/src/db/ts/`, docs/zxdb-design.md section 12,
   docs/zxdb-sql.md "Time series"): `CREATE TIMESERIES ... PARTITION BY
   HOUR|DAY|WEEK|MONTH RETENTION '400d' WITH (compression, fts, tags)`,
@@ -16,7 +53,25 @@
   planner passes ORDER BY to virtual tables now). Retention drops whole
   partitions at seal and VACUUM. Importers for JSON lines, CSV, syslog
   (RFC 3164 and 5424) and `journalctl -o json`. Benchmark:
-  `tool/zxdb_bench_ts.dart`.
+  `tool/zxdb_bench_ts.dart`. Rollups take any WHERE expression over the
+  series' columns (the SQL evaluator) and include rows still in the
+  write buffer at read time (merged with the stored buckets). A hot tier
+  (`hot_days`, one day by default) keeps an LZ4 copy of recent
+  partitions' text for series with slow text coding, so a cold read of
+  the last day of `max` logs runs at 156 MB/s instead of 0.16 MB/s.
+  `ZxDatabaseAsync` exposes the series (`ZxSeriesAsync`: create, drop,
+  `appendAll` packed by column across the isolate boundary, `seal`,
+  `stats`, and `scanBatches`, a Stream of row batches with
+  backpressure). Time constraints need no `zx_ns()` any more: the DATETIME
+  columns of virtual tables compare as time, so `ts >= '2026-09-01'`,
+  `ts BETWEEN '2026-09-01 10:00' AND '2026-09-02'`, `ts > datetime('now',
+  '-1 day')` and `ts > unixepoch('now') - 86400` prune partitions and
+  filter the same rows (plain tables keep SQLite's rules);
+  `datetime(ts)` and the other date functions read DATETIME columns as
+  ns; `ZxSqlResult.types` / `isDatetime(i)` let UIs format them, and the
+  `zx sql` shell prints them as ISO text (`.datetime off` for ns).
+  `FROM HISTORY OF series` lists the rows each generation appended and
+  the partitions retention dropped.
 - **`zx sql`** (zx extension command, docs/zxdb-sql.md "The zx sql
   shell"): SQL on the database of a `.zx` archive from the command line,
   in batch (`zx sql x.zx "SELECT ..."`) or as a shell reading the

@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 
 import 'src/app.dart';
 import 'src/integration.dart';
+import 'src/platform/android_access.dart';
 import 'src/services.dart';
 import 'src/settings.dart';
 
@@ -50,7 +51,9 @@ Future<void> main(List<String> args) async {
   final services = AppServices(
     paths: paths,
     settings: settings,
-    launcher: const SystemLauncher(),
+    launcher: Platform.isAndroid
+        ? const AndroidLauncher()
+        : const SystemLauncher(),
     picker: const SystemFilePicker(),
     integration: DesktopIntegration.forPlatform(paths),
   );

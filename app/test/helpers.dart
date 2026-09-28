@@ -10,6 +10,7 @@ import 'package:zx/src/db/sql/zx_sql.dart' show ZxSqlResult;
 import 'package:zx/src/db/zxdb.dart';
 import 'package:zx_app/src/db_session.dart';
 import 'package:zx_app/src/integration.dart';
+import 'package:zx_app/src/platform/places.dart';
 import 'package:zx_app/src/services.dart';
 import 'package:zx_app/src/settings.dart';
 
@@ -88,6 +89,45 @@ class FakeIntegration implements DesktopIntegration {
   }
 }
 
+/// Places under the test's temporary folder (no real volumes).
+class FakePlaces implements PlatformPlaces {
+  final String home;
+  final opened = <String>[];
+  final shared = <List<String>>[];
+  FakePlaces(this.home);
+
+  @override
+  Future<List<Place>> places() async => [Place('Home', home, PlaceKind.home)];
+
+  @override
+  Future<List<Place>> volumes() async => const [];
+
+  @override
+  Future<SpaceInfo?> space(String path) async =>
+      const SpaceInfo(total: 1000 << 30, free: 250 << 30);
+
+  @override
+  Future<bool> ensureAccess() async => true;
+
+  @override
+  Future<bool> openWithChooser(String path) async => false;
+
+  @override
+  Future<List<AppChoice>> appsFor(String path) async => const [
+    AppChoice('viewer.desktop', 'Viewer'),
+  ];
+
+  @override
+  Future<void> openWith(AppChoice app, String path) async =>
+      opened.add('${app.id}:$path');
+
+  @override
+  bool get canShare => true;
+
+  @override
+  Future<void> share(List<String> paths) async => shared.add(paths);
+}
+
 /// Paths under [root]: home, .config, .local/share and tmp.
 AppPaths testPaths(String root) {
   final pth = AppPaths(
@@ -116,6 +156,7 @@ AppServices testServices(
     picker: picker ?? FakePicker(),
     integration: integration ?? FakeIntegration(),
     dbOpener: dbOpener ?? syncDbOpener,
+    places: FakePlaces(paths.home),
   );
 }
 

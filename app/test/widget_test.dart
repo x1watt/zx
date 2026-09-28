@@ -73,25 +73,6 @@ void main() {
     return out;
   }
 
-  testWidgets('welcome view with recent archives', (tester) async {
-    final s = testServices(tmp.path);
-    s.settings.addRecent('/x/old.7z');
-    await pumpApp(tester, s);
-    expect(find.text('Open archive'), findsOneWidget);
-    expect(find.text('New archive'), findsWidgets);
-    expect(find.text('old.7z'), findsOneWidget);
-    // the actions that need an archive are disabled with a reason
-    final t = tester.widget<Tooltip>(
-      find
-          .ancestor(
-            of: find.byKey(const Key('tool-extract')),
-            matching: find.byType(Tooltip),
-          )
-          .first,
-    );
-    expect(t.message, 'Open an archive first');
-  });
-
   testWidgets('list, navigate, sort, filter, select', (tester) async {
     final a = await make(tester, 'w.7z');
     final s = testServices(tmp.path);

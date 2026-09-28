@@ -7,6 +7,9 @@ import 'package:path/path.dart' as p;
 import '../archive_model.dart';
 import '../dialogs/properties_dialog.dart';
 import 'format_utils.dart';
+import 'path_bar.dart';
+
+export 'path_bar.dart';
 
 // ---------------------------------------------------------------------------
 // Folder tree
@@ -174,6 +177,15 @@ class PathBar extends StatelessWidget {
   /// A crumb of a level of the chain was clicked: show [dir] of [level].
   final void Function(ArchiveModel level, String dir) onLevel;
 
+  /// The crumbs of the folders of the file system around the archive.
+  final List<Widget> prefix;
+
+  /// The editable path (Ctrl+L), with what Enter does.
+  final PathEdit? edit;
+
+  /// Without the buttons and the filter (a phone).
+  final bool compact;
+
   const PathBar({
     super.key,
     required this.model,
@@ -182,6 +194,9 @@ class PathBar extends StatelessWidget {
     required this.onBack,
     required this.onUp,
     required this.onLevel,
+    this.prefix = const [],
+    this.edit,
+    this.compact = false,
   });
 
   @override
@@ -303,95 +318,24 @@ class PathBar extends StatelessWidget {
             crumbs.add(crumb(k, parts[i], parts.sublist(0, i + 1).join('/')));
           }
         }
-        return Container(
-          height: 44,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            children: [
-              IconButton(
-                key: const Key('nav-back'),
-                tooltip: model.canBack || model.parent == null
-                    ? 'Back (Alt+Left)'
-                    : 'Back out of ${model.displayName} (Alt+Left)',
-                visualDensity: VisualDensity.compact,
-                onPressed: onBack,
-                icon: const Icon(Icons.arrow_back_rounded, size: 20),
-              ),
-              IconButton(
-                key: const Key('nav-forward'),
-                tooltip: 'Forward (Alt+Right)',
-                visualDensity: VisualDensity.compact,
-                onPressed: model.canForward ? model.forward : null,
-                icon: const Icon(Icons.arrow_forward_rounded, size: 20),
-              ),
-              IconButton(
-                key: const Key('nav-up'),
-                tooltip: model.canUp || model.parent == null
-                    ? 'Up one folder (Backspace)'
-                    : 'Up out of ${model.displayName} (Backspace)',
-                visualDensity: VisualDensity.compact,
-                onPressed: onUp,
-                icon: const Icon(Icons.arrow_upward_rounded, size: 20),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Container(
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: cs.surfaceContainerHighest.withValues(alpha: 0.6),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: LayoutBuilder(
-                    builder: (context, box) => SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      reverse: true,
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(minWidth: box.maxWidth),
-                        child: Row(children: crumbs),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 240,
-                height: 32,
-                child: TextField(
-                  key: const Key('filter'),
-                  controller: filter,
-                  focusNode: filterFocus,
-                  onChanged: (v) => model.filter = v,
-                  style: const TextStyle(fontSize: 13),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    hintText: 'Filter this folder',
-                    prefixIcon: const Icon(Icons.search_rounded, size: 18),
-                    suffixIcon: model.filter.isEmpty
-                        ? null
-                        : IconButton(
-                            tooltip: 'Clear the filter',
-                            icon: const Icon(Icons.close_rounded, size: 16),
-                            onPressed: () {
-                              filter.clear();
-                              model.filter = '';
-                            },
-                          ),
-                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                    filled: true,
-                    fillColor: cs.surfaceContainerHighest.withValues(
-                      alpha: 0.6,
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+        return PathBarFrame(
+          crumbs: [...prefix, ...crumbs],
+          edit: edit,
+          compact: compact,
+          onBack: onBack,
+          onForward: model.canForward ? model.forward : null,
+          onUp: onUp,
+          backTooltip: model.canBack || model.parent == null
+              ? 'Back (Alt+Left)'
+              : 'Back out of ${model.displayName} (Alt+Left)',
+          upTooltip: model.canUp || model.parent == null
+              ? 'Up one folder (Backspace)'
+              : 'Up out of ${model.displayName} (Backspace)',
+          filter: filter,
+          filterFocus: filterFocus,
+          filterHint: 'Filter this folder',
+          filterActive: model.filter.isNotEmpty,
+          onFilter: (v) => model.filter = v,
         );
       },
     );
@@ -493,11 +437,17 @@ class StatusBar extends StatelessWidget {
 
   /// Shown at the right end (the version selector of a zpaq archive).
   final Widget? trailing;
+
+  /// The texts without an archive (the folder of the file system).
+  final String leftText;
+  final String rightText;
   const StatusBar({
     super.key,
     required this.model,
     this.message,
     this.trailing,
+    this.leftText = '',
+    this.rightText = '',
   });
 
   @override
@@ -507,7 +457,19 @@ class StatusBar extends StatelessWidget {
     final m = model;
     Widget body;
     if (m == null) {
-      body = Text(message ?? 'Ready', style: style);
+      body = Row(
+        children: [
+          Expanded(
+            child: Text(
+              message ?? (leftText.isEmpty ? 'Ready' : leftText),
+              key: const Key('status-left'),
+              style: style,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Text(rightText, key: const Key('status-right'), style: style),
+        ],
+      );
     } else {
       body = ListenableBuilder(
         listenable: m,

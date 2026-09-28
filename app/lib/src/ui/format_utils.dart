@@ -168,13 +168,30 @@ bool isDiskImageName(String name) => _diskImageExt.contains(extensionOf(name));
   ColorScheme cs, {
   bool inContainer = false,
 }) {
-  if (item.isDir) {
-    // the folder of a nested archive (inner file systems shown)
-    if (item.isNested) return (Icons.snippet_folder_rounded, kImageColor);
-    return (Icons.folder_rounded, const Color(0xFFE0A526));
+  // the folder of a nested archive (inner file systems shown)
+  if (item.isDir && item.isNested) {
+    return (Icons.snippet_folder_rounded, kImageColor);
   }
-  if (item.isSymlink) return (Icons.link_rounded, cs.tertiary);
-  final e = extensionOf(item.name);
+  return iconForName(
+    item.name,
+    cs,
+    isDir: item.isDir,
+    isLink: item.isSymlink,
+    inContainer: inContainer,
+  );
+}
+
+/// The icon and its color of a file or folder named [name].
+(IconData, Color) iconForName(
+  String name,
+  ColorScheme cs, {
+  bool isDir = false,
+  bool isLink = false,
+  bool inContainer = false,
+}) {
+  if (isDir) return (Icons.folder_rounded, const Color(0xFFE0A526));
+  if (isLink) return (Icons.link_rounded, cs.tertiary);
+  final e = extensionOf(name);
   if (e == 'iso' || e == 'udf') return (Icons.album_outlined, kImageColor);
   if (inContainer || _diskImageExt.contains(e)) {
     return (Icons.storage_rounded, kImageColor);

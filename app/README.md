@@ -1,4 +1,4 @@
-# zx (desktop app)
+# zx (desktop and Android app)
 
 An archive manager in the style of WinZip and the 7-Zip File Manager,
 written with Flutter on the `ZxArchive` API of the `zx` package (the
@@ -17,17 +17,63 @@ native code of its own besides the runners and uses three small packages:
 
 ## Using it
 
-- **Open**: `zx_app archive.7z`, File > Open (Ctrl+O), drop an archive on
-  the window, or pick one of the recent archives.
-- **Browse**: the folder tree on the left, the file list on the right
-  (click a column to sort, again to reverse), the path bar with Back
-  (Alt+Left), Forward (Alt+Right) and Up (Backspace, Alt+Up), the filter
-  box (Ctrl+F) for the current folder. Double click or Enter enters a
-  folder or opens a file with its default program (the file is extracted
-  to a temporary folder first). Ctrl and Shift click select several
-  items, Ctrl+A all of them, the arrow keys, Page Up/Down, Home and End
-  move the selection. A right click opens the context menu (Open, Extract
-  to..., Extract here, Copy path, Rename, Delete, Properties).
+zx is a file explorer that goes into archives: the file system and every
+archive it reads are browsed the same way, and an archive is a folder.
+
+- **Explorer**: the sidebar lists the places (Home, Desktop, Documents,
+  Downloads, Pictures, Music, Videos, the root `/`), the mounted drives
+  and volumes (`/media`, `/mnt`, `/run/media/$USER`; the drive letters
+  on Windows; `/Volumes` on macOS), the folders pinned with "Pin to
+  sidebar" and the recent archives. The path bar has Back (Alt+Left),
+  Forward (Alt+Right), Up (Backspace, Alt+Up) and the breadcrumbs; a
+  click on its free space or Ctrl+L makes it an editable path (`~`
+  works, and a path that goes on inside an archive, such as
+  `~/Downloads/backup.zx/docs`, opens the archive at that folder). The
+  search box filters the folder; its tree button searches the sub
+  folders too (Enter starts it, in a worker isolate; the stop button or
+  Escape ends it). View: details (Name, Size, Type, Modified, a click on
+  a column sorts, again reverses; folders first, numbers in their
+  natural order) or icons with thumbnails of images (Ctrl+H: hidden
+  files; both saved). The status bar shows the items, the size of the
+  selection and the free space of the drive.
+- **Files**: Enter or a double click opens (a folder, an archive, or the
+  file with its default program); Open with... (the programs registered
+  for the type), Cut (Ctrl+X), Copy (Ctrl+C), Paste (Ctrl+V), Rename
+  (F2), New folder, Move to trash (Del: the freedesktop.org trash on
+  Linux, ~/.Trash on macOS; items on another drive and Shift+Del are
+  deleted permanently after a question), Properties (Alt+Enter: size of
+  folders, dates, permissions, SHA-256 on demand), Pin to sidebar. Drag
+  and drop moves between folders (Ctrl held: copies) and copies between
+  the file system and archives; files dropped from another program are
+  copied into the folder shown. Copy, move and delete run in a worker
+  isolate with progress and Cancel; a name that exists asks Replace
+  (folders merge), Skip or Keep both, optionally for all.
+- **Archives as folders**: Enter or a double click on an archive (every
+  format below, disk images and firmware) opens it in place; the
+  breadcrumbs go on into it (`/ > home > me > Downloads > backup.zx >
+  docs`) and Back or Up at its top returns to the folder, with the
+  archive selected. Inside, the same views; Copy there and Paste in a
+  folder (or a drag to a folder or a place of the sidebar) extracts;
+  Paste or a drop in an archive that can change adds, with the default
+  compression settings (the settings dialog is for new archives only);
+  Cut moves. From the context menu of archive files: Extract to
+  "name/", Extract here, Extract to..., and Compress to .zx... (or
+  another format) of the selection.
+- **Phone layout** (a window narrower than 600 pixels): the sidebar is a
+  drawer, rows are larger with the size and date under the name, a tap
+  opens, a long press starts the selection with its actions at the
+  bottom (Copy, Cut, Delete, Rename, Share, More), and a pending copy
+  shows "Paste here" at the bottom. The back button leaves the
+  selection, the search, then goes back and up.
+- **Open**: `zx_app archive.7z`, File > Open (Ctrl+O), or a recent
+  archive of the sidebar. Inside an archive the folder tree of the
+  archive is under the places, and the preview pane on the right.
+- **Browse**: the file list of an archive has the columns of the
+  archive (Packed, Ratio, Method, CRC...); Ctrl and Shift click select
+  several items, Ctrl+A all of them, the arrow keys, Page Up/Down, Home
+  and End move the selection. A right click opens the context menu
+  (Open, Extract to..., Extract here, Copy, Cut, Paste, Copy path,
+  Rename, Delete, Properties).
 - **Archives in archives**: double click, Enter or "Open as archive"
   (context menu) on a file that is itself an archive opens it as a new
   level: a zip in a tar, an ISO, the sections of a firmware file (pak,
@@ -206,6 +252,102 @@ The same switches write under `HKCU\Software\Classes` with `reg.exe`:
 The Windows and macOS parts are written but were not run on those
 systems.
 
+## Android
+
+Android 7.0 (API 24) and later. The Android side is `android/` (the
+Kotlin code in `android/app/src/main/kotlin/io/github/maxbrito/zx_app/`:
+`MainActivity.kt`, `ZxStorage.kt`) and `lib/src/platform/android_*.dart`
+(the `zx/android` channel, `AndroidPlaces`, the permission explanation).
+
+### Permissions and storage
+
+- **All files access** (`MANAGE_EXTERNAL_STORAGE`, Android 11 and
+  later): at the first start zx explains why it wants it and then opens
+  the system screen "All files access", where "Allow access to manage all
+  files" is switched on. With it zx works on real paths everywhere:
+  internal storage (`/storage/emulated/0`), its Downloads, Documents,
+  DCIM, Pictures, Music and Movies, SD cards and USB drives (the volumes
+  of StorageManager). On Android 7 to 10 the same dialog asks for the
+  runtime storage permissions instead.
+- **Without it** ("Choose a folder" in the dialog, or "Not now"): the
+  system folder picker (Storage Access Framework) grants one folder,
+  kept across restarts; zx uses its path when it can read it and
+  otherwise works through content URIs (`AndroidSaf`: list, copy a
+  document to a local file and back, delete, rename, make a folder). The
+  app's own folder (`Android/data/io.github.maxbrito.zx_app/files`)
+  always works.
+- zx has no internet permission in release builds (the debug builds get
+  it from Flutter, for the debugger).
+
+### Other apps
+
+- **Open**: archives opened from a file manager, a browser download or a
+  mail attachment go to zx (ACTION_VIEW for the archive MIME types, for
+  `application/octet-stream` and, for file managers that send paths, by
+  extension: zip, 7z, rar, tar, tgz, gz, bz2, xz, lzma, lzh, lha, arj,
+  zpaq, iso, zx, 001). A file zx can read directly opens in place; a
+  content URI it can not read is copied to the app's cache first (zx says
+  so: changes then do not reach the original).
+- **Share to zx**: files shared to zx (ACTION_SEND, SEND_MULTIPLE) open
+  the New archive dialog with them; copies of shared content go to
+  Downloads (or the app's own folder without the permission).
+- **Open with** and **Share**: files are handed to other apps as
+  `content://io.github.maxbrito.zx_app.files/...` URIs of a FileProvider
+  (the system chooser, the share sheet).
+
+### Build and install
+
+On the development machine every build goes through the lock:
+
+```sh
+~/bin/android-build-locked flutter build apk --debug --split-per-abi \
+    --target-platform android-arm,android-arm64,android-x64
+~/bin/android-build-locked flutter build apk --release --split-per-abi \
+    --target-platform android-arm,android-arm64,android-x64
+```
+
+The APKs are in `build/app/outputs/flutter-apk/`:
+`app-arm64-v8a-release.apk` (almost every phone of the last years),
+`app-armeabi-v7a-release.apk` (older 32 bit phones),
+`app-x86_64-release.apk` (emulators, Chromebooks). Install with
+`adb install -r app-arm64-v8a-release.apk`, or copy the file to the
+phone and open it (allow "Install unknown apps" for the file manager).
+
+The release build is signed with the key of `android/key.properties`
+when that file exists (`storeFile`, `storePassword`, `keyAlias`,
+`keyPassword`; never committed), with the debug key otherwise: fine for
+testing, not for a store. A new key:
+
+```sh
+keytool -genkey -v -keystore ~/zx-release.jks -keyalg RSA -keysize 4096 \
+    -validity 10000 -alias zx
+```
+
+Testing on an emulator without a phone (one AVD, headless, the files
+through adb):
+
+```sh
+emulator -avd <avd> -no-snapshot -memory 2048 -no-audio -no-window &
+adb install -r build/app/outputs/flutter-apk/app-x86_64-release.apk
+adb shell appops set io.github.maxbrito.zx_app MANAGE_EXTERNAL_STORAGE allow
+adb push some.zip /sdcard/Download/
+adb shell am start -a android.intent.action.VIEW \
+    -d file:///sdcard/Download/some.zip -t application/zip
+adb shell am start -a android.intent.action.SEND -t text/plain \
+    --eu android.intent.extra.STREAM file:///sdcard/Download/some.zip \
+    -n io.github.maxbrito.zx_app/.MainActivity
+adb exec-out screencap -p > screen.png
+```
+
+### Memory
+
+The heavy work runs in the isolates of the library as on the desktop.
+zcm Auto reads `MemAvailable` of `/proc/meminfo` on Android too and keeps
+1.5 GiB of it free, so on a phone it picks small models (an emulator with
+678 MB available got `zcm:5:m26`, 64 MiB); Manual shows the safe maximum
+of the device. The manifest sets `largeHeap` for the Java side; the Dart
+heap is native memory and not limited by it.
+
 ## Development
 
 ```sh
@@ -223,6 +365,18 @@ run`, `flutter test integration_test`) go through
 - `lib/main.dart`: the command line modes.
 - `lib/src/app.dart`: themes and the two windows.
 - `lib/src/archive_model.dart`: folder, history, sort, filter, selection.
+- `lib/src/fs/`: the file system side of the explorer: `fs_model.dart`
+  (folder, history, sort, hidden files, filter, recursive search,
+  selection) and `fs_ops.dart` (listing, search, copy, move, delete,
+  trash, folder size and SHA-256, all in worker isolates).
+- `lib/src/platform/places.dart`: the places, volumes, free space,
+  permission, open with and share, desktop implementation; Android has
+  its own next to it.
+- `lib/src/ui/browser_page.dart` and `explorer.dart`: the explorer
+  window (wide and phone layouts) and its actions; `views.dart` (details
+  of a folder, icon grid with thumbnails, touch rows, drag and drop),
+  `sidebar.dart`, `path_bar.dart`, `transfer.dart` (what copy and drag
+  carry).
 - `lib/src/ui/`: the browser page and its panels, the file list, the
   preview, the settings page, the "Extract to folder" window.
 - `lib/src/dialogs/`: extract, add, new archive (with the .zx

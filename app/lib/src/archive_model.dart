@@ -34,8 +34,8 @@ class ArchiveModel extends ChangeNotifier {
   final List<ZxArchive> passed;
 
   /// The versions of a journaling archive (zpaq), all of them even when
-  /// an older one is shown.
-  final List<ZxVersion> allVersions;
+  /// an older one is shown (read again after a change of the archive).
+  List<ZxVersion> allVersions;
   String _dir = '';
   final List<String> _back = [];
   final List<String> _forward = [];
@@ -345,6 +345,8 @@ class ArchiveModel extends ChangeNotifier {
   /// still exists and the selection that is still there.
   void refresh({ZxArchive? archive, Iterable<String>? select}) {
     if (archive != null) _archive = archive;
+    // a write added a version: the selector lists it
+    if (!isOldVersion) allVersions = _archive.versions;
     generation++;
     _rows = null;
     _folderStats = null;

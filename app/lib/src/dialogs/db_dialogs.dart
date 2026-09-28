@@ -137,7 +137,10 @@ class _FileMetaViewState extends State<FileMetaView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
-      children: [body, Divider(height: 1, color: cs.outlineVariant)],
+      children: [
+        body,
+        Divider(height: 1, color: cs.outlineVariant),
+      ],
     );
   }
 

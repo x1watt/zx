@@ -388,7 +388,7 @@ class DataViewState extends State<DataView> {
       if (!mounted) return;
       final ms = sw.elapsedMilliseconds;
       setState(() {
-        _result = DbRows(r.columns, r.rows);
+        _result = DbRows.of(r);
         _queryNote = r.columns.isEmpty
             ? '${r.changes} row${r.changes == 1 ? '' : 's'} changed, $ms ms'
             : '${r.rows.length} row${r.rows.length == 1 ? '' : 's'}, $ms ms';
@@ -693,7 +693,13 @@ class DataViewState extends State<DataView> {
                   style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                 ),
               ),
-              _exportButtons(r != null && r.columns.isNotEmpty),
+              // a phone: the export buttons scroll instead of overflowing
+              Flexible(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: _exportButtons(r != null && r.columns.isNotEmpty),
+                ),
+              ),
             ],
           ),
         ),
@@ -735,7 +741,7 @@ class DataViewState extends State<DataView> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SizedBox(
-                width: 230,
+                width: MediaQuery.sizeOf(context).width < 600 ? 140 : 230,
                 child: Material(
                   color: cs.surfaceContainerLowest,
                   child: _sidebar(cs),

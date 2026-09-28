@@ -182,8 +182,26 @@ class Settings extends ChangeNotifier {
   bool _showInnerFilesystems = false;
   ZxPrefs _zx = const ZxPrefs();
   List<String> _recent = [];
+  bool _gridView = false;
+  bool _showHidden = false;
+  List<String> _bookmarks = [];
 
   Settings({this.file});
+
+  /// The explorer shows icons (a grid with thumbnails) instead of details.
+  bool get gridView => _gridView;
+  set gridView(bool v) => _change(() => _gridView = v);
+
+  /// The explorer shows the hidden files (names starting with a dot).
+  bool get showHidden => _showHidden;
+  set showHidden(bool v) => _change(() => _showHidden = v);
+
+  /// The folders pinned to the sidebar.
+  List<String> get bookmarks => List.unmodifiable(_bookmarks);
+  void addBookmark(String path) => _change(() {
+    if (!_bookmarks.contains(path)) _bookmarks.add(path);
+  });
+  void removeBookmark(String path) => _change(() => _bookmarks.remove(path));
 
   ThemeMode get theme => _theme;
   String get defaultFormat => _defaultFormat;
@@ -270,6 +288,9 @@ class Settings extends ChangeNotifier {
     'showInnerFilesystems': _showInnerFilesystems,
     'zxCompression': _zx.toJson(),
     'recent': _recent,
+    'gridView': _gridView,
+    'showHidden': _showHidden,
+    'bookmarks': _bookmarks,
   };
 
   void _fromJson(Map<String, Object?> j) {
@@ -291,6 +312,17 @@ class Settings extends ChangeNotifier {
     if (n is bool) _showInnerFilesystems = n;
     if (j.containsKey('zxCompression')) {
       _zx = ZxPrefs.fromJson(j['zxCompression']);
+    }
+    final g = j['gridView'];
+    if (g is bool) _gridView = g;
+    final h = j['showHidden'];
+    if (h is bool) _showHidden = h;
+    final b = j['bookmarks'];
+    if (b is List) {
+      _bookmarks = [
+        for (final x in b)
+          if (x is String) x,
+      ];
     }
     final r = j['recent'];
     if (r is List) {

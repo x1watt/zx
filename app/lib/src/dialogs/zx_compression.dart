@@ -345,17 +345,25 @@ class _ZxCompressionSectionState extends State<ZxCompressionSection> {
   }
 
   List<Widget> _auto(ZxPrefs p) => [
-    Row(
+    // the label above the choices when they do not fit beside it (a
+    // phone): the segments never wrap their words
+    Wrap(
+      spacing: 12,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         const Text('Time budget'),
-        const SizedBox(width: 12),
-        Expanded(
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
           child: SegmentedButton<String>(
             key: const Key('zx-speed'),
             showSelectedIcon: false,
             segments: [
               for (final s in ZxPrefs.speeds)
-                ButtonSegment(value: s, label: Text(speedLabel(s))),
+                ButtonSegment(
+                  value: s,
+                  label: Text(speedLabel(s), softWrap: false),
+                ),
             ],
             selected: {p.speed},
             onSelectionChanged: (v) => _set(p.copyWith(speed: v.first)),

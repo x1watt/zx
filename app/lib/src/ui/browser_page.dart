@@ -17,17 +17,31 @@ import '../db_session.dart';
 import '../dialogs/db_dialogs.dart';
 import '../dialogs/add_dialogs.dart';
 import '../dialogs/common_dialogs.dart';
+import '../dialogs/compression_form.dart' show CompressionSettings;
+import '../dialogs/fs_dialogs.dart';
 import '../dialogs/extract_dialog.dart';
 import '../dialogs/progress.dart';
 import '../dialogs/properties_dialog.dart';
 import '../formats.dart';
+import '../platform/android_access.dart';
+import '../platform/android_channel.dart';
+import '../platform/android_places.dart';
+import '../fs/fs_model.dart';
+import '../fs/fs_ops.dart';
+import '../platform/places.dart';
 import '../services.dart';
+import 'extract_to_folder.dart' show uniqueFolder;
 import 'file_list.dart';
 import 'format_utils.dart';
 import 'panels.dart';
 import 'preview_pane.dart';
 import 'data_view.dart';
 import 'settings_page.dart';
+import 'sidebar.dart';
+import 'transfer.dart';
+import 'views.dart';
+
+part 'explorer.dart';
 
 /// Files that are zip or similar inside but documents to the user: they
 /// open with their program ("Open as archive" still opens them here).
@@ -55,7 +69,15 @@ class BrowserPage extends StatefulWidget {
   /// An archive to open at start (command line).
   final String? initialArchive;
 
-  const BrowserPage({super.key, required this.services, this.initialArchive});
+  /// The folder shown at start (the home folder by default).
+  final String? startDir;
+
+  const BrowserPage({
+    super.key,
+    required this.services,
+    this.initialArchive,
+    this.startDir,
+  });
 
   @override
   State<BrowserPage> createState() => BrowserPageState();
@@ -79,6 +101,38 @@ class BrowserPageState extends State<BrowserPage> {
   /// The Data view is shown instead of the files.
   bool _dataTab = false;
 
+  /// The folder of the file system shown when no archive is.
+  late final FsModel _fs;
+  final _fsFilter = TextEditingController();
+  late final PathEdit _pathEdit;
+  List<Place> _places = const [];
+  List<Place> _volumes = const [];
+  SpaceInfo? _space;
+  String? _spaceDir;
+
+  /// What copy or cut took.
+  Transfer? _clip;
+
+  /// The filter box searches below the folder (the file system).
+  bool _recursive = false;
+
+  /// The tiles in a row of the grid (for the arrow keys).
+  int _gridColumns = 1;
+
+  /// The search field of a phone is open.
+  bool _narrowSearch = false;
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  void _update(VoidCallback f) {
+    if (mounted) setState(f);
+  }
+
+  /// The file system view (for tests).
+  FsModel get fs => _fs;
+
+  /// What copy or cut took (for tests).
+  Transfer? get clipboard => _clip;
+
   AppServices get _s => widget.services;
 
   /// The open archive (for tests).
@@ -93,11 +147,60 @@ class BrowserPageState extends State<BrowserPage> {
   @override
   void initState() {
     super.initState();
+    _fs = FsModel(widget.startDir ?? _s.paths.home);
+    _fs.showHidden = _s.settings.showHidden;
+    _fs.addListener(_onFsChanged);
+    _pathEdit = PathEdit(
+      text: () => _pathText(),
+      onSubmit: goToPath,
+      onDone: _listFocus.requestFocus,
+    );
+    unawaited(_fs.reload());
+    unawaited(_loadPlaces());
     final a = widget.initialArchive;
     if (a != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => openArchive(a));
     }
     if (Platform.isMacOS) _listenToFinder();
+    if (Platform.isAndroid) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _listenToAndroid());
+    }
+  }
+
+  /// Android: the archives other apps open with zx (ACTION_VIEW), the
+  /// files shared to zx (ACTION_SEND: a new archive of them), and the
+  /// storage permission, asked for with an explanation at the first start.
+  Future<void> _listenToAndroid() async {
+    AndroidPlaces.explainer = () => showStorageAccessDialog(context);
+    AndroidIntents.instance.stream.listen(_onAndroidIntent);
+    final i = await AndroidIntents.instance.initial();
+    if (i != null) {
+      await _onAndroidIntent(i);
+    } else {
+      await const AndroidPlaces().ensureAccess();
+    }
+  }
+
+  Future<void> _onAndroidIntent(IncomingIntent i) async {
+    if (!mounted) return;
+    final paths = i.paths;
+    if (paths.isEmpty) {
+      final why = i.files.map((f) => f.error).whereType<String>().join(', ');
+      _snack('Can not read the file${why.isEmpty ? '' : ': $why'}');
+      return;
+    }
+    if (i.action == IncomingAction.view) {
+      await openArchive(paths.first);
+      if (mounted && i.files.first.copied) {
+        _snack('Opened a copy: changes do not reach the original file');
+      }
+      return;
+    }
+    final copied = i.files.any((f) => f.copied);
+    await newArchive(
+      sources: paths,
+      folder: copied ? await const AndroidPlaces().outputFolder() : null,
+    );
   }
 
   /// macOS: Finder sends the archives to open as Apple events, which the
@@ -130,9 +233,14 @@ class BrowserPageState extends State<BrowserPage> {
     final db = _db;
     _db = null;
     if (db != null) unawaited(db.close().catchError((Object _) {}));
+    final cm = _clip?.model;
+    if (cm != null && cm.root != m?.root) _closeLevels(cm);
     _listFocus.dispose();
     _filterFocus.dispose();
     _filter.dispose();
+    _fsFilter.dispose();
+    _fs.dispose();
+    _pathEdit.dispose();
     super.dispose();
   }
 
@@ -314,7 +422,10 @@ class BrowserPageState extends State<BrowserPage> {
   /// Closes the handles of [m] and of its parents up to [keep] (not
   /// included); their temporary files are deleted in the background.
   void _closeLevels(ArchiveModel m, {ArchiveModel? keep}) {
+    // the levels of what the clipboard holds stay open until it is replaced
+    final held = _clip?.model?.levels.toSet() ?? const <ArchiveModel>{};
     for (ArchiveModel? l = m; l != null && l != keep; l = l.parent) {
+      if (held.contains(l)) continue;
       unawaited(l.closeHandles().catchError((Object _) {}));
     }
   }
@@ -397,6 +508,8 @@ class BrowserPageState extends State<BrowserPage> {
       if (mounted) {
         await showErrorDialog(context, title: what, message: '${e.message}');
       }
+    } on FsCancelled {
+      _snack('$what: cancelled');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -511,14 +624,23 @@ class BrowserPageState extends State<BrowserPage> {
     if (f != null) await openArchive(f);
   }
 
-  void closeArchive() => _replaceModel(null);
+  /// Closes the archive: back to the folder that holds it.
+  void closeArchive() => _exitToFs();
 
-  Future<void> newArchive({List<String> sources = const []}) async {
-    final folder = sources.isNotEmpty
+  /// The new archive dialog (in [folder], by default next to the
+  /// sources); the archive is shown afterwards ([show]), or selected in
+  /// the folder shown.
+  Future<void> newArchive({
+    List<String> sources = const [],
+    String? folder,
+    String? formatId,
+    bool show = true,
+  }) async {
+    folder ??= sources.isNotEmpty
         ? p.dirname(sources.first)
         : _model != null
         ? p.dirname(_model!.archive.path)
-        : _s.paths.home;
+        : _fs.dir;
     final folders = await foldersOf(sources);
     if (!mounted) return;
     final r = await showNewArchiveDialog(
@@ -526,7 +648,7 @@ class BrowserPageState extends State<BrowserPage> {
       folder: folder,
       sources: sources,
       folders: folders,
-      formatId: _s.settings.defaultFormat,
+      formatId: formatId ?? _s.settings.defaultFormat,
       defaultLevel: _s.settings.defaultLevel,
       picker: _s.picker,
       zxDefaults: _s.settings.zxCompression,
@@ -547,7 +669,14 @@ class BrowserPageState extends State<BrowserPage> {
       });
     });
     if (a == null || !mounted) return;
-    showArchive(a);
+    if (show || _model != null) {
+      showArchive(a);
+    } else {
+      await a.close();
+      await _fs.reload(
+        select: p.equals(p.dirname(a.path), _fs.dir) ? [a.path] : null,
+      );
+    }
     _snack('Created ${p.basename(a.path)}');
   }
 
@@ -748,22 +877,42 @@ class BrowserPageState extends State<BrowserPage> {
   /// Back: the folder before, or out of a nested archive.
   void back() {
     final m = _model;
-    if (m == null) return;
+    if (m == null) {
+      _fs.back();
+      return;
+    }
     if (m.canBack) {
       m.back();
     } else if (m.parent != null) {
       leaveNested();
+    } else {
+      _exitToFs();
+    }
+  }
+
+  /// Forward in the history of the view shown.
+  void forward() {
+    final m = _model;
+    if (m == null) {
+      _fs.forward();
+    } else {
+      m.forward();
     }
   }
 
   /// Up: the parent folder, or out of a nested archive at its top level.
   void up() {
     final m = _model;
-    if (m == null) return;
+    if (m == null) {
+      _fs.up();
+      return;
+    }
     if (m.canUp) {
       m.up();
     } else if (m.parent != null) {
       leaveNested();
+    } else {
+      _exitToFs();
     }
   }
 
@@ -851,7 +1000,7 @@ class BrowserPageState extends State<BrowserPage> {
       );
       return;
     }
-    if (openFolder) await _s.launcher.openFolder(dest);
+    if (openFolder) await _showFolder(dest);
     _snack(
       'Extracted ${r.files} file${r.files == 1 ? '' : 's'}'
       '${r.skipped > 0 ? ' (${r.skipped} skipped)' : ''} to $dest',
@@ -859,9 +1008,20 @@ class BrowserPageState extends State<BrowserPage> {
           ? null
           : SnackBarAction(
               label: 'Open folder',
-              onPressed: () => _s.launcher.openFolder(dest),
+              onPressed: () => _showFolder(dest),
             ),
     );
+  }
+
+  /// "Open folder": a phone shows it in the explorer, a desktop opens its
+  /// file manager.
+  Future<void> _showFolder(String dir) async {
+    if (Platform.isAndroid) {
+      if (_model != null) _replaceModel(null);
+      await _fs.navigate(dir);
+    } else {
+      await _s.launcher.openFolder(dir);
+    }
   }
 
   Future<void> test() async {
@@ -1156,7 +1316,15 @@ class BrowserPageState extends State<BrowserPage> {
           Icons.drive_folder_upload_outlined,
           'Extract here',
         ),
-        entry('copy-path', Icons.content_copy_rounded, 'Copy path'),
+        entry('copy', Icons.content_copy_rounded, 'Copy', shortcut: 'Ctrl+C'),
+        entry(
+          'cut',
+          Icons.content_cut_rounded,
+          'Cut',
+          why: _whyNot('delete'),
+          shortcut: 'Ctrl+X',
+        ),
+        entry('copy-path', Icons.link_rounded, 'Copy path'),
         if (item != null && !item.isDir && _whyNotDb() == null)
           entry('similar', Icons.compare_arrows_rounded, 'Find similar files'),
         const PopupMenuDivider(),
@@ -1177,6 +1345,13 @@ class BrowserPageState extends State<BrowserPage> {
         const PopupMenuDivider(),
         entry('properties', Icons.description_outlined, 'Properties'),
       ] else ...[
+        entry(
+          'paste',
+          Icons.content_paste_rounded,
+          'Paste',
+          why: _clip == null ? 'Nothing to paste' : _whyNot('add'),
+          shortcut: 'Ctrl+V',
+        ),
         entry(
           'add',
           Icons.add_box_outlined,
@@ -1216,6 +1391,12 @@ class BrowserPageState extends State<BrowserPage> {
         await extractHere();
       case 'copy-path':
         copyPath();
+      case 'copy':
+        copySelection();
+      case 'cut':
+        copySelection(cut: true);
+      case 'paste':
+        await paste();
       case 'similar':
         if (item != null) await findSimilar(item);
       case 'rename':
@@ -1231,6 +1412,21 @@ class BrowserPageState extends State<BrowserPage> {
       case 'info':
         await info();
     }
+  }
+
+  /// F5: reads the folder (or the archive) again.
+  Future<void> _refresh() async {
+    final m = _model;
+    if (m == null) {
+      await _fs.reload();
+    } else if (m.parent == null && !m.archive.flattened) {
+      await reopen();
+    }
+  }
+
+  void _setShowHidden(bool on) {
+    _s.settings.showHidden = on;
+    _fs.showHidden = on;
   }
 
   // ---- keyboard ----
@@ -1261,18 +1457,40 @@ class BrowserPageState extends State<BrowserPage> {
       extract();
     } else if (ctrl && k == LogicalKeyboardKey.keyW && m != null) {
       closeArchive();
-    } else if (ctrl && k == LogicalKeyboardKey.keyF && m != null) {
+    } else if (ctrl && k == LogicalKeyboardKey.keyF) {
       _filterFocus.requestFocus();
+    } else if (ctrl && k == LogicalKeyboardKey.keyL) {
+      _pathEdit.editing = true;
+    } else if (ctrl && k == LogicalKeyboardKey.keyH) {
+      _setShowHidden(!_s.settings.showHidden);
+    } else if (k == LogicalKeyboardKey.f5) {
+      _refresh();
     } else if (ctrl && k == LogicalKeyboardKey.keyQ) {
       exit(0);
-    } else if (alt && k == LogicalKeyboardKey.arrowLeft && m != null) {
+    } else if (alt && k == LogicalKeyboardKey.arrowLeft) {
       back();
-    } else if (alt && k == LogicalKeyboardKey.arrowRight && m != null) {
-      m.forward();
-    } else if (alt && k == LogicalKeyboardKey.arrowUp && m != null) {
+    } else if (alt && k == LogicalKeyboardKey.arrowRight) {
+      forward();
+    } else if (alt && k == LogicalKeyboardKey.arrowUp) {
       up();
-    } else if (_textFocused || m == null) {
+    } else if (k == LogicalKeyboardKey.escape && _filterFocus.hasFocus) {
+      // Escape in the search box: clears it, back to the list
+      _filter.clear();
+      _fsFilter.clear();
+      m?.filter = '';
+      _fs.stopSearch();
+      _fs.filter = '';
+      _listFocus.requestFocus();
+    } else if (_textFocused) {
       handled = false;
+    } else if (m == null) {
+      handled = _fsKey(k, ctrl: ctrl, alt: alt);
+    } else if (ctrl && k == LogicalKeyboardKey.keyC) {
+      copySelection();
+    } else if (ctrl && k == LogicalKeyboardKey.keyX) {
+      copySelection(cut: true);
+    } else if (ctrl && k == LogicalKeyboardKey.keyV) {
+      paste();
     } else if (ctrl && k == LogicalKeyboardKey.keyA) {
       m.selectAll();
     } else if (k == LogicalKeyboardKey.enter ||
@@ -1319,26 +1537,20 @@ class BrowserPageState extends State<BrowserPage> {
     await handleDrop([for (final f in d.files) f.path]);
   }
 
-  /// Files dropped on the window: with no archive open, an archive opens
-  /// and other files start a new archive; with an archive open they are
-  /// added to its current folder (or, when it can not change, a dropped
-  /// archive opens instead).
+  /// Files dropped on the window from another program: in a folder of
+  /// the file system they are copied there; with an archive open they
+  /// are added to its current folder (or, when it can not change, a
+  /// dropped archive opens instead).
   Future<void> handleDrop(List<String> dropped) async {
     final paths = dropped.where((s) => s.isNotEmpty).toList();
     if (paths.isEmpty) return;
     final m = _model;
     if (m == null) {
-      if (paths.length == 1 &&
-          looksLikeArchive(paths.first) &&
-          await FileSystemEntity.isFile(paths.first)) {
-        await openArchive(paths.first);
-      } else {
-        await newArchive(sources: paths);
-      }
+      await _dropFromOs(paths);
       return;
     }
     if (_whyNot('add') == null) {
-      await add(sources: paths);
+      await _addTo(m, m.dir, paths);
     } else if (paths.length == 1 && looksLikeArchive(paths.first)) {
       await openArchive(paths.first);
     } else {
@@ -1349,8 +1561,24 @@ class BrowserPageState extends State<BrowserPage> {
   // ---- layout ----
 
   List<ToolAction?> _toolActions() {
-    final none = _model == null ? 'Open an archive first' : null;
-    return [
+    final m = _model;
+    final clip = _clip;
+    final pasteWhy = clip == null
+        ? 'Nothing to paste'
+        : m == null
+        ? null
+        : _whyNot('add');
+    final view = ToolAction(
+      'view',
+      _s.settings.gridView ? Icons.view_list_rounded : Icons.grid_view_rounded,
+      _s.settings.gridView ? 'Details' : 'Icons',
+      _s.settings.gridView
+          ? 'Show the details list'
+          : 'Show icons and thumbnails',
+      null,
+      () => _s.settings.gridView = !_s.settings.gridView,
+    );
+    final start = [
       ToolAction(
         'open',
         Icons.folder_open_rounded,
@@ -1368,6 +1596,111 @@ class BrowserPageState extends State<BrowserPage> {
         () => newArchive(),
       ),
       null,
+    ];
+    final settings = ToolAction(
+      'settings',
+      Icons.settings_outlined,
+      'Settings',
+      'Settings and desktop integration',
+      null,
+      openSettings,
+    );
+    if (m == null) {
+      final sel = _fs.selectedEntries;
+      final none = sel.isEmpty ? 'Select items first' : null;
+      final archives = sel
+          .where(
+            (e) =>
+                !e.isDir &&
+                (looksLikeArchive(e.name) || isDiskImageName(e.name)),
+          )
+          .length;
+      return [
+        ...start,
+        ToolAction(
+          'folder',
+          Icons.create_new_folder_outlined,
+          'New folder',
+          'Create a folder here',
+          null,
+          newFolderFs,
+        ),
+        null,
+        ToolAction(
+          'cut',
+          Icons.content_cut_rounded,
+          'Cut',
+          'Cut the selection (Ctrl+X)',
+          none,
+          () => copySelection(cut: true),
+        ),
+        ToolAction(
+          'copy',
+          Icons.content_copy_rounded,
+          'Copy',
+          'Copy the selection (Ctrl+C)',
+          none,
+          copySelection,
+        ),
+        ToolAction(
+          'paste',
+          Icons.content_paste_rounded,
+          'Paste',
+          clip == null ? 'Paste (Ctrl+V)' : 'Paste ${clip.label} here (Ctrl+V)',
+          pasteWhy,
+          paste,
+        ),
+        null,
+        ToolAction(
+          'rename',
+          Icons.drive_file_rename_outline_rounded,
+          'Rename',
+          'Rename the selected item (F2)',
+          sel.length == 1 ? null : 'Select one item to rename',
+          renameFs,
+        ),
+        ToolAction(
+          'delete',
+          Icons.delete_outline_rounded,
+          'Delete',
+          _trashAvailable
+              ? 'Move the selection to the trash (Del)'
+              : 'Delete the selection (Del)',
+          none,
+          deleteFs,
+        ),
+        null,
+        ToolAction(
+          'compress',
+          Icons.archive_outlined,
+          'Compress',
+          'Compress the selection to a .zx archive',
+          none,
+          compressFs,
+        ),
+        ToolAction(
+          'extract',
+          Icons.unarchive_outlined,
+          'Extract',
+          'Extract the selected archives, each into its own folder',
+          archives == 0 ? 'Select archives first' : null,
+          extractFsArchives,
+        ),
+        null,
+        view,
+        ToolAction(
+          'properties',
+          Icons.info_outline_rounded,
+          'Properties',
+          'Size, dates, permissions and SHA-256 (Alt+Enter)',
+          null,
+          propertiesFs,
+        ),
+        settings,
+      ];
+    }
+    return [
+      ...start,
       ToolAction(
         'add',
         Icons.add_box_outlined,
@@ -1381,7 +1714,7 @@ class BrowserPageState extends State<BrowserPage> {
         Icons.unarchive_outlined,
         'Extract',
         'Extract files (Ctrl+E)',
-        none,
+        null,
         () => extract(),
       ),
       ToolAction(
@@ -1389,10 +1722,26 @@ class BrowserPageState extends State<BrowserPage> {
         Icons.fact_check_outlined,
         'Test',
         'Test the archive for errors',
-        none,
+        null,
         test,
       ),
       null,
+      ToolAction(
+        'copy',
+        Icons.content_copy_rounded,
+        'Copy',
+        'Copy the selection, to paste in a folder (Ctrl+C)',
+        m.selection.isEmpty ? 'Select items first' : null,
+        copySelection,
+      ),
+      ToolAction(
+        'paste',
+        Icons.content_paste_rounded,
+        'Paste',
+        'Paste into the archive (Ctrl+V)',
+        pasteWhy,
+        paste,
+      ),
       ToolAction(
         'delete',
         Icons.delete_outline_rounded,
@@ -1418,22 +1767,16 @@ class BrowserPageState extends State<BrowserPage> {
         newFolder,
       ),
       null,
+      view,
       ToolAction(
         'info',
         Icons.info_outline_rounded,
         'Info',
         'Archive properties and comment',
-        none,
+        null,
         info,
       ),
-      ToolAction(
-        'settings',
-        Icons.settings_outlined,
-        'Settings',
-        'Settings and desktop integration',
-        null,
-        openSettings,
-      ),
+      settings,
     ];
   }
 
@@ -1582,8 +1925,36 @@ class BrowserPageState extends State<BrowserPage> {
         SubmenuButton(
           menuChildren: [
             item(
+              'Cut',
+              () => copySelection(cut: true),
+              icon: Icons.content_cut_rounded,
+              shortcut: const SingleActivator(
+                LogicalKeyboardKey.keyX,
+                control: true,
+              ),
+            ),
+            item(
+              'Copy',
+              copySelection,
+              icon: Icons.content_copy_rounded,
+              shortcut: const SingleActivator(
+                LogicalKeyboardKey.keyC,
+                control: true,
+              ),
+            ),
+            item(
+              'Paste',
+              _clip == null ? null : paste,
+              icon: Icons.content_paste_rounded,
+              shortcut: const SingleActivator(
+                LogicalKeyboardKey.keyV,
+                control: true,
+              ),
+            ),
+            const Divider(height: 1),
+            item(
               'Select all',
-              m?.selectAll,
+              m?.selectAll ?? _fs.selectAll,
               icon: Icons.select_all_rounded,
               shortcut: const SingleActivator(
                 LogicalKeyboardKey.keyA,
@@ -1593,31 +1964,40 @@ class BrowserPageState extends State<BrowserPage> {
             item(
               'Copy path',
               m == null || m.selection.isEmpty ? null : copyPath,
-              icon: Icons.content_copy_rounded,
+              icon: Icons.link_rounded,
             ),
             item(
               'Rename',
-              rename,
+              m == null ? renameFs : rename,
               icon: Icons.drive_file_rename_outline_rounded,
-              why: _whyNot('rename'),
+              why: m == null ? null : _whyNot('rename'),
               shortcut: const SingleActivator(LogicalKeyboardKey.f2),
             ),
             item(
               'Delete',
-              delete,
+              m == null ? deleteFs : delete,
               icon: Icons.delete_outline_rounded,
-              why: _whyNot('delete'),
+              why: m == null ? null : _whyNot('delete'),
               shortcut: const SingleActivator(LogicalKeyboardKey.delete),
             ),
             item(
               'New folder',
-              newFolder,
+              m == null ? newFolderFs : newFolder,
               icon: Icons.create_new_folder_outlined,
-              why: _whyNot('folder'),
+              why: m == null ? null : _whyNot('folder'),
+            ),
+            item(
+              'Go to path',
+              () => _pathEdit.editing = true,
+              icon: Icons.edit_location_alt_outlined,
+              shortcut: const SingleActivator(
+                LogicalKeyboardKey.keyL,
+                control: true,
+              ),
             ),
             item(
               'Find in folder',
-              m == null ? null : _filterFocus.requestFocus,
+              _filterFocus.requestFocus,
               icon: Icons.search_rounded,
               shortcut: const SingleActivator(
                 LogicalKeyboardKey.keyF,
@@ -1720,6 +2100,46 @@ class BrowserPageState extends State<BrowserPage> {
         SubmenuButton(
           menuChildren: [
             CheckboxMenuButton(
+              key: const Key('menu-grid'),
+              value: st.gridView,
+              onChanged: (v) => st.gridView = v ?? false,
+              child: const Text('Icons and thumbnails'),
+            ),
+            CheckboxMenuButton(
+              key: const Key('menu-hidden'),
+              value: st.showHidden,
+              onChanged: (v) => _setShowHidden(v ?? false),
+              shortcut: const SingleActivator(
+                LogicalKeyboardKey.keyH,
+                control: true,
+              ),
+              child: const Text('Show hidden files'),
+            ),
+            SubmenuButton(
+              menuChildren: [
+                for (final (k, label) in const [
+                  (FsSort.name, 'Name'),
+                  (FsSort.size, 'Size'),
+                  (FsSort.type, 'Type'),
+                  (FsSort.modified, 'Modified'),
+                ])
+                  RadioMenuButton<FsSort>(
+                    value: k,
+                    groupValue: _fs.sort,
+                    onChanged: (v) => _fs.sortBy(v ?? k),
+                    child: Text(label),
+                  ),
+              ],
+              child: const Text('Sort folders by'),
+            ),
+            item(
+              'Refresh',
+              _refresh,
+              icon: Icons.refresh_rounded,
+              shortcut: const SingleActivator(LogicalKeyboardKey.f5),
+            ),
+            const Divider(height: 1),
+            CheckboxMenuButton(
               value: st.showPreview,
               onChanged: (v) => st.showPreview = v ?? true,
               child: const Text('Preview pane'),
@@ -1820,169 +2240,724 @@ class BrowserPageState extends State<BrowserPage> {
     ),
   );
 
+  /// The view of the folder shown: the file system or the archive, as
+  /// details, icons or (a phone) large rows; the Data view of a .zx.
+  Widget _mainView(bool narrow, ColorScheme cs) {
+    final m = _model;
+    final grid = _s.settings.gridView;
+    Widget withHint(Widget view, bool empty, String hint) => !empty
+        ? view
+        : Stack(
+            children: [
+              Positioned.fill(child: view),
+              IgnorePointer(
+                child: Center(
+                  child: Text(
+                    hint,
+                    style: TextStyle(color: cs.onSurfaceVariant),
+                  ),
+                ),
+              ),
+            ],
+          );
+    Widget gridOf(List<ViewItem> items, Set<String> sel, ViewHandlers h) {
+      final tile = narrow ? 104.0 : 116.0;
+      return LayoutBuilder(
+        builder: (context, box) {
+          _gridColumns = ((box.maxWidth - 16) / (tile + 4)).ceil().clamp(1, 99);
+          return ItemGrid(
+            items: items,
+            selection: sel,
+            handlers: h,
+            tile: tile,
+          );
+        },
+      );
+    }
+
+    if (m == null) {
+      final items = [for (final e in _fs.rows) _fsItem(e, cs)];
+      final h = _fsHandlers(narrow: narrow);
+      final hint = _fs.loading
+          ? 'Reading...'
+          : _fs.error ??
+                (_fs.inSearch
+                    ? (_fs.searching ? 'Searching...' : 'Nothing found')
+                    : _fs.filter.isNotEmpty
+                    ? 'No items match the filter'
+                    : 'This folder is empty');
+      if (grid) {
+        return withHint(gridOf(items, _fs.selection, h), items.isEmpty, hint);
+      }
+      if (narrow) {
+        return withHint(
+          TileList(items: items, selection: _fs.selection, handlers: h),
+          items.isEmpty,
+          hint,
+        );
+      }
+      return FsDetailsList(model: _fs, items: items, handlers: h);
+    }
+    if (_dataTab && _whyNotDb() == null) {
+      return DataView(
+        session: _db!,
+        picker: _s.picker,
+        exportDirectory: p.dirname(m.root.archive.path),
+      );
+    }
+    if (grid || narrow) {
+      final items = [for (final i in m.rows) _archiveItem(m, i, cs)];
+      final h = _archiveHandlers(m, narrow: narrow);
+      final hint = m.filter.isNotEmpty
+          ? 'No items match the filter'
+          : 'This folder is empty';
+      return withHint(
+        grid
+            ? gridOf(items, m.selection, h)
+            : TileList(items: items, selection: m.selection, handlers: h),
+        items.isEmpty,
+        hint,
+      );
+    }
+    return FileList(
+      model: m,
+      focusNode: _listFocus,
+      onOpen: openItem,
+      onContextMenu: _contextMenu,
+      dragData: (i) => _archiveDrag(m, i.path),
+      onDrop: (folder, t) =>
+          _dropTo(PasteDest.archive(m, folder?.path ?? m.dir), t),
+    );
+  }
+
+  void _toggleRecursive() {
+    _update(() => _recursive = !_recursive);
+    final q = _fsFilter.text;
+    if (_recursive) {
+      _fs.filter = '';
+      if (q.isNotEmpty) unawaited(_fs.startSearch(q));
+    } else {
+      _fs.stopSearch();
+      _fs.filter = q;
+    }
+  }
+
+  Widget _pathBar(bool narrow) {
+    final m = _model;
+    if (m != null) {
+      return PathBar(
+        model: m,
+        filter: _filter,
+        filterFocus: _filterFocus,
+        onBack: back,
+        onUp: up,
+        onLevel: goToLevel,
+        prefix: _fsCrumbs(p.dirname(m.root.archive.path), current: false),
+        edit: _pathEdit,
+        compact: narrow,
+      );
+    }
+    final cs = Theme.of(context).colorScheme;
+    return PathBarFrame(
+      crumbs: _fsCrumbs(_fs.dir, current: true),
+      edit: _pathEdit,
+      compact: narrow,
+      onBack: _fs.canBack ? back : null,
+      onForward: _fs.canForward ? forward : null,
+      onUp: _fs.canUp ? up : null,
+      backTooltip: 'Back (Alt+Left)',
+      upTooltip: 'Up one folder (Backspace)',
+      filter: _fsFilter,
+      filterFocus: _filterFocus,
+      filterHint: _recursive
+          ? 'Search below this folder (Enter)'
+          : 'Filter this folder',
+      filterActive: _fsFilter.text.isNotEmpty || _fs.inSearch,
+      onFilter: (v) {
+        if (!_recursive) {
+          _fs.filter = v;
+        } else if (v.isEmpty) {
+          _fs.stopSearch();
+        }
+      },
+      onFilterSubmit: (v) {
+        if (_recursive) unawaited(_fs.startSearch(v));
+        _listFocus.requestFocus();
+      },
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(width: 4),
+          IconButton(
+            key: const Key('search-recursive'),
+            isSelected: _recursive,
+            tooltip: _recursive
+                ? 'Searching below this folder: click to filter this folder only'
+                : 'Search in the sub folders too',
+            visualDensity: VisualDensity.compact,
+            color: _recursive ? cs.primary : null,
+            onPressed: _toggleRecursive,
+            icon: const Icon(Icons.account_tree_outlined, size: 20),
+          ),
+          if (_fs.searching)
+            IconButton(
+              key: const Key('search-stop'),
+              tooltip: 'Stop the search',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _fs.stopSearch(keepResults: true),
+              icon: const Icon(Icons.stop_circle_outlined, size: 20),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sidebar({bool drawer = false}) {
+    final m = _model;
+    void close() {
+      if (drawer) _scaffoldKey.currentState?.closeDrawer();
+    }
+
+    return Sidebar(
+      places: _places,
+      volumes: _volumes,
+      bookmarks: _s.settings.bookmarks,
+      recent: _s.settings.recent,
+      current: m == null ? _fs.dir : null,
+      onPlace: (path) {
+        close();
+        if (_model != null) _replaceModel(null);
+        unawaited(_fs.navigate(path));
+      },
+      onArchive: (path) {
+        close();
+        unawaited(openArchive(path));
+      },
+      onRemoveBookmark: _s.settings.removeBookmark,
+      onDrop: drawer ? null : (path, t) => _dropTo(PasteDest.fs(path), t),
+      bottom: !drawer && m != null && !_dataTab ? FolderTree(model: m) : null,
+    );
+  }
+
+  /// The status bar texts of the file system view.
+  (String, String) _fsStatus() {
+    final rows = _fs.rows;
+    final sel = _fs.selectedEntries;
+    int sum(Iterable<FsEntry> l) => l.fold(0, (a, e) => a + e.size);
+    final left = _fs.searching
+        ? 'Searching... ${rows.length} found'
+        : sel.isEmpty
+        ? '${rows.length} item${rows.length == 1 ? '' : 's'}'
+              '${_fs.inSearch ? ' found' : ''}, ${formatBytes(sum(rows))}'
+        : '${sel.length} of ${rows.length} selected, ${formatBytes(sum(sel))}';
+    final sp = _space;
+    final right = sp == null
+        ? ''
+        : '${formatBytes(sp.free)} free of ${formatBytes(sp.total)}';
+    return (left, right);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final m = _model;
     return ListenableBuilder(
-      listenable: Listenable.merge([_s.settings, ?m]),
-      builder: (context, _) {
-        Widget content;
-        if (m == null) {
-          content = WelcomeView(
-            recent: _s.settings.recent,
-            onOpen: _openDialog,
-            onNew: () => newArchive(),
-            onOpenRecent: openArchive,
-            onRemoveRecent: _s.settings.removeRecent,
+      listenable: Listenable.merge([_s.settings, _fs, ?m]),
+      builder: (context, _) => LayoutBuilder(
+        builder: (context, box) {
+          final narrow = box.maxWidth < 600;
+          return Focus(
+            autofocus: true,
+            onKeyEvent: _onKey,
+            child: DropTarget(
+              onDragEntered: (_) => setState(() => _dragging = true),
+              onDragExited: (_) => setState(() => _dragging = false),
+              onDragDone: _onDrop,
+              child: narrow ? _narrowPage(context) : _widePage(context),
+            ),
           );
-        } else if (_dataTab && _whyNotDb() == null) {
-          content = Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _viewSwitch(cs),
-              Divider(height: 1, color: cs.outlineVariant),
-              Expanded(
-                child: DataView(
-                  session: _db!,
-                  picker: _s.picker,
-                  exportDirectory: p.dirname(m.root.archive.path),
+        },
+      ),
+    );
+  }
+
+  Widget _widePage(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final m = _model;
+    final (fsLeft, fsRight) = m == null ? _fsStatus() : ('', '');
+    return Scaffold(
+      body: SafeArea(
+        child: Stack(
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  color: cs.surfaceContainerLow,
+                  child: Row(children: [Expanded(child: _menuBar())]),
                 ),
-              ),
-            ],
-          );
-        } else {
-          content = Column(
-            children: [
-              if (_whyNotDb() == null) ...[
-                _viewSwitch(cs),
+                Container(
+                  color: cs.surfaceContainerLow,
+                  child: Toolbar(actions: _toolActions()),
+                ),
                 Divider(height: 1, color: cs.outlineVariant),
-              ],
-              PathBar(
-                model: m,
-                filter: _filter,
-                filterFocus: _filterFocus,
-                onBack: m.canBack || m.parent != null ? back : null,
-                onUp: m.canUp || m.parent != null ? up : null,
-                onLevel: goToLevel,
-              ),
-              Divider(height: 1, color: cs.outlineVariant),
-              Expanded(
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: _treeWidth,
-                      child: ColoredBox(
-                        color: cs.surfaceContainerLowest,
-                        child: FolderTree(model: m),
-                      ),
-                    ),
-                    _splitter(
-                      (dx) => _treeWidth = (_treeWidth + dx).clamp(140, 520),
-                    ),
-                    Expanded(
-                      child: Focus(
-                        focusNode: _listFocus,
-                        child: FileList(
-                          model: m,
-                          focusNode: _listFocus,
-                          onOpen: openItem,
-                          onContextMenu: _contextMenu,
-                        ),
-                      ),
-                    ),
-                    if (_s.settings.showPreview) ...[
-                      _splitter(
-                        (dx) => _previewWidth = (_previewWidth - dx).clamp(
-                          200,
-                          720,
-                        ),
-                      ),
-                      SizedBox(
-                        width: _previewWidth,
-                        child: PreviewPane(
-                          model: m,
-                          db: m.parent == null ? _db : null,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
-          );
-        }
-        return Focus(
-          autofocus: true,
-          onKeyEvent: _onKey,
-          child: DropTarget(
-            onDragEntered: (_) => setState(() => _dragging = true),
-            onDragExited: (_) => setState(() => _dragging = false),
-            onDragDone: _onDrop,
-            child: Scaffold(
-              body: Stack(
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                if (m != null && _whyNotDb() == null) ...[
+                  _viewSwitch(cs),
+                  Divider(height: 1, color: cs.outlineVariant),
+                ],
+                _pathBar(false),
+                Divider(height: 1, color: cs.outlineVariant),
+                Expanded(
+                  child: Row(
                     children: [
-                      Container(
-                        color: cs.surfaceContainerLow,
-                        child: Row(children: [Expanded(child: _menuBar())]),
+                      SizedBox(
+                        width: _treeWidth,
+                        child: ColoredBox(
+                          color: cs.surfaceContainerLowest,
+                          child: _sidebar(),
+                        ),
                       ),
-                      Container(
-                        color: cs.surfaceContainerLow,
-                        child: Toolbar(actions: _toolActions()),
+                      _splitter(
+                        (dx) => _treeWidth = (_treeWidth + dx).clamp(160, 520),
                       ),
-                      Divider(height: 1, color: cs.outlineVariant),
-                      Expanded(child: content),
-                      StatusBar(
-                        model: m,
-                        message: _busy ? 'Working...' : null,
-                        trailing: m == null ? null : _versionPicker(m),
+                      Expanded(
+                        child: Focus(
+                          focusNode: _listFocus,
+                          child: _mainView(false, cs),
+                        ),
                       ),
+                      if (m != null &&
+                          !_dataTab &&
+                          _s.settings.showPreview) ...[
+                        _splitter(
+                          (dx) => _previewWidth = (_previewWidth - dx).clamp(
+                            200,
+                            720,
+                          ),
+                        ),
+                        SizedBox(
+                          width: _previewWidth,
+                          child: PreviewPane(
+                            model: m,
+                            db: m.parent == null ? _db : null,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
-                  if (_dragging)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: Container(
-                          margin: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: cs.primary.withValues(alpha: 0.08),
-                            border: Border.all(color: cs.primary, width: 2),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          alignment: Alignment.center,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 12,
-                            ),
-                            decoration: BoxDecoration(
-                              color: cs.primary,
-                              borderRadius: BorderRadius.circular(24),
-                            ),
-                            child: Text(
-                              m == null
-                                  ? 'Drop to open or to make a new archive'
-                                  : _whyNot('add') == null
-                                  ? 'Drop to add to ${m.dir.isEmpty ? m.displayName : m.dir}'
-                                  : 'Drop an archive to open it',
-                              style: TextStyle(
-                                color: cs.onPrimary,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
+                ),
+                StatusBar(
+                  model: m,
+                  message: _busy ? 'Working...' : null,
+                  leftText: fsLeft,
+                  rightText: fsRight,
+                  trailing: m == null ? null : _versionPicker(m),
+                ),
+              ],
+            ),
+            if (_dragging) _dropOverlay(cs),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _dropOverlay(ColorScheme cs) {
+    final m = _model;
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Container(
+          margin: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: cs.primary.withValues(alpha: 0.08),
+            border: Border.all(color: cs.primary, width: 2),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          alignment: Alignment.center,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            decoration: BoxDecoration(
+              color: cs.primary,
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Text(
+              m == null
+                  ? 'Drop to copy into ${p.basename(_fs.dir)}'
+                  : _whyNot('add') == null
+                  ? 'Drop to add to ${m.dir.isEmpty ? m.displayName : m.dir}'
+                  : 'Drop an archive to open it',
+              style: TextStyle(
+                color: cs.onPrimary,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ),
-        );
+        ),
+      ),
+    );
+  }
+
+  // ---- the phone layout ----
+
+  int get _selCount => _model?.selection.length ?? _fs.selection.length;
+
+  void _clearSel() {
+    final m = _model;
+    if (m == null) {
+      _fs.clearSelection();
+    } else {
+      m.clearSelection();
+    }
+  }
+
+  /// The system back button of a phone: the selection, the search, then
+  /// the history and the parent folders.
+  void _narrowBack() {
+    final m = _model;
+    if (_selCount > 0) {
+      _clearSel();
+    } else if (_narrowSearch) {
+      _closeNarrowSearch();
+    } else if (m != null) {
+      back();
+    } else if (_fs.canBack) {
+      back();
+    } else if (_fs.canUp) {
+      up();
+    } else {
+      unawaited(SystemNavigator.pop());
+    }
+  }
+
+  void _closeNarrowSearch() {
+    _update(() => _narrowSearch = false);
+    _fsFilter.clear();
+    _filter.clear();
+    _fs.stopSearch();
+    _fs.filter = '';
+    _model?.filter = '';
+  }
+
+  String _narrowTitle() {
+    final m = _model;
+    if (m == null) {
+      final b = p.basename(_fs.dir);
+      return b.isEmpty ? _fs.dir : b;
+    }
+    if (m.dir.isEmpty) return m.displayName;
+    return m.dir.substring(m.dir.lastIndexOf('/') + 1);
+  }
+
+  Widget _narrowPage(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final m = _model;
+    final n = _selCount;
+    final selecting = n > 0;
+    final clip = _clip;
+    PreferredSizeWidget appBar;
+    if (selecting) {
+      appBar = AppBar(
+        key: const Key('selection-bar'),
+        backgroundColor: cs.secondaryContainer,
+        leading: IconButton(
+          tooltip: 'Clear the selection',
+          icon: const Icon(Icons.close_rounded),
+          onPressed: _clearSel,
+        ),
+        title: Text('$n selected'),
+        actions: [
+          IconButton(
+            key: const Key('select-all'),
+            tooltip: 'Select all',
+            icon: const Icon(Icons.select_all_rounded),
+            onPressed: m?.selectAll ?? _fs.selectAll,
+          ),
+        ],
+      );
+    } else {
+      final ctrl = m == null ? _fsFilter : _filter;
+      appBar = AppBar(
+        title: _narrowSearch
+            ? TextField(
+                key: const Key('narrow-search'),
+                controller: ctrl,
+                autofocus: true,
+                decoration: InputDecoration(
+                  hintText: m == null
+                      ? 'Search below this folder'
+                      : 'Filter this folder',
+                  border: InputBorder.none,
+                ),
+                textInputAction: TextInputAction.search,
+                onChanged: (v) {
+                  if (m != null) {
+                    m.filter = v;
+                  } else if (v.isEmpty) {
+                    _fs.stopSearch();
+                  }
+                },
+                onSubmitted: (v) {
+                  if (m == null) unawaited(_fs.startSearch(v));
+                },
+              )
+            : Text(_narrowTitle(), overflow: TextOverflow.ellipsis),
+        actions: [
+          IconButton(
+            key: const Key('narrow-search-button'),
+            tooltip: _narrowSearch ? 'Close the search' : 'Search',
+            icon: Icon(
+              _narrowSearch ? Icons.close_rounded : Icons.search_rounded,
+            ),
+            onPressed: () => _narrowSearch
+                ? _closeNarrowSearch()
+                : _update(() => _narrowSearch = true),
+          ),
+          IconButton(
+            key: const Key('nav-up'),
+            tooltip: 'Up',
+            icon: const Icon(Icons.arrow_upward_rounded),
+            onPressed: m != null || _fs.canUp ? up : null,
+          ),
+          _narrowMenu(),
+        ],
+      );
+    }
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _narrowBack();
       },
+      child: Scaffold(
+        key: _scaffoldKey,
+        drawer: Drawer(
+          key: const Key('drawer'),
+          child: SafeArea(child: _sidebar(drawer: true)),
+        ),
+        appBar: appBar,
+        body: Stack(
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (m != null && _whyNotDb() == null) _viewSwitch(cs),
+                _pathBar(true),
+                Expanded(
+                  child: Focus(
+                    focusNode: _listFocus,
+                    child: _mainView(true, cs),
+                  ),
+                ),
+              ],
+            ),
+            if (_dragging) _dropOverlay(cs),
+          ],
+        ),
+        bottomNavigationBar: selecting
+            ? _selectionActions(cs)
+            : clip != null
+            ? _pasteBar(cs, clip)
+            : null,
+      ),
+    );
+  }
+
+  Widget _narrowMenu() {
+    final m = _model;
+    final st = _s.settings;
+    return PopupMenuButton<String>(
+      key: const Key('narrow-menu'),
+      tooltip: 'More',
+      onSelected: (v) async {
+        switch (v) {
+          case 'folder':
+            await (m == null ? newFolderFs() : newFolder());
+          case 'view':
+            st.gridView = !st.gridView;
+          case 'hidden':
+            _setShowHidden(!st.showHidden);
+          case 'sort-name':
+            _fs.sortBy(FsSort.name);
+          case 'sort-size':
+            _fs.sortBy(FsSort.size);
+          case 'sort-modified':
+            _fs.sortBy(FsSort.modified);
+          case 'new':
+            await newArchive();
+          case 'open':
+            await _openDialog();
+          case 'extract':
+            await extract();
+          case 'info':
+            await info();
+          case 'close':
+            closeArchive();
+          case 'properties':
+            await (m == null ? propertiesFs() : properties());
+          case 'settings':
+            await openSettings();
+        }
+      },
+      itemBuilder: (_) => [
+        PopupMenuItem(
+          value: 'folder',
+          enabled: m == null || _whyNot('folder') == null,
+          child: const Text('New folder'),
+        ),
+        PopupMenuItem(
+          value: 'view',
+          child: Text(st.gridView ? 'Show as list' : 'Show as grid'),
+        ),
+        CheckedPopupMenuItem(
+          value: 'hidden',
+          checked: st.showHidden,
+          child: const Text('Show hidden files'),
+        ),
+        if (m == null) ...[
+          const PopupMenuDivider(),
+          const PopupMenuItem(value: 'sort-name', child: Text('Sort by name')),
+          const PopupMenuItem(value: 'sort-size', child: Text('Sort by size')),
+          const PopupMenuItem(
+            value: 'sort-modified',
+            child: Text('Sort by date'),
+          ),
+        ],
+        const PopupMenuDivider(),
+        if (m != null) ...[
+          const PopupMenuItem(value: 'extract', child: Text('Extract...')),
+          const PopupMenuItem(value: 'info', child: Text('Archive info')),
+          const PopupMenuItem(value: 'close', child: Text('Close archive')),
+        ] else ...[
+          const PopupMenuItem(value: 'new', child: Text('New archive...')),
+          const PopupMenuItem(value: 'open', child: Text('Open archive...')),
+        ],
+        const PopupMenuItem(value: 'properties', child: Text('Properties')),
+        const PopupMenuItem(value: 'settings', child: Text('Settings')),
+      ],
+    );
+  }
+
+  /// The actions of the selection on a phone.
+  Widget _selectionActions(ColorScheme cs) {
+    final m = _model;
+    Widget action(String id, IconData icon, String label, VoidCallback? f) =>
+        Expanded(
+          child: InkWell(
+            key: Key('sel-$id'),
+            onTap: f,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, color: f == null ? cs.outline : cs.onSurface),
+                const SizedBox(height: 2),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: f == null ? cs.outline : cs.onSurface,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+    final one = _selCount == 1;
+    return BottomAppBar(
+      height: 64,
+      padding: EdgeInsets.zero,
+      child: Row(
+        children: [
+          action('copy', Icons.content_copy_rounded, 'Copy', copySelection),
+          action(
+            'cut',
+            Icons.content_cut_rounded,
+            'Cut',
+            m == null || _whyNot('delete') == null
+                ? () => copySelection(cut: true)
+                : null,
+          ),
+          action(
+            'delete',
+            Icons.delete_outline_rounded,
+            'Delete',
+            m == null ? deleteFs : (_whyNot('delete') == null ? delete : null),
+          ),
+          action(
+            'rename',
+            Icons.drive_file_rename_outline_rounded,
+            'Rename',
+            !one
+                ? null
+                : m == null
+                ? renameFs
+                : (_whyNot('rename') == null ? rename : null),
+          ),
+          if (m == null && _s.places.canShare)
+            action(
+              'share',
+              Icons.share_rounded,
+              'Share',
+              () => _s.places.share(_fs.selection.toList()),
+            ),
+          Expanded(
+            child: Builder(
+              builder: (bc) => InkWell(
+                key: const Key('sel-more'),
+                onTap: () {
+                  final box = bc.findRenderObject() as RenderBox;
+                  final pos = box.localToGlobal(Offset(box.size.width / 2, 0));
+                  if (m == null) {
+                    final sel = _fs.selectedEntries;
+                    _fsContextMenu(sel.isEmpty ? null : sel.first, pos);
+                  } else {
+                    final sel = m.selectedItems;
+                    _contextMenu(sel.isEmpty ? null : sel.first, pos);
+                  }
+                },
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.more_horiz_rounded, color: cs.onSurface),
+                    const SizedBox(height: 2),
+                    Text(
+                      'More',
+                      style: TextStyle(fontSize: 11, color: cs.onSurface),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// "3 items to copy  [Cancel] [Paste here]" at the bottom of a phone.
+  Widget _pasteBar(ColorScheme cs, Transfer clip) {
+    final why = _model == null ? null : _whyNot('add');
+    return BottomAppBar(
+      height: 64,
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              '${clip.label} to ${clip.cut ? 'move' : 'copy'}',
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          TextButton(
+            key: const Key('paste-cancel'),
+            onPressed: () => _setClip(null),
+            child: const Text('Cancel'),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.icon(
+            key: const Key('paste-here'),
+            onPressed: why == null ? paste : null,
+            icon: const Icon(Icons.content_paste_rounded, size: 18),
+            label: const Text('Paste here'),
+          ),
+        ],
+      ),
     );
   }
 }
