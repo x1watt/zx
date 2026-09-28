@@ -17,6 +17,7 @@ import '../../codec/deflate/deflate_coder.dart';
 import '../../codec/filters/bra.dart';
 import '../../codec/filters/delta.dart';
 import '../../codec/lz4/lz4.dart';
+import '../../codec/lz4/lz4_encode.dart';
 import '../../codec/lzma/lzma2_dec.dart' show lzma2DictSizeFromProp;
 import '../../codec/lzma/lzma_coder.dart';
 import '../../codec/lzo/lzo1x.dart';
@@ -29,6 +30,7 @@ import '../../io/streams.dart';
 import '../../zpaq/core/decompresser.dart' show decompressAll;
 import '../../zpaq/core/io.dart' show ZBuffer, MemoryReader;
 import '../../zpaq/core/method.dart' show compressBlock;
+import '../../util/xxhash.dart';
 import 'zx_format.dart';
 
 /// The encoder settings of one coder: the archive level (0 to 9) and the
@@ -228,6 +230,45 @@ void _registerExperimentalCodecs() {
 
 // ---------------------------------------------------------------------------
 // helpers
+
+// Decodes one LZ4 frame of independent blocks without checksums (what
+// lz4CompressFrame writes) straight into the output; null for any other
+// frame, which the stream decoder then reads. The hot path of database
+// pages (lib/src/db/engine).
+Uint8List? _lz4FrameFast(Uint8List p, int outSize) {
+  if (outSize < 0 || p.length < 11) return null;
+  if (p[0] != 0x04 || p[1] != 0x22 || p[2] != 0x4D || p[3] != 0x18) {
+    return null;
+  }
+  final flg = p[4], bd = p[5];
+  // version 01, independent blocks, no block or content checksum, no
+  // content size, no dictionary
+  if (flg != 0x60 || (bd & 0x8F) != 0) return null;
+  final bs = (bd >> 4) & 7;
+  if (bs < 4 || ((xxh32(p, 4, 6) >> 8) & 0xFF) != p[6]) return null;
+  final blockMax = 1 << (8 + 2 * bs);
+  final out = Uint8List(outSize);
+  var ip = 7, op = 0;
+  for (;;) {
+    if (ip + 4 > p.length) return null;
+    final v = p[ip] | (p[ip + 1] << 8) | (p[ip + 2] << 16) | (p[ip + 3] << 24);
+    ip += 4;
+    if (v == 0) break;
+    final len = v & 0x7FFFFFFF;
+    if (len > blockMax || ip + len > p.length) return null;
+    if ((v & 0x80000000) != 0) {
+      if (op + len > outSize) return null;
+      out.setRange(op, op + len, p, ip);
+      op += len;
+    } else {
+      final cap = outSize - op < blockMax ? outSize - op : blockMax;
+      op += lz4BlockDecompressInto(p, ip, len, out, op, cap);
+    }
+    ip += len;
+  }
+  if (op != outSize || ip != p.length) return null;
+  return out;
+}
 
 Uint8List _readOut(InStream s, int outSize) {
   if (outSize >= 0) {
@@ -435,8 +476,23 @@ List<ZxCodecInfo> _standardCodecs() => [
       ZxCodecInfo(
           id: ZxCodecId.lz4,
           name: 'LZ4',
-          decode: (payload, props, outSize) => _readOut(
-              Lz4FrameDecoderStream(MemoryInStream(payload)), outSize)),
+          // one LZ4 frame of independent blocks (lz4_encode.dart); the
+          // chain depth of the match finder is 2^(level / 2), or depth=N
+          encode: (input, cfg) {
+            var depth = 1 << (cfg.level.clamp(0, 9) ~/ 2);
+            for (final part in cfg.params.split(':')) {
+              if (part.startsWith('depth=')) {
+                depth = int.tryParse(part.substring(6)) ?? depth;
+              }
+            }
+            return ZxEncoded(
+                Uint8List.fromList(lz4CompressFrame(input, depth: depth)),
+                Uint8List(0));
+          },
+          decode: (payload, props, outSize) =>
+              _lz4FrameFast(payload, outSize) ??
+              _readOut(
+                  Lz4FrameDecoderStream(MemoryInStream(payload)), outSize)),
       ZxCodecInfo(
           id: ZxCodecId.lzo1x,
           name: 'LZO1X',

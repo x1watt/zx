@@ -63,8 +63,13 @@ abstract final class ZxFeature {
   static const appendable = 1 << 3;
   static const multiVolume = 1 << 4;
 
+  /// A database (zxdb) lives in the archive: Index record 0x49 and
+  /// database page blocks (type 7), section 16.
+  static const database = 1 << 5;
+
   /// The required features this reader implements.
-  static const known = solid | encryption | dedup | appendable | multiVolume;
+  static const known =
+      solid | encryption | dedup | appendable | multiVolume | database;
 
   static const names = {
     0: 'solid',
@@ -72,6 +77,7 @@ abstract final class ZxFeature {
     2: 'dedup',
     3: 'appendable',
     4: 'multi_volume',
+    5: 'database',
   };
 }
 
@@ -94,6 +100,10 @@ abstract final class ZxBlockType {
   /// A chunk run of the dedup writer (section 6.4.1): not a data block,
   /// not in the block table; readers skip it.
   static const chunkRun = 6;
+
+  /// Database pages (section 16): not a data block, not in the block
+  /// table; located through the page map of Index record 0x49.
+  static const dbPages = 7;
 }
 
 /// check_type values.
@@ -145,6 +155,7 @@ abstract final class ZxRec {
   static const generationList = 0x44;
   static const volumeTable = 0x45;
   static const requirements = 0x46;
+  static const database = 0x49;
 
   // entry attributes
   static const path = 0x51;
@@ -1268,6 +1279,9 @@ class ZxIndex {
   int requiredFeatures = 0;
   int optionalFeatures = 0;
 
+  /// The database root (record 0x49, section 16), null without one.
+  ZxDbRoot? database;
+
   /// Non-critical records this reader does not know.
   final List<ZxRecord> other = [];
 
@@ -1390,6 +1404,8 @@ class ZxIndex {
       final fp = blockTableHash;
       w.rec(ZxRec.chunkRuns, (x) => cr.write(x, fp, multiVolume));
     }
+    final db = database;
+    if (db != null) w.rec(ZxRec.database, db.write);
     for (final o in other) {
       w.record(o.type, o.payload);
     }
@@ -1433,6 +1449,8 @@ class ZxIndex {
           idx.chunkTable = ZxChunkTable.read(r);
         case ZxRec.chunkRuns:
           idx.chunkRuns = ZxChunkRuns.read(r, multiVolume);
+        case ZxRec.database:
+          idx.database = ZxDbRoot.read(r);
         case ZxRec.prevIndex:
           final vol = multiVolume ? r.vint() : 0;
           idx.previous = ZxIndexLoc(vol, r.vint(), r.vint());
@@ -1474,6 +1492,181 @@ class ZxIndex {
       }
     }
     return idx;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Database root and page locations (section 16)
+
+/// Where a database page is: the database page block (type 7) at
+/// [blockOffset] (the marker; [blockSize] bytes with its header) and the
+/// page's bytes at [inOffset], [length] bytes long, in its unpacked
+/// payload. [flags]: bit 0 set while the page is in the write buffer (not
+/// folded yet), bits 16 to 31 the number of its tree (0xFFFF: unknown).
+class ZxDbLoc {
+  final int blockOffset;
+  final int blockSize;
+  final int inOffset;
+  final int length;
+  final int flags;
+  const ZxDbLoc(
+      this.blockOffset, this.blockSize, this.inOffset, this.length, this.flags);
+
+  /// Page flag: in the write buffer (coded with a fast codec, to be folded).
+  static const unfolded = 1;
+
+  bool get isUnfolded => (flags & unfolded) != 0;
+  int get treeTag => flags >> 16;
+
+  /// A key that identifies the page in its file (for caches).
+  int get cacheKey => blockOffset * 4194304 + inOffset;
+
+  ZxDbLoc withBlock(int offset, int size) =>
+      ZxDbLoc(offset, size, inOffset, length, flags);
+
+  /// Size of an entry of a map page.
+  static const entrySize = 24;
+
+  /// Writes the 24 bytes of a map page entry at b[off].
+  void writeEntry(Uint8List b, int off) {
+    setUint64LE(b, off, blockOffset);
+    setUint32LE(b, off + 8, blockSize);
+    setUint32LE(b, off + 12, inOffset);
+    setUint32LE(b, off + 16, length);
+    setUint32LE(b, off + 20, flags);
+  }
+
+  /// The entry at b[off] of a map page, or null for no page.
+  static ZxDbLoc? readEntry(Uint8List b, int off) {
+    final o = getUint64LE(b, off);
+    if (o == 0) return null;
+    return ZxDbLoc(o, getUint32LE(b, off + 8), getUint32LE(b, off + 12),
+        getUint32LE(b, off + 16), getUint32LE(b, off + 20));
+  }
+
+  void write(ZxBytes x) {
+    x.vint(blockOffset);
+    x.vint(blockSize);
+    x.vint(inOffset);
+    x.vint(length);
+    x.vint(flags);
+  }
+
+  static ZxDbLoc read(ZxRead r) {
+    final o = r.vint(), s = r.vint(), i = r.vint(), l = r.vint();
+    final f = r.vint();
+    if (o == 0 || s == 0) zxDamaged('bad database page location');
+    return ZxDbLoc(o, s, i, l, f);
+  }
+}
+
+/// The root of the database of a generation (Index record 0x49, section
+/// 16): the page map (map pages of [mapPageEntries] locations each), the
+/// catalog tree, the page ids free for reuse.
+class ZxDbRoot {
+  /// The layout version of the database (1).
+  final int version;
+
+  /// Page ids are 1 to [nextPageId] - 1.
+  final int nextPageId;
+
+  /// The page id of the root of the catalog tree (0: no tree yet).
+  final int catalogRoot;
+
+  /// The number the next tree gets (catalog).
+  final int nextTreeId;
+
+  /// Bytes of pages in the write buffer (not folded).
+  final int unfoldedBytes;
+
+  /// The map pages: map page k lists pages k * 1024 to k * 1024 + 1023;
+  /// null for a map page without pages.
+  final List<ZxDbLoc?> maps;
+
+  /// Free page ids as flat (start, length) runs, sorted.
+  final List<int> free;
+
+  const ZxDbRoot(
+      {this.version = 1,
+      required this.nextPageId,
+      required this.catalogRoot,
+      required this.nextTreeId,
+      this.unfoldedBytes = 0,
+      required this.maps,
+      required this.free});
+
+  static const int mapPageLog2 = 10;
+  static const int mapPageEntries = 1 << mapPageLog2;
+
+  void write(ZxBytes x) {
+    x.vint(version);
+    x.vint(nextPageId);
+    x.vint(catalogRoot);
+    x.vint(nextTreeId);
+    x.vint(unfoldedBytes);
+    x.vint(mapPageLog2);
+    x.vint(maps.length);
+    for (final m in maps) {
+      if (m == null) {
+        x.vint(0);
+      } else {
+        m.write(x);
+      }
+    }
+    x.vint(free.length ~/ 2);
+    var prev = 0;
+    for (var i = 0; i < free.length; i += 2) {
+      x.vint(free[i] - prev);
+      x.vint(free[i + 1]);
+      prev = free[i] + free[i + 1];
+    }
+  }
+
+  static ZxDbRoot read(ZxRead r) {
+    final version = r.vint();
+    if (version != 1) {
+      throw SevenZipException(
+          'zx: database layout version $version is not supported '
+          '(written by a newer zx?)',
+          SevenZipError.unsupported);
+    }
+    final next = r.vint(), cat = r.vint(), nt = r.vint(), unf = r.vint();
+    if (r.vint() != mapPageLog2) zxDamaged('bad database map page size');
+    final n = r.count(1);
+    final maps = <ZxDbLoc?>[];
+    for (var i = 0; i < n; i++) {
+      final o = r.vint();
+      if (o == 0) {
+        maps.add(null);
+      } else {
+        final s = r.vint(), io = r.vint(), l = r.vint(), f = r.vint();
+        maps.add(ZxDbLoc(o, s, io, l, f));
+      }
+    }
+    final fc = r.count(2);
+    final free = <int>[];
+    var prev = 0;
+    for (var i = 0; i < fc; i++) {
+      final st = prev + r.vint(), len = r.vint();
+      if (len == 0) zxDamaged('bad database free list');
+      free
+        ..add(st)
+        ..add(len);
+      prev = st + len;
+    }
+    if (next < 1 ||
+        cat >= next ||
+        (next > 1 && (maps.length << mapPageLog2) <= next - 1)) {
+      zxDamaged('bad database root');
+    }
+    return ZxDbRoot(
+        version: version,
+        nextPageId: next,
+        catalogRoot: cat,
+        nextTreeId: nt,
+        unfoldedBytes: unf,
+        maps: maps,
+        free: free);
   }
 }
 

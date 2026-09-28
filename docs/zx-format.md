@@ -113,7 +113,8 @@ generation need them (section 6.4).
 | 2 | dedup | Entries share data chunks (section 6.4). |
 | 3 | appendable | Several Index/Footer generations (section 9). |
 | 4 | multi_volume | Section 10. |
-| 5..63 | | Reserved for future versions. |
+| 5 | database | A database lives in the archive: Index record 0x49 and database page blocks (section 16). |
+| 6..63 | | Reserved for future versions. |
 
 `optional_features`:
 
@@ -153,6 +154,7 @@ BlockHeader =
 | 4 | padding (payload ignored) |
 | 5 | Index (section 6) |
 | 6 | chunk run (section 6.4.1): an aid to writers, not a data block |
+| 7 | database pages (section 16): not a data block |
 
 Unknown block types MUST be treated as an error unless the block lies
 outside every extent the Index references (then it MAY be skipped). A
@@ -271,6 +273,7 @@ location is given by the Footer. The content is a sequence of records:
 | 0x44 | no | generation list (section 9.1) |
 | 0x45 | yes | volume table (section 10.2) |
 | 0x46 | no | requirements of this generation: version min_reader_version, u64 required_features, u64 optional_features |
+| 0x49 | yes | database root (section 16.1) |
 
 Chain declarations and the block table MUST appear before the first entry.
 A reader MUST check the requirements record (section 3.1) before it reads
@@ -293,7 +296,8 @@ without scanning. Block numbers used by entries are indexes in this
 table.
 
 The table lists the data blocks (types 0, 1 and 3) of the file, in file
-order, not the metadata blocks (types 2, 4, 5 and 6). In an appendable file the table of each
+order, not the metadata blocks (types 2, 4, 5 and 6) nor the database
+page blocks (type 7). In an appendable file the table of each
 generation lists every data block written up to that generation: block
 numbers stay the same across generations, and a new generation appends
 its blocks at the end of the table.
@@ -730,6 +734,10 @@ compacted. Compaction is an operation of the writer, not a structure:
   a chunk table of zx 0.5.0) that lie whole in referenced bytes are
   written at their new places as runs for its Index; the earlier kept
   generations get none (only the last Index serves a writer).
+- A database (section 16) is compacted with the files: the page blocks
+  that the map pages of the kept generations use are copied whole, and
+  the map pages are written again (each distinct one once) with the new
+  places; the database roots of the kept Indexes point to them.
 - The compacted file keeps the archive_id and restarts the generation
   history at the kept generations (their numbers and times are preserved).
   zx writes the blocks, then for each kept generation, oldest first, its
@@ -870,7 +878,7 @@ unpacked size when it is the output size (section 4.2).
 | 6 | BZip2 | none | a .bz2 stream | read, write |
 | 7 | Deflate | none | raw Deflate (RFC 1951) | read, write |
 | 8 | zpaq | none, or the zpaq method that wrote the block as UTF-8 text (`1` to `5`, or an expert method such as `x4.3ci1`); decoders ignore it (the zpaq block header, with its config, is inside the payload) | one zpaq block (libzpaq level 1 or 2 stream) | read, write |
-| 9 | LZ4 | none | LZ4 frames | read |
+| 9 | LZ4 | none | LZ4 frames (zx writes one frame of independent blocks, without checksums) | read, write |
 | 10 | LZO1X | none | an LZO1X stream with its end marker | read |
 | 0x40 | BCJ x86 | none, or u32 start offset | filtered data | read, write |
 | 0x41 | ARM | as 0x40 | as 0x40 | read, write |
@@ -1043,3 +1051,176 @@ settled here:
 25. Section 10.4 said that the free space is checked before each volume
     without saying how when the system does not tell: the volume reserves
     its space as it is written.
+
+Changes made for zxdb, the database in the archive (the format version
+does not change; the new required feature `database` makes readers that
+do not know it refuse the generations that hold a database, and the
+generations before the first database commit stay readable by them):
+
+26. **Feature bit 5, `database`** (section 3.2), required by every
+    generation whose Index holds record 0x49. zx sets it in the
+    requirements record (0x46) of such generations; the Header of an
+    archive made for a database does not have it (its first generation
+    holds no database).
+27. **Block type 7, database pages** (section 16.2): pages of the
+    database, coded, checked and encrypted as data blocks, outside the
+    block table (so that a commit does not grow the block table that
+    every Index holds) and located by the page map.
+28. **Index record 0x49, database root** (section 16.1), critical: the
+    page map, the catalog, the free page ids. File updates carry it
+    unchanged; a compaction rewrites its map pages (section 9.2).
+29. **LZ4 is written** (section 11): one frame of independent blocks,
+    without checksums (the block check covers the data). It is the codec
+    of the database's write buffer and of `fast` trees. zx 0.5.0 already
+    reads such blocks.
+30. **Writers take a lock** (informative, zx): a database writer, an
+    update and a compaction of an archive that has a database (or whose
+    lock file exists) hold `<archive>.zx-lock` (an exclusive lock of the
+    file, per process, with a marker file per process for its isolates),
+    and an update or a compaction refuses an archive that another writer
+    appended to after it was opened.
+
+## 16. Database (zxdb)
+
+Required feature `database`. An archive may hold a database next to its
+files (docs/zxdb-design.md): ordered maps of byte strings ("trees") kept
+in copy-on-write B+trees of logical pages. Every database commit is a
+generation of the archive (section 9): it appends the page blocks of the
+pages it wrote, the map pages that changed, and an Index whose record
+0x49 is the new database root; the entries of the files are those of the
+previous generation. A generation that changes only files carries record
+0x49 unchanged. The database of generation N is read from the record
+0x49 of its Index, so every generation keeps its database state (time
+travel), until a compaction.
+
+A database lives in single-file archives only (no `multi_volume`: page
+locations are offsets in the file).
+
+### 16.1 Database root (Index record 0x49, critical)
+
+```
+Database =
+  vint version            (1)
+  vint next_page_id       (page ids are 1 to next_page_id - 1)
+  vint catalog_root       (page id of the catalog tree's root, 0: none)
+  vint next_tree_id       (the number of the next tree)
+  vint unfolded_bytes     (bytes of pages in the write buffer, 16.5)
+  vint map_log2           (10: 1024 page ids per map page)
+  vint map_count,         map_count x MapRef
+  vint free_count,        free_count x ( vint start_delta, vint length )
+MapRef = vint 0 (no map page, its ids have no page) | Loc
+Loc    = vint block_offset (not 0), vint block_size, vint in_offset,
+         vint length, vint flags
+```
+
+- A reader MUST refuse a version it does not know. `map_count` is
+  `((next_page_id - 1) >> 10) + 1` (0 when next_page_id is 1); map page
+  `k` gives the places of page ids `k * 1024` to `k * 1024 + 1023` (id 0
+  is never a page).
+- A Loc is where a page is: the database page block whose marker is at
+  `block_offset` and which is `block_size` bytes long (header included),
+  and the page's `length` bytes at `in_offset` of its unpacked payload.
+  `flags` as in the map pages (16.3).
+- The free list holds the page ids that the generation does not use and
+  that a later commit may give to new pages, as runs: `start` is the end
+  of the previous run (0 for the first) plus `start_delta`. A page id
+  freed by a generation may name another page in a later one; each
+  generation reads its own map, so earlier generations are not affected.
+
+### 16.2 Database page blocks (block type 7)
+
+A block of type 7 holds pages one after the other; its payload has no
+other structure (the Locs give the pages). It is coded with a chain
+declared in the Index (record 0x10), its check is that of a data block,
+and in an archive with the `encryption` feature it is encrypted as a
+data block (section 7). It is not in the block table and no extent
+points into it; a sequential reader skips it (section 4).
+
+zx (informative) writes at commit blocks of about 64 KiB of pages (LZ4
+for the write buffer, 16.5), and at fold blocks of about 256 KiB coded
+with the tree's chain; the unit of a cold read is a block.
+
+### 16.3 Map pages
+
+A map page is 24,576 bytes, the Loc of 1024 page ids as fixed entries:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u64 | block_offset (0: no page for this id) |
+| 8 | u32 | block_size |
+| 12 | u32 | in_offset |
+| 16 | u32 | length |
+| 20 | u32 | flags |
+
+`flags`: bit 0 set while the page is in the write buffer (16.5); bits 16
+to 31 the number of the page's tree (0 for the catalog, 0xFFFF for a tree
+numbered 0xFFFF or more); the other bits are 0. Map pages are stored in
+database page blocks like the other pages (zx: LZ4) and located by the
+MapRefs of the root.
+
+### 16.4 Tree pages
+
+```
+Leaf     = u8 1, vint count, count x ( vint shared, vint suffix_length,
+           bytes(suffix_length) suffix, vint vtag, value )
+Branch   = u8 2, vint count, vint child_0,
+           count x ( vint shared, vint suffix_length,
+                     bytes(suffix_length) suffix, vint child )
+Overflow = u8 3, bytes (a part of a value)
+```
+
+- Keys are compared as unsigned bytes, a shorter key first on a common
+  prefix. A key is `shared` bytes of the previous key of the same page
+  (0 for the first) followed by `suffix`. Keys of a page are strictly
+  increasing.
+- Leaf values: `vtag` even: the value is the next `vtag >> 1` bytes; odd:
+  the value is `vtag >> 1` bytes long and stored in overflow pages:
+  `vint page_count`, then `page_count` page ids (vint), whose data
+  concatenated in order is the value. Several values may name the same
+  overflow pages (zx stores identical large values once: the tree
+  `zx$blob` maps `'s'` and the SHA-256 of a value to `'p'` and its first
+  page id as a u64 big endian, and that key to vint references, vint
+  length, vint page count, the page ids and the SHA-256; readers do not
+  need it).
+- A branch with `count` keys has `count + 1` children: `child_0` holds the
+  keys lower than `key_1`, `child_i` those at least `key_i` and lower than
+  `key_i+1`. A separator need not be a key of a leaf.
+- The size of a page is not limited by the format; zx keeps tree pages
+  under the tree's page size (4 KiB to 64 KiB, 16 KiB by default), puts
+  values longer than a quarter of it in overflow pages of 64 KiB, and
+  keys are at most 1024 bytes.
+
+### 16.5 The catalog, the write buffer
+
+The catalog is a tree (root `catalog_root`): key the UTF-8 name of a
+tree, value
+
+```
+CatalogRecord = vint version (1), vint tree_number, vint root_page_id
+                (0: empty), vint entry_count, vint page_size (0: the
+                store's default), vint has_compression,
+                [ string compression, when has_compression is 1 ]
+```
+
+`compression` names the tree's policy: `store`, `fast`, `balanced`,
+`max`, `ultra`, or a coder chain as the `-m` switch writes it (for
+example `zcm:level=7:mem=1g`, coders separated by `+`). A reader does not
+need it: every page block names its chain.
+
+Write buffer (informative, zx): pages of trees whose policy is not
+`store` or `fast` are written at commit with LZ4 and flag bit 0 set, and
+`unfolded_bytes` counts them; a fold codes them again with the tree's
+chain in larger blocks and clears the flag, in a generation of its own.
+A reader reads both alike.
+
+Tree names starting with `zx$` are the database's own (`zx$kv`,
+`zx$blob`); the other `zx_` trees belong to the system and metadata
+tables (docs/zxdb-design.md).
+
+### 16.6 Key-value stores (informative, zx)
+
+A KV store `name` is the tree `kv:name`; its settings are in the tree
+`zx$kv` (key the name, value vint 1, vint default ttl in ms or 0, vint
+flags: bit 0 some value has a ttl). A stored value is `u8 0, value` or
+`u8 1, u64 expiry (ms since 1970-01-01 UTC), value`; a value whose expiry
+has passed is absent, and a fold or a compaction removes it.

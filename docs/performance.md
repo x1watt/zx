@@ -468,6 +468,31 @@ Findings:
   a quarter each, and PPMd at level 9 a quarter. Peak RSS stays below 190
   MiB on these inputs.
 
+### zxdb (the database in a .zx archive)
+
+`tool/zxdb_bench.dart` (AOT, `durable: false`, 16 KiB pages, 128 MiB page
+cache, values of about 150 bytes of JSON); the table with the SQLite
+comparison and the TLSH band index is in docs/zxdb-design.md section 11.3.
+
+| Operation | Result |
+|---|---|
+| KV get, 10k / 100k hot keys spread over 1M | 1.4 / 2.6 us |
+| KV get, cold (caches dropped) | 133 us |
+| KV put, batches of 10k, ascending / random into 1M | 267k / 10.8k puts/s |
+| size, 20k JSON records (2.4 MiB): sqlite3 / fast / balanced / max | 2,680 / 638 / 272 / 158 KiB |
+| LZ4 encode (single probe, text) / decode | about 100 MB/s / 6.7 GB/s |
+
+- A cold read decodes the whole page block of the page (64 KiB at commit,
+  256 KiB after a fold) and checks it (xxHash64): about 60 us for LZ4
+  blocks, seconds for zcm blocks.
+- Random writes into a tree much larger than a batch rewrite about one
+  page per key per commit (copy-on-write): larger batches, sorted keys,
+  or smaller pages (`TreeOptions.pageSize`) help; a vacuum takes the
+  space back.
+- The page cache keeps pages flat (keys and values in two buffers):
+  before that, one object per key and value made 100k hot keys of 1M cost
+  50 us a get (the working set did not fit).
+
 ## 2. Rules for keeping it fast
 
 - The hot loops follow rule 3 of `docs/architecture.md`: typed lists,

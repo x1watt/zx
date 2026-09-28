@@ -1,5 +1,29 @@
 ## Unreleased
 
+- **zxdb storage engine** (`lib/src/db/engine`, docs/zxdb-design.md
+  section 11): a database inside any `.zx` archive, next to its files.
+  Copy-on-write B+trees of logical pages (4 to 64 KiB, prefix-compressed
+  keys, large values in overflow pages) named by id through a page map
+  versioned per generation; every commit is an archive generation
+  (snapshots of any generation or time, crash safe), file updates and
+  database commits interleave in one archive under a writer lock shared
+  by processes and isolates. Pages go to a write buffer coded with LZ4 at
+  commit and are folded to their tree's compression (`store`, `fast`,
+  `balanced`, `max` = zcm, `ultra`, or a chain) by worker isolates,
+  without holding the lock; vacuum compacts the archive (database
+  included) and can recompress everything. Large transactions spill their
+  pages to the file. Format: feature bit `database`, block type 7, Index
+  record 0x49 (docs/zx-format.md section 16).
+- **Key-value stores** (`ZxDatabase.open(path).kv(name)`, `kv.dart`):
+  get, put, delete, prefix and range scans, batches, `watch`, TTL per
+  store or per key, group commit; `ZxDatabaseAsync` runs the database in
+  a worker isolate for Flutter apps. `ZxMemoryStore` implements the
+  storage contract in memory.
+- **LZ4 encoder** (`codec/lz4/lz4_encode.dart`): the LZ4 block and frame
+  formats with a hash chain match finder; `.zx` writes LZ4 now (codec 9).
+- **.zx updates and compaction** take the writer lock of an archive that
+  has a database (or a lock file), refuse an archive another writer
+  changed since it was opened, and compaction keeps the database.
 - **zcm 1.0**: zcm is experimental and its stream version is fixed at 1
   (it is not bumped when the output changes; streams of earlier builds
   may not decode). The budget of small inputs follows the level

@@ -39,8 +39,10 @@ Read it together with `docs/performance.md`.
    `List<int>`. Dart ints are 64-bit: mask with `& 0xFFFFFFFF` where C
    relies on UInt32 wraparound. No `>>>` needed on masked values.
 4. Synchronous APIs only in `lib/src`, except `api.dart`, `zx_api.dart`,
-   `zx_worker.dart`, `parallel.dart`, `pool.dart` and
-   `codec/zcm/zcm_parallel.dart` (section 15) (and the isolate
+   `zx_worker.dart`, `parallel.dart`, `pool.dart`,
+   `codec/zcm/zcm_parallel.dart` (section 15) and `db/zxdb_async.dart`
+   (section 17; `db/zxdb.dart` is synchronous but gives a Stream of
+   changes and commits a group commit by a Timer) (and the isolate
    based API of the vendored zpaq engine, `lib/src/zpaq`, section 14,
    which zx does not call).
    Streams are the interfaces in `lib/src/io/streams.dart`. Errors are
@@ -1002,3 +1004,109 @@ does not apply to it.
   one pass reader does not, but gives every version). The fallback of a
   locked archive and the Windows sharing rules are simulated in the tests,
   not run on Windows.
+
+## 17. zxdb: the database in a .zx archive (zx extension)
+
+Designed in `docs/zxdb-design.md`; the container structures are section
+16 of `docs/zx-format.md`. Like the .zx code, it is written from its
+specification (rule 2 of section 2, a C name above each function, does
+not apply).
+
+- **Layers** (`lib/src/db`): `storage_api.dart` is the contract every
+  part of the database is written against (`ZxStore`, `ZxSnapshot`,
+  `ZxWriteTxn`, `ZxTree`, `ZxCursor`); `memory_store.dart` implements it
+  in memory (tests, and the reference of the engine's tests);
+  `engine/` implements it in the archive; `kv.dart` and `zxdb.dart`
+  (`ZxDatabase`) are the public API of the key-value stores and of the
+  database; `zxdb_async.dart` runs `ZxDatabase` in a worker isolate.
+  `sql/` (the SQL engine), `system/` (system tables, TLSH band index) and
+  `meta/` (metadata tables, full-text index) use the contract only.
+- **Engine files** (`lib/src/db/engine`): `page.dart` (the decoded pages
+  and their bytes: leaves and branches with prefix-compressed keys,
+  overflow pages), `btree.dart` (the copy-on-write B+tree over page ids:
+  get, put with splits, delete with merges, the cursor), `dbfile.dart`
+  (the archive file: Index blocks, page blocks with the block cache, map
+  pages, the page cache, `DbView` that resolves page ids of one
+  generation), `store.dart` (`ZxDbStore`: open or create, snapshots, the
+  write transaction with its spill of changed pages, the commit as an
+  archive generation, fold, vacuum), `compression.dart` (the policy
+  names and their chains), `cache.dart` (the LRU with a byte budget).
+- **Pages by id.** A tree names its pages by id; the page map of each
+  generation (map pages of 1024 locations, listed by the root in Index
+  record 0x49) says where each id's current bytes are. A write
+  transaction changes copies of the pages it touches under the same ids,
+  so a change to a leaf does not rewrite its parents (only splits and
+  merges do), and a fold or a compaction moves pages by rewriting the map
+  pages only. Committed pages never change: snapshots of any generation
+  read their own map.
+- **Commit.** One archive generation: the changed pages in page blocks
+  (type 7), grouped by tree (about 64 KiB of pages a block), the changed
+  map pages, then the Index of the last generation with the new database
+  root (file entries, chunk runs, generation list carried) and a Footer;
+  a crash before the Footer leaves the previous generation current and
+  the next commit cuts the partial one. The Index is stored when it is
+  small and coded with LZMA2 level 1 (the Header's metadata chain)
+  otherwise. `durable` flushes the file (fsync) at each commit. The pages
+  written stay in the page cache as they are.
+- **Big transactions.** When the changed pages of a transaction pass
+  `txnMemoryBytes` (128 MiB), they are written to the file after the last
+  Footer (they become part of the coming generation) and read back
+  through the page cache; a rollback cuts them and clears the caches.
+  Readers see no change until a valid Footer ends the file.
+- **Writer lock.** `zx_lock.dart`: an exclusive lock on
+  `<archive>.zx-lock` for processes, and a marker file per process
+  (`<archive>.zx-lock.<pid>`, exclusive create, holding the pid and the
+  process start time) for the isolates of one process, because the
+  locks of dart:io belong to the process. The database writer holds it
+  from `begin` to the commit; the handler's update in place and its
+  compaction take it for an archive that has a database or a lock file,
+  and refuse to write when another writer appended since they opened the
+  archive (`zxChangedSince`).
+- **Reads.** A get walks the tree through `DbView` (a per view memo of
+  page ids, then the page cache keyed by the page's place in the file,
+  then the block cache of decoded page blocks, then the file). Other
+  writers' commits are seen by checking the file's size and time at most
+  every `refreshMicros` (1 ms); `begin`, fold and vacuum always check.
+- **Write buffer and fold.** Pages of trees whose policy is not `store`
+  or `fast` are written at commit with LZ4 (the encoder of
+  `codec/lz4/lz4_encode.dart`, single probe) and a flag; `fold()` codes
+  them again with the tree's chain (zcm for `max`) in 256 KiB blocks by
+  `SyncJobPool` workers, whose count follows the memory limit
+  (`zxWorkerMemory`), without the writer lock; it then takes the lock and
+  writes the blocks in a generation of their own for the pages that no
+  commit changed meanwhile. `ZxDatabaseAsync` starts a fold in a second
+  isolate when the buffer passes `autoFoldBytes` after a commit.
+- **Vacuum** folds (with `recompress` every page, with `ultra` the
+  strongest chain), then compacts with `zxCompact`, which copies the page
+  blocks the kept generations use and rewrites their map pages (section
+  9.2 of the format), into `<archive>.zx-compact`, renamed over the
+  archive.
+- **SQL** (`ZxDatabase.sql`): a `ZxSql` session with the system and
+  metadata tables, and the KV stores as tables (`kv_sql.dart`), with
+  CREATE KV STORE, DROP KV STORE and VACUUM. The commit hooks are
+  `ZxDbStore.beforeCommit` and `afterCommit`, so SQL commits run them.
+- **KV stores** (`kv.dart`): the tree `kv:<name>`, values with a one byte
+  header (and an expiry for TTLs), settings in the tree `zx$kv`. Writes
+  go through `ZxDatabase`: one transaction per call, or with
+  `groupCommit` one pending transaction committed when its window has
+  passed (at the next write, by a timer, by `flush`); `watch` streams the
+  changes after their commit (this process only). Every commit through
+  `ZxDatabase` creates the metadata tables in a new database and brings
+  the TLSH band index up to date when a file generation came since.
+- **Hot paths.** A page read from the file is flat: its full keys in one
+  buffer and its inline values in another, with `Int32List` offsets, so
+  decoding allocates three arrays and a get compares keys in place and
+  returns a view of the value (the buffers are copies, so a cached page
+  does not keep its block alive). The transaction turns the pages it
+  changes into lists. LZ4 reads use a frame fast path that decodes
+  straight into the block (`zx_codecs.dart`), and the LZ4 encoder keeps
+  its tables per isolate.
+- **Limits.** One writer at a time; a database lives in a single-file
+  archive (no volumes). Every commit writes a whole Index (the entries of
+  the archive's files and the generation list): archives with many files
+  or many generations make each commit larger (group commit and vacuum
+  help). Random writes to a large tree rewrite the pages they touch at
+  every commit (copy-on-write): the file grows until a vacuum. An isolate
+  killed while it holds the writer lock leaves its marker; the other
+  isolates of that process then wait until the process ends.
+

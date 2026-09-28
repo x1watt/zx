@@ -790,6 +790,7 @@ class ZxWriter {
         t,
         last.volumes ?? const [])
       .._prevPaths = {for (final e in last.entries) e.path}
+      .._database = last.database
       .._vols = r.volumes
       .._loadOld(last);
   }
@@ -897,6 +898,10 @@ class ZxWriter {
 
   // the paths of the previous state (the deleted count)
   Set<String> _prevPaths = const {};
+
+  // the database of the last generation (Index record 0x49), carried
+  // unchanged: its pages are in blocks outside the block table
+  ZxDbRoot? _database;
 
   /// Adds a new entry: [meta] gives its attributes; [data] its content
   /// (files; read to its end, or [knownSize] bytes in streamed files).
@@ -1531,7 +1536,8 @@ class ZxWriter {
     var required = ZxFeature.appendable |
         (keys != null ? ZxFeature.encryption : 0) |
         (sink.multi || header.multiVolume ? ZxFeature.multiVolume : 0) |
-        zxSharingFeatures(_entries);
+        zxSharingFeatures(_entries) |
+        (_database != null ? ZxFeature.database : 0);
     final users = <int>{};
     for (var i = 0; i < _entries.length; i++) {
       final x = _entries[i].extents;
@@ -1544,6 +1550,12 @@ class ZxWriter {
       if (b >= _blocks.length) continue;
       final c = _chains[_blocks[b].chainId];
       if (c != null) used.addAll(c.coders);
+    }
+    // the database pages may use any declared chain
+    if (_database != null) {
+      for (final c in _chains.values) {
+        used.addAll(c.coders);
+      }
     }
     final (v, exp) = zxChainRequirements(used);
     ZxVer mr = exp ? zxVersion : v;
@@ -1613,6 +1625,7 @@ class ZxWriter {
     if (!_dedupOn && !clearOfEncrypted) idx.chunkTable = _carried;
     if (runs != null && runs.isNotEmpty) idx.chunkRuns = ZxChunkRuns(0, runs);
     idx.previous = _prev;
+    idx.database = _database;
     var added = 0;
     final now = <String>{};
     for (final e in _entries) {
@@ -2033,6 +2046,22 @@ ZxWriteResult zxCompact(
     }
   }
 
+  // the database of the kept generations (section 16): its page blocks
+  // are copied whole, its map pages written again with the new places
+  final dbRoots = <ZxDbRoot?>[for (final idx in indexes) idx.database];
+  final dbChains = <int>{};
+  if (dbRoots.any((d) => d != null)) {
+    if (multi) {
+      throw const SevenZipException(
+          'zx: an archive with a database can not become a volume set',
+          SevenZipError.unsupported);
+    }
+    final moved = _compactDatabase(r, keys, chains, dbRoots, sink, dbChains);
+    for (var i = 0; i < dbRoots.length; i++) {
+      dbRoots[i] = moved[i];
+    }
+  }
+
   final newGens = <ZxGeneration>[];
   ZxIndexLoc? prev;
   late ZxFooter footer;
@@ -2052,6 +2081,11 @@ ZxWriteResult zxCompact(
       }
       c.extents = Int64List.fromList(x);
       idx.entries.add(c);
+    }
+    final db = dbRoots[gi];
+    if (db != null) {
+      idx.database = db;
+      chainIds.addAll(dbChains);
     }
     for (final id in chainIds) {
       final c = chains[id];
@@ -2123,6 +2157,132 @@ ZxWriteResult zxCompact(
   return ZxWriteResult(
       kept.isEmpty ? 0 : kept.last.number, blocks.length, 0, packed, vols, end,
       workers: workers);
+}
+
+// the database pages of [roots] in the compacted file: every page block a
+// kept page map uses is copied whole (in file order; an encrypted block
+// stays valid, its MAC does not cover its place), then the map pages are
+// written again (each distinct one once, LZ4) with the new places. The
+// chains of the page blocks go into [usedChains]. Returns the new roots.
+List<ZxDbRoot?> _compactDatabase(ZxArchiveReader r, ZxKeys? keys,
+    Map<int, ZxChain> chains, List<ZxDbRoot?> roots, ZxSink sink,
+    Set<int> usedChains) {
+  final blockCache = <int, Uint8List>{};
+  Uint8List decode(ZxDbLoc loc) {
+    final hit = blockCache[loc.blockOffset];
+    if (hit != null) return hit;
+    final raw = r.volumes.readAt(0, loc.blockOffset, loc.blockSize);
+    final h = ZxBlockHeader.tryParse(raw, 0, raw.length);
+    if (h == null || h.type != ZxBlockType.dbPages) {
+      zxDamaged('bad database page block');
+    }
+    final chain = h.chainId == 0 ? const ZxChain(0, []) : chains[h.chainId];
+    if (chain == null) zxDamaged('undeclared chain ${h.chainId}');
+    final d = zxDecodeBlock(ZxDecodeArg(raw, chain, keys?.aesKey, keys?.macKey));
+    if (blockCache.length > 64) blockCache.clear();
+    blockCache[loc.blockOffset] = d;
+    return d;
+  }
+
+  Uint8List mapBytes(ZxDbLoc m) {
+    final d = decode(m);
+    if (m.inOffset + m.length > d.length || m.length != 1024 * 24) {
+      zxDamaged('bad database map page');
+    }
+    return Uint8List.sublistView(d, m.inOffset, m.inOffset + m.length);
+  }
+
+  // the page blocks used, by offset
+  final used = <int, int>{};
+  final maps = <int, ZxDbLoc>{};
+  for (final root in roots) {
+    if (root == null) continue;
+    for (final m in root.maps) {
+      if (m == null || maps.containsKey(m.cacheKey)) continue;
+      maps[m.cacheKey] = m;
+      final b = mapBytes(m);
+      for (var i = 0; i < 1024; i++) {
+        final loc = ZxDbLoc.readEntry(b, i * ZxDbLoc.entrySize);
+        if (loc != null) used[loc.blockOffset] = loc.blockSize;
+      }
+    }
+  }
+  final newOf = <int, int>{};
+  for (final off in used.keys.toList()..sort()) {
+    final raw = r.volumes.readAt(0, off, used[off]!);
+    final h = ZxBlockHeader.tryParse(raw, 0, raw.length);
+    if (h == null || h.type != ZxBlockType.dbPages) {
+      zxDamaged('bad database page block');
+    }
+    if (h.chainId != 0) usedChains.add(h.chainId);
+    newOf[off] = sink.position;
+    sink.write(raw);
+  }
+  // the map pages, remapped, in blocks of up to 256 KiB
+  const lz4 = [ZxCoderSpec(ZxCodecId.lz4, ZxCoderConfig(level: 5))];
+  final newMap = <int, ZxDbLoc>{};
+  final keysList = maps.keys.toList();
+  var i = 0;
+  while (i < keysList.length) {
+    final group = <int>[];
+    while (i < keysList.length && group.length < 10) {
+      group.add(keysList[i++]);
+    }
+    final data = Uint8List(group.length * 1024 * 24);
+    for (var g = 0; g < group.length; g++) {
+      final src = mapBytes(maps[group[g]]!);
+      final base = g * 1024 * 24;
+      for (var e = 0; e < 1024; e++) {
+        final loc = ZxDbLoc.readEntry(src, e * ZxDbLoc.entrySize);
+        if (loc == null) continue;
+        loc
+            .withBlock(newOf[loc.blockOffset]!, loc.blockSize)
+            .writeEntry(data, base + e * ZxDbLoc.entrySize);
+      }
+    }
+    final enc = zxEncodeBlock(ZxEncodeArg(
+        data, lz4, ZxCheck.xxh64, keys?.aesKey, keys?.macKey));
+    var chainId = 0;
+    if (enc.coders.isNotEmpty) {
+      for (final c in chains.values) {
+        if (c.sameCoders(enc.coders)) chainId = c.id;
+      }
+      if (chainId == 0) {
+        chainId = _metaChainId + 1;
+        for (final k in chains.keys) {
+          if (k >= chainId) chainId = k + 1;
+        }
+        chains[chainId] = ZxChain(chainId, enc.coders);
+      }
+      usedChains.add(chainId);
+    }
+    final hdr = ZxBlockHeader.encode(ZxBlockType.dbPages, chainId,
+        enc.unpackedSize, enc.payload.length, enc.checkType, enc.check);
+    if (keys != null) keys.mac(ZxBlockHeader.macPart(hdr), enc.payload);
+    final at = sink.position;
+    final size = hdr.length + enc.payload.length;
+    sink.write(hdr);
+    sink.write(enc.payload);
+    for (var g = 0; g < group.length; g++) {
+      newMap[group[g]] = ZxDbLoc(at, size, g * 1024 * 24, 1024 * 24, 0);
+    }
+  }
+  return [
+    for (final root in roots)
+      root == null
+          ? null
+          : ZxDbRoot(
+              version: root.version,
+              nextPageId: root.nextPageId,
+              catalogRoot: root.catalogRoot,
+              nextTreeId: root.nextTreeId,
+              unfoldedBytes: root.unfoldedBytes,
+              maps: [
+                for (final m in root.maps)
+                  m == null ? null : newMap[m.cacheKey]
+              ],
+              free: root.free)
+  ];
 }
 
 // a repacked block before its coding: data, the ranges it holds as flat

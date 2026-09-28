@@ -30,6 +30,7 @@ import 'zx_codecs.dart';
 import 'zx_crypto.dart';
 import 'zx_dedup.dart' show zxMinChunkLog2, zxMaxChunkLog2;
 import 'zx_format.dart';
+import 'zx_lock.dart';
 import 'zx_reader.dart';
 import 'zx_writer.dart';
 
@@ -90,6 +91,54 @@ Duration zxReplaceWait = const Duration(milliseconds: 150);
 /// The largest pipe [ZxHandler.openSeq] keeps in memory (16 MiB); a
 /// longer one is copied to a temporary file.
 int zxPipeMemory = 16 << 20;
+
+/// How long an update or a compaction waits for the writer lock of an
+/// archive (zx_lock.dart) held by a database writer.
+int zxWriterLockWaitMs = 30000;
+
+/// The writer lock of [path] for an update or a compaction of [r]: taken
+/// when the archive has a database or its lock file exists (a database
+/// writer may be at work); then the archive must still end where [r]
+/// found its last Footer, else another writer appended a generation since
+/// it was opened. Null when no lock is needed.
+ZxWriteLock? zxLockForUpdate(String path, ZxArchiveReader r) {
+  if (r.lastIndex.database == null &&
+      !File(ZxWriteLock.lockPathOf(path)).existsSync()) {
+    return null;
+  }
+  final lock = ZxWriteLock.acquire(path, waitMs: zxWriterLockWaitMs);
+  try {
+    if (!r.header.multiVolume && zxChangedSince(path, r.validEnd)) {
+      throw const SevenZipException(
+          'zx: the archive was changed by another writer after it was '
+          'opened; open it again',
+          SevenZipError.io);
+    }
+  } catch (_) {
+    lock.release();
+    rethrow;
+  }
+  return lock;
+}
+
+/// Whether the file at [path] holds a generation after [validEnd] (or was
+/// replaced by a shorter one): its last 32 bytes are a valid Footer past
+/// [validEnd]. Bytes after [validEnd] without a Footer are an interrupted
+/// update.
+bool zxChangedSince(String path, int validEnd) {
+  final f = File(path).openSync();
+  try {
+    final len = f.lengthSync();
+    if (len < validEnd) return true;
+    if (len == validEnd) return false;
+    if (len - zxFooterSize < validEnd) return false;
+    f.setPositionSync(len - zxFooterSize);
+    final b = f.readSync(zxFooterSize);
+    return ZxFooter.tryParse(b, 0) != null;
+  } finally {
+    f.closeSync();
+  }
+}
 
 /// One version of a path in the timeline (section 9.1.1).
 class ZxTimelineVersion {
@@ -1471,6 +1520,24 @@ class ZxHandler {
       }
     } else {
       _checkLatest(r);
+      final lock = zxLockForUpdate(path, r);
+      try {
+        res = _updateExisting(path, r, o, numItems, cb, written,
+            onFile: onFile, releaseInput: releaseInput);
+      } finally {
+        lock?.release();
+      }
+    }
+    return ZxUpdateFileResult(written, res, o.warnings);
+  }
+
+  // the update of an existing archive (under the writer lock when needed)
+  ZxWriteResult _updateExisting(String path, ZxArchiveReader r,
+      ZxWriteOptions o, int numItems, ArchiveUpdateCallback cb,
+      List<String> written,
+      {void Function(String path)? onFile, void Function()? releaseInput}) {
+    ZxWriteResult res;
+    {
       // new data uses the key of the archive: its password
       if (r.header.kdf != null && r.keys == null) {
         o.password ??= _password?.call();
@@ -1519,9 +1586,8 @@ class ZxHandler {
         try {
           f = _openAppend(path, r.validEnd);
         } on FileSystemException catch (e) {
-          res = _appendByRewrite(path, r, o, numItems, cb, e,
+          return _appendByRewrite(path, r, o, numItems, cb, e,
               onFile: onFile, releaseInput: releaseInput);
-          return ZxUpdateFileResult(written, res, o.warnings);
         }
         try {
           final wr = ZxWriter.append(r, o, ZxStreamSink(f, r.validEnd));
@@ -1538,7 +1604,7 @@ class ZxHandler {
         }
       }
     }
-    return ZxUpdateFileResult(written, res, o.warnings);
+    return res;
   }
 
   // the archive opened for an append at [end]: garbage after the last
@@ -1806,6 +1872,19 @@ class ZxHandler {
       void Function(String path)? onFile}) {
     final r = _r;
     if (r == null) throw StateError('not open');
+    final lock = zxLockForUpdate(path, r);
+    try {
+      return _compact(path, r, keep,
+          volumeSizes: volumeSizes, password: password, onFile: onFile);
+    } finally {
+      lock?.release();
+    }
+  }
+
+  int _compact(String path, ZxArchiveReader r, int keep,
+      {List<int> volumeSizes = const [],
+      String? password,
+      void Function(String path)? onFile}) {
     final pw = password ?? _password?.call();
     final before = r.header.multiVolume ? _totalSize : _phySize;
     if (!r.header.multiVolume) {

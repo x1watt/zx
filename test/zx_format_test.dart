@@ -184,8 +184,8 @@ void main() {
         expect(zxCodecByName(c.name), same(c));
         expect(c.introducedIn, (0, 5, 0));
       }
-      // decode only codecs are refused for writing
-      for (final n in ['zstd', 'LZ4', 'LZO1X']) {
+      // decode only codecs are refused for writing (LZ4 writes since zxdb)
+      for (final n in ['zstd', 'LZO1X']) {
         expect(zxCodecByName(n)!.canEncode, false);
         expect(() => zxParseCoder(n, 5), throwsA(isA<SevenZipException>()));
       }
