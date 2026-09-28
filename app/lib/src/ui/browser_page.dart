@@ -159,7 +159,7 @@ class BrowserPageState extends State<BrowserPage> {
     unawaited(_loadPlaces());
     final a = widget.initialArchive;
     if (a != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => openArchive(a));
+      WidgetsBinding.instance.addPostFrameCallback((_) => goToPath(a));
     }
     if (Platform.isMacOS) _listenToFinder();
     if (Platform.isAndroid) {
