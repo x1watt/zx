@@ -26,8 +26,8 @@
 //
 // Stream layout (all integers little endian, vint = unsigned LEB128):
 //   'z' 'c' 'm'           magic
-//   u8  version           2 (version 1, zx 0.5, is refused: its models
-//                         differ)
+//   u8  version           3 (versions 1 and 2, written by earlier zx
+//                         builds, are refused: their models differ)
 //   u8  level             1..9
 //   u8  flags             bit 0: independent segments, bit 1: LSTM,
 //                         bit 2: data type detection, bit 3: x86 E8/E9
@@ -75,7 +75,7 @@ import 'zcm_dict.dart';
 import 'zcm_predictor.dart';
 
 /// Format version written by this code.
-const int zcmVersion = 2;
+const int zcmVersion = 3;
 
 /// Experimental codec id for the zx registry (section 11 of zx-format.md).
 const int zcmCodecId = 0x10000;
@@ -203,17 +203,24 @@ const int zcmMinMemoryMiB = 4;
 /// Largest budget a stream may declare (MiB), 64 GiB.
 const int zcmMaxMemoryMiB = 64 << 10;
 
+/// Bytes of tables per input byte that saturate a level: the hashed
+/// context maps of the strong levels (a hundred and more contexts, three
+/// bucket lookups per byte each) keep gaining up to about a kilobyte per
+/// input byte (docs/performance.md).
+int zcmTableBytesPerInputByte(int level) =>
+    const [0, 64, 64, 64, 64, 64, 256, 1024, 2048, 2048][level];
+
 /// The budget used for an input of [inputSize] bytes (when known): tables
 /// much larger than the input only cost time, so small inputs get a
-/// smaller budget. The result is stored in the stream.
+/// smaller budget ([zcmTableBytesPerInputByte] plus 8 MiB). The result is
+/// stored in the stream.
 int zcmEffectiveMemoryMiB(ZcmOptions o, int? inputSize) {
   var mib = o.memoryMiB > 0 ? o.memoryMiB : zcmDefaultMemoryMiB(o.level);
   final seg = o.segmentSize;
   var size = inputSize;
   if (seg > 0 && (size == null || size > seg)) size = seg;
   if (size != null) {
-    // About 64 bytes of tables per input byte saturates every level.
-    final cap = ((size * 64) >> 20) + 8;
+    final cap = ((size * zcmTableBytesPerInputByte(o.level)) >> 20) + 8;
     if (cap < mib) mib = cap;
   }
   if (mib < zcmMinMemoryMiB) mib = zcmMinMemoryMiB;
@@ -243,9 +250,11 @@ final class ZcmHeader {
   bool get e8e9 => (flags & _fE8E9) != 0;
   bool get dictionary => (flags & _fDict) != 0;
 
-  ZcmHeader withOriginalSize(int? size) => ZcmHeader(
-      version, level, flags, memoryMiB, segmentSize, size,
-      lstmCells: lstmCells, lstmLayers: lstmLayers, lstmHorizon: lstmHorizon);
+  ZcmHeader withOriginalSize(int? size) =>
+      ZcmHeader(version, level, flags, memoryMiB, segmentSize, size,
+          lstmCells: lstmCells,
+          lstmLayers: lstmLayers,
+          lstmHorizon: lstmHorizon);
 
   /// The props bytes (the header without the magic and the original
   /// size): version, level, flags, vint memoryMiB, vint segmentSize, and
@@ -354,10 +363,11 @@ ZcmHeader zcmParseProps(Uint8List props) {
 ZcmHeader _readHeaderBody(InStream s, Uint8List one, int? originalSize) {
   if (s.read(one, 0, 1) != 1) throw _truncated();
   final version = one[0];
-  if (version == 1) {
-    throw const SevenZipException(
-        'zcm: stream version 1 (written by zx 0.5) is not supported, '
-        'its models changed; decode it with zx 0.5',
+  if (version == 1 || version == 2) {
+    throw SevenZipException(
+        'zcm: stream version $version (written by ${version == 1 ? 'zx 0.5' : 'an earlier zx 0.6 build'}) '
+        'is not supported, its models changed; decode it with the zx '
+        'version that wrote it',
         SevenZipError.unsupportedMethod);
   }
   if (version != zcmVersion) {
@@ -412,7 +422,9 @@ void zcmE8E9Encode(Uint8List b, int off, int len, int base) {
     final hi = b[p];
     final op = b[p - 4];
     if ((hi == 0 || hi == 0xFF) &&
-        (op == 0xE8 || op == 0xE9 || (b[p - 5] == 0x0F && (op & 0xF0) == 0x80))) {
+        (op == 0xE8 ||
+            op == 0xE9 ||
+            (b[p - 5] == 0x0F && (op & 0xF0) == 0x80))) {
       var a = b[p - 3] | b[p - 2] << 8 | b[p - 1] << 16 | hi << 24;
       a = (a + base + i + 1) & 0x1FFFFFF;
       if (a >= 0x1000000) a -= 0x2000000;
@@ -431,7 +443,9 @@ void zcmE8E9Decode(Uint8List b, int off, int len, int base) {
     final hi = b[p];
     final op = b[p - 4];
     if ((hi == 0 || hi == 0xFF) &&
-        (op == 0xE8 || op == 0xE9 || (b[p - 5] == 0x0F && (op & 0xF0) == 0x80))) {
+        (op == 0xE8 ||
+            op == 0xE9 ||
+            (b[p - 5] == 0x0F && (op & 0xF0) == 0x80))) {
       var a = (b[p - 1] ^ 176) |
           (b[p - 2] ^ 176) << 8 |
           (b[p - 3] ^ 176) << 16 |
@@ -450,11 +464,11 @@ void zcmE8E9Decode(Uint8List b, int off, int len, int base) {
 // Chunk coding.
 
 /// Builds the predictor a header asks for.
-ZcmBitPredictor zcmNewPredictor(ZcmHeader h) => zcmCreatePredictor(
-    h.level, h.memoryMiB << 20,
-    lstmCells: h.lstm ? h.lstmCells : 0,
-    lstmLayers: h.lstmLayers,
-    lstmHorizon: h.lstmHorizon);
+ZcmBitPredictor zcmNewPredictor(ZcmHeader h) =>
+    zcmCreatePredictor(h.level, h.memoryMiB << 20,
+        lstmCells: h.lstm ? h.lstmCells : 0,
+        lstmLayers: h.lstmLayers,
+        lstmHorizon: h.lstmHorizon);
 
 /// Codes [len] bytes of [data] at [off] with [pred] (whose history is at
 /// stream position [base]) and returns the packed bytes. [data] is
@@ -691,7 +705,9 @@ extension on ZcmCompressor {
             break;
           }
           if (n < seg) eof = true;
-          final data = n == seg ? buf : Uint8List.fromList(Uint8List.sublistView(buf, 0, n));
+          final data = n == seg
+              ? buf
+              : Uint8List.fromList(Uint8List.sublistView(buf, 0, n));
           tickets.add(pool.submit(_zcmSegmentJob, [props, orig, data]));
           sizes.add(n);
         }
@@ -721,8 +737,8 @@ extension on ZcmCompressor {
 SyncJobResult _zcmSegmentJob(Object? arg) {
   final a = arg as List<Object?>;
   final orig = a[1] as int;
-  final h = zcmParseProps(a[0] as Uint8List)
-      .withOriginalSize(orig < 0 ? null : orig);
+  final h =
+      zcmParseProps(a[0] as Uint8List).withOriginalSize(orig < 0 ? null : orig);
   final data = a[2] as Uint8List;
   return SyncJobResult(zcmEncodeSegmentRecord(h, data, 0, data.length));
 }
@@ -822,12 +838,13 @@ final class ZcmDecoderStream implements InStream {
 }
 
 /// Decoder factory for a registry ([DecoderFactory] shape).
-InStream zcmDecoder(
-        Uint8List props, List<InStream> inputs, int? outSize, CoderContext ctx) =>
+InStream zcmDecoder(Uint8List props, List<InStream> inputs, int? outSize,
+        CoderContext ctx) =>
     ZcmDecoderStream(inputs[0], props: props, outSize: outSize);
 
 /// Compresses [data] in memory.
-Uint8List zcmCompressBytes(Uint8List data, [ZcmOptions options = const ZcmOptions()]) {
+Uint8List zcmCompressBytes(Uint8List data,
+    [ZcmOptions options = const ZcmOptions()]) {
   final out = MemoryOutStream();
   ZcmCompressor(options, inputSize: data.length)
       .encode(MemoryInStream(Uint8List.fromList(data)), out);
@@ -912,9 +929,10 @@ final class ZcmChunkRef {
 
 /// Decodes one independent segment (a chunk of [packed]) into [out] at
 /// [outOff] and checks its CRC.
-void zcmDecodeSegment(ZcmHeader h, Uint8List packed, ZcmChunkRef c,
-    Uint8List out, int outOff) {
-  final p = Uint8List.sublistView(packed, c.packedOff, c.packedOff + c.packedLen);
+void zcmDecodeSegment(
+    ZcmHeader h, Uint8List packed, ZcmChunkRef c, Uint8List out, int outOff) {
+  final p =
+      Uint8List.sublistView(packed, c.packedOff, c.packedOff + c.packedLen);
   zcmDecodeChunk(zcmNewPredictor(h), h, p, out, outOff, c.rawLen, 0);
   if (Crc32.of(out, outOff, outOff + c.rawLen) != c.crc) {
     throw const SevenZipException('zcm: CRC error', SevenZipError.crc);
@@ -967,10 +985,7 @@ ZcmOptions zcmOptionsFromString(String spec, {int level = 4}) {
         } else if (zcmLstmPresets.containsKey(val)) {
           final p = zcmLstmPresets[val]!;
           o = o.copyWith(
-              lstm: true,
-              lstmCells: p[0],
-              lstmLayers: p[1],
-              lstmHorizon: p[2]);
+              lstm: true, lstmCells: p[0], lstmLayers: p[1], lstmHorizon: p[2]);
         } else {
           final p = val.split('/').map(int.tryParse).toList();
           if (p.isEmpty || p.any((x) => x == null)) {

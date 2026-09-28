@@ -89,7 +89,7 @@ int zcmUsableBytes(ZcmMachine m) {
 /// docs/performance.md (text, code, binaries, images and audio), Ryzen 7
 /// 3700X. Decoding runs at the same speed.
 const List<double> zcmNominalKBps = [
-  0, 1100, 260, 150, 85, 83, 26, 11, 9, 9, 3 //
+  0, 1100, 260, 150, 85, 80, 24, 9, 5, 5, 2 //
 ];
 
 /// A chosen setting.

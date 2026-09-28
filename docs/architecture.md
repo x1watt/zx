@@ -758,7 +758,14 @@ around one predictor, and the file headers name their sources.
   history and skipped contexts, DirectMap), `zcm_models.dart` (the
   order-n models, match, word/text, sparse, indirect, record, char
   groups, x86 contexts, DMC), `zcm_words.dart` (the paq8px word and line
-  model, chart, nest and XML models), `zcm_x86.dart` (the paq8px x86
+  model, chart, nest and XML models), `zcm_text.dart` (paq8px's text
+  model with its English stemmer and word classes), `zcm_match.dart`
+  (paq8px's match model: four candidates, recovery after a one byte
+  mismatch, minimum lengths per data type), `zcm_maps.dart` (paq8px's
+  StationaryMap, LargeStationaryMap, SmallStationaryContextMap,
+  IndirectContext, MTFList and ResidualMap), `zcm_sparse.dart`
+  (paq8px's sparse match, sparse bit, linear prediction and similarity
+  models; ported and tested, no level uses them yet), `zcm_x86.dart` (the paq8px x86
   parser), `zcm_image.dart` (images: residual histograms, least squares
   fits, neighborhood contexts), `zcm_audio.dart` (PCM audio: least
   squares and LMS predictors, residual contexts), `zcm_ols.dart` (the
@@ -772,23 +779,24 @@ around one predictor, and the file headers name their sources.
   isolates; the only asynchronous file, rule 4). `ZcmCompressor(threads:
   N)` codes independent segments on the synchronous pool of
   `lib/src/sync_pool.dart` with the same output.
-- **Stream version 2.** A chunk is a series of segments, each with its
+- **Stream version 3.** A chunk is a series of segments, each with its
   type, length and (images, audio) layout coded in the arithmetic stream,
   so the decoder does not run the detector. x86 segments go through the
   E8/E9 transform, 16-bit little endian audio is coded most significant
   byte first, and a text segment whose words are mostly English goes
   through the dictionary transform when its inverse gives the text back
   exactly (the encoder checks it). The final probability has 16 bits.
-  Version 1 streams (zx 0.5) are refused with a message that names the
-  version: their models no longer exist here.
+  Version 1 (zx 0.5) and version 2 streams are refused with a message
+  that names the version: their models no longer exist here.
 - **Levels.** 1: `ZcmFastPredictor` (orders 1 to 6 in nibble tables,
   match, one mixer set, one APM); 2 to 5: orders 2, 3, 4, 6 with bit
   histories, the word model (5, 10 or 16 contexts), exe contexts (the
   paq8px x86 parser from 4), sparse contexts from 4, light image and
   audio models from 3; 6: more orders, indirect, record, char groups,
   the full x86 parser, the full image and audio models; 7: byte history
-  inputs, the paq8px word model, paq8px's mixer selectors and SSE
-  chains; 8: word contexts on binary data too; 9: PPMd (its memory
+  inputs, the paq8px word model and match model, paq8px's mixer
+  selectors and SSE chains; 8: word contexts on binary data too and the
+  paq8px text model on text (its state also feeds the text SSE chain); 9: PPMd (its memory
   beside the budget) and DMC, and the optional LSTM
   (`lstm=small|medium|large` or C/L/H). The chart, nest and XML models
   are ported but no level uses them (they did not pay on the benchmark
@@ -813,8 +821,9 @@ around one predictor, and the file headers name their sources.
   powers of two, so a model uses between half and all of the budget. The
   image and audio models are built on the first segment of their type and
   may add a quarter of the budget each. The encoder lowers the budget for
-  small inputs (64 bytes per input byte plus 8 MiB) and stores what it
-  used.
+  small inputs (`zcmTableBytesPerInputByte`: 64 bytes per input byte
+  plus 8 MiB at levels 1 to 5, 256 at 6, 1 KiB at 7, 2 KiB at 8 and 9)
+  and stores what it used.
 - **Hot loops** follow rule 3: typed lists, the tables of a component in
   locals, inputs written straight into the mixer's `Int32List`, no
   closures on the bit path. The mixer multiplies only the nonzero inputs
@@ -833,7 +842,7 @@ around one predictor, and the file headers name their sources.
   `seg=`, `nodetect`, `nodict`; the archive level is the default zcm
   level). Each .zx block is one zcm stream with its own model; the
   container codes blocks in parallel, so memory is about threads times
-  the zcm budget (capped per block by 64 bytes per input byte plus 8
+  the zcm budget (capped per block by `zcmTableBytesPerInputByte` plus 8
   MiB).
 - **Automatic settings in .zx** (`lib/src/cli/zx_zcm_auto.dart`, zx
   switches): `-m0=zcm:auto`, `-mtime`, `-mmem`, `-mlstm`, `-mcal` and the

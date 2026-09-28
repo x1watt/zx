@@ -17,6 +17,7 @@ import 'package:zx/src/codec/zcm/zcm_dict.dart';
 import 'package:zx/src/codec/zcm/zcm_math.dart';
 import 'package:zx/src/codec/zcm/zcm_parallel.dart';
 import 'package:zx/src/codec/zcm/zcm_predictor.dart';
+import 'package:zx/src/codec/zcm/zcm_text.dart';
 import 'package:zx/src/crypto/sha256.dart';
 import 'package:zx/src/format/zx/zx_codecs.dart';
 import 'package:zx/src/format/zx/zx_reader.dart';
@@ -247,8 +248,12 @@ void main() {
       expect(() => zcmOptionsFromString('bogus'),
           throwsA(isA<SevenZipException>()));
       final h = ZcmHeader.fromOptions(o, 1 << 30);
-      // The budget is capped by the segment size (64 bytes per byte + 8 MiB).
-      expect(zcmDescribe(h.props), 'zcm:9:m264:lstm32/2/15:seg4194304');
+      // The budget is capped by the segment size (2 KiB per byte + 8 MiB
+      // at level 9), so the 2 GiB asked for stays.
+      expect(zcmDescribe(h.props), 'zcm:9:m2048:lstm32/2/15:seg4194304');
+      final h3 = ZcmHeader.fromOptions(
+          zcmOptionsFromString('3:mem=256:seg=1m'), 1 << 30);
+      expect(zcmDescribe(h3.props), 'zcm:3:m72:seg1048576');
       expect(zcmParseProps(h.props).lstmHorizon, 15);
     });
   });
@@ -310,6 +315,43 @@ void main() {
       final b = zcmCompressBytes(img, const ZcmOptions(level: 6, detect: false))
           .length;
       expect(a < b, isTrue, reason: '$a vs $b');
+    });
+  });
+
+  group('paq8px text and match models', () {
+    test('the English stemmer finds stems and word classes', () {
+      final st = ZcmEnglishStemmer();
+      String stem(String s) {
+        final w = ZcmWord();
+        for (final c in s.codeUnits) {
+          w.add(c);
+        }
+        w.calculateWordHash();
+        st.stem(w);
+        return String.fromCharCodes(w.letters.sublist(w.start, w.end + 1));
+      }
+
+      expect(stem('running'), 'run');
+      expect(stem('cats'), 'cat');
+      expect(stem('hoped'), 'hope');
+      expect(stem('quickly'), 'quick');
+      expect(stem('goodness'), 'good');
+      expect(stem('biggest'), 'big');
+    });
+
+    test('English text and repeats round trip at the levels that use them',
+        () {
+      final prose = Uint8List.fromList(ascii.encode(
+          List.generate(40, (i) => '$_english line $i. ').join()));
+      for (final level in [7, 8]) {
+        _roundTrip(prose, ZcmOptions(level: level, dictionary: false));
+        _roundTrip(prose, ZcmOptions(level: level));
+      }
+      final rep = BytesBuilder()
+        ..add(_exeLike(6000, 3))
+        ..add(_exeLike(6000, 3).sublist(100, 4000))
+        ..add(_random(3000, 9));
+      _roundTrip(rep.toBytes(), const ZcmOptions(level: 7));
     });
   });
 
@@ -459,19 +501,19 @@ void main() {
     // here means streams written before do not decode any more: bump
     // zcmVersion, or undo the change.
     const golden = <String, String>{
-      'L1': '4091:14b6fba4856c9d7d',
-      'L2': '4013:7b1bb95c3f649ae3',
-      'L3': '3980:0724f544c202ad29',
-      'L4': '3938:32c2d6c2f5b4ffa4',
-      'L5': '3933:d4cadf3a273e82f0',
-      'L6': '3704:3bd956ac1978bb3c',
-      'L7': '3688:4fb243e908d58858',
-      'L8': '3649:db6f2c28d9342833',
-      'L9': '3649:99db14a68bb31ae6',
-      'L9+lstm': '3652:4ebfd67d935e7e86',
-      'seg': '4139:aa2c58ea3777e71d',
-      'media3': '4893:89a61a6884fa5da3',
-      'media7': '4348:445007e417178a33',
+      'L1': '4091:677616d8c91d1206',
+      'L2': '4013:33d6faac026a4c36',
+      'L3': '3980:d8f7c6744078ad4f',
+      'L4': '3938:1d07d30db27693cd',
+      'L5': '3933:09aa83c08add1e63',
+      'L6': '3705:e63383e3331ef396',
+      'L7': '3634:f5439b5785a44be7',
+      'L8': '3600:5e475cb814e33779',
+      'L9': '3601:fd18291664e1d80d',
+      'L9+lstm': '3604:e928e2c0da50adab',
+      'seg': '4139:4fc1d1738656fc77',
+      'media3': '4893:bd44b3152d0602f7',
+      'media7': '4250:092a56e806dade12',
     };
     final inputs = BytesBuilder()
       ..add(genData(6000, 21, randomPercent: 3))
@@ -607,12 +649,15 @@ void main() {
       expect(thrown > 50, isTrue);
     });
 
-    test('version 1 streams are refused with a clear message', () {
-      final v1 = Uint8List.fromList(packed)..[3] = 1;
-      expect(
-          () => zcmDecompressBytes(v1),
-          throwsA(isA<SevenZipException>().having(
-              (e) => e.toString(), 'message', contains('version 1'))));
+    test('version 1 and 2 streams are refused with a clear message', () {
+      for (final v in [1, 2]) {
+        final old = Uint8List.fromList(packed)..[3] = v;
+        expect(
+            () => zcmDecompressBytes(old),
+            throwsA(isA<SevenZipException>().having(
+                (e) => e.toString(), 'message', contains('version $v'))));
+      }
+      expect(packed[3], zcmVersion);
     });
 
     test('bad headers throw', () {

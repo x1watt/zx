@@ -12,8 +12,11 @@ import 'zcm_byte_models.dart';
 import 'zcm_components.dart';
 import 'zcm_fast.dart';
 import 'zcm_image.dart';
+import 'zcm_match.dart';
 import 'zcm_models.dart';
+import 'zcm_sparse.dart';
 import 'zcm_tables.dart';
+import 'zcm_text.dart';
 import 'zcm_words.dart';
 import 'zcm_x86.dart';
 
@@ -74,6 +77,13 @@ final class ZcmLevelSpec {
   final bool xml;
   final int finalRate; // learning rate of the final mixer layer (16.16)
   final int finalRateMin;
+  final int text; // paq8px TextModel: 0 none, 1 text segments, 2 and binary
+  final int textSets; // its mixer weight set selectors (0 to 10)
+  final int sparseMatch; // paq8px SparseMatchModel: 0 none, 1 binary, 2 all
+  final int sparseBit; // paq8px SparseBitModel: 0 none, 1 binary, 2 all
+  final bool linearPrediction; // paq8px LinearPredictionModel (binary)
+  final int similarity; // paq8px SimilarityModelPair window (0: none)
+  final bool pxMatch; // the paq8px match model instead of MatchModel
 
   const ZcmLevelSpec({
     required this.level,
@@ -102,6 +112,13 @@ final class ZcmLevelSpec {
     this.xml = false,
     this.finalRate = 8 << 16,
     this.finalRateMin = 2 << 16,
+    this.text = 0,
+    this.textSets = 10,
+    this.sparseMatch = 0,
+    this.sparseBit = 0,
+    this.linearPrediction = false,
+    this.similarity = 0,
+    this.pxMatch = false,
   });
 
   static ZcmLevelSpec of(int level) {
@@ -191,7 +208,9 @@ final class ZcmLevelSpec {
             selectors: 7,
             apms: 5,
             dmc: level >= 9,
-            ppmdOrder: level >= 9 ? 16 : 0);
+            ppmdOrder: level >= 9 ? 16 : 0,
+            text: level >= 8 ? 1 : 0,
+            pxMatch: true);
     }
   }
 }
@@ -210,8 +229,13 @@ final class ZcmPredictor implements ZcmBitPredictor {
   @override
   final ZcmState s;
   final ZcmOrders _orders;
-  final MatchModel _match;
+  final ZcmMatchInfo _match;
   final ZcmModel? _word;
+  final TextModel? _text;
+  final SparseMatchModel? _sparseMatch;
+  final SparseBitModel? _sparseBit;
+  final LinearPredictionModel? _lp;
+  final SimilarityModel? _sim;
   final SparseModel? _sparse;
   final IndirectModel? _indirect;
   final RecordModel? _record;
@@ -278,7 +302,25 @@ final class ZcmPredictor implements ZcmBitPredictor {
     final wc = spec.chart ? 6 : 0;
     final wn = spec.nest ? 2 : 0;
     final wx = spec.xml ? 1 : 0;
-    final total = wo + ww + ws + wi + wr + we + wg + wd + wc + wn + wx;
+    final wt = spec.text > 0 ? 10 : 0;
+    final wsm = spec.sparseMatch > 0 ? 2 : 0;
+    final wsb = spec.sparseBit > 0 ? 3 : 0;
+    final wsi = spec.similarity > 0 ? 3 : 0;
+    final total = wo +
+        ww +
+        ws +
+        wi +
+        wr +
+        we +
+        wg +
+        wd +
+        wc +
+        wn +
+        wx +
+        wt +
+        wsm +
+        wsb +
+        wsi;
     int share(int w) => w == 0 ? 0 : floorPow2((rest * w) ~/ total);
     return ZcmPredictor._(
         spec,
@@ -295,6 +337,10 @@ final class ZcmPredictor implements ZcmBitPredictor {
         share(wc),
         share(wn),
         share(wx),
+        share(wt),
+        share(wsm),
+        share(wsb),
+        share(wsi),
         ppmdBytes,
         lstmCells,
         lstmLayers,
@@ -320,6 +366,10 @@ final class ZcmPredictor implements ZcmBitPredictor {
       int bc,
       int bn,
       int bx,
+      int bt,
+      int bsm,
+      int bsb,
+      int bsi,
       int ppmdBytes,
       int lstmCells,
       int lstmLayers,
@@ -335,9 +385,15 @@ final class ZcmPredictor implements ZcmBitPredictor {
             : null,
         _orders = OrderModel(spec.orders, bo,
             rich: spec.rich, bh: spec.bh, pairs: spec.bh),
-        _match = MatchModel(matchEntries, bufBytes,
-            minS: spec.matchMinS,
-            minL: spec.matchMinL > 0 ? spec.matchMinL : 1 << 30),
+        _match = spec.pxMatch
+            ? PxMatchModel(matchEntries * 8, matchEntries * 4,
+                mapLBits: zcmHashBitsFor(matchEntries * 4, 42),
+                lensText: const [4, 6, 8],
+                lensBinary: const [4, 6, 8],
+                lensExe: const [3, 5, 8])
+            : MatchModel(matchEntries, bufBytes,
+                minS: spec.matchMinS,
+                minL: spec.matchMinL > 0 ? spec.matchMinL : 1 << 30),
         _word = spec.wordContexts == 0
             ? null
             : (spec.wordContexts > 16
@@ -351,6 +407,13 @@ final class ZcmPredictor implements ZcmBitPredictor {
         _chart = spec.chart ? ChartModel(bc) : null,
         _nest = spec.nest ? NestModel(bn) : null,
         _xml = spec.xml ? XmlModel(bx) : null,
+        _sparseMatch = bsm > 0 ? SparseMatchModel(bsm) : null,
+        _sparseBit = bsb > 0 ? SparseBitModel(bsb) : null,
+        _lp = spec.linearPrediction ? LinearPredictionModel() : null,
+        _sim = bsi > 0 ? SimilarityModel(bsi, spec.similarity) : null,
+        _text = bt > 0
+            ? TextModel(bt, mixerSets: spec.textSets, contexts: null)
+            : null,
         _record = spec.record ? RecordModel(br) : null,
         _exe = spec.exe == 0
             ? null
@@ -374,6 +437,10 @@ final class ZcmPredictor implements ZcmBitPredictor {
             bc +
             bn +
             bx +
+            bt +
+            bsm +
+            bsb +
+            bsi +
             ppmdBytes +
             sseBytes;
 
@@ -397,7 +464,22 @@ final class ZcmPredictor implements ZcmBitPredictor {
     }
     final w = _word;
     if (w != null && (type == ZcmBlockType.text || spec.wordAlways)) l.add(w);
+    final tm = _text;
+    if (tm != null &&
+        (type == ZcmBlockType.text ||
+            (spec.text >= 2 && type == ZcmBlockType.binary))) {
+      l.add(tm);
+    }
     if (_sparse != null) l.add(_sparse);
+    final isText = type == ZcmBlockType.text;
+    final sm = _sparseMatch;
+    if (sm != null && (!isText || spec.sparseMatch >= 2)) l.add(sm);
+    final sb = _sparseBit;
+    if (sb != null && (!isText || spec.sparseBit >= 2)) l.add(sb);
+    final lp = _lp;
+    if (lp != null && type == ZcmBlockType.binary) l.add(lp);
+    final si = _sim;
+    if (si != null && !isText) l.add(si);
     if (_indirect != null) l.add(_indirect);
     if (_record != null) l.add(_record);
     final x = _exe;
@@ -532,15 +614,20 @@ final class ZcmPredictor implements ZcmBitPredictor {
     if (spec.apms >= 5) {
       final isText = type == ZcmBlockType.text;
       final sse = isText
-          ? (_sseText ??= _SsePx(_sseBits))
+          ? (_sseText ??= _SsePx(_sseBits, _text != null ? 32768 : 2048))
           : (_sseGeneric ??= _SsePx(_sseBits));
       final e = _match.expectedByte;
       final no = hits > 7 ? 7 : hits;
       final w = _word;
       final wo = w is PxWordModel ? w.order : 0;
       final len2 = ml == 0 ? 0 : (ml < 16 ? 1 : (ml < 32 ? 2 : 3));
+      final tm = _text;
+      final useTm = tm != null && isText;
       final pf = isText
-          ? sse.text(y, pr, c0, bpos, c4, m3, e < 0 ? 0 : e, len2, no, wo)
+          ? (useTm
+              ? sse.textPx(y, pr, c0, bpos, c4, m3, e < 0 ? 0 : e, len2, no, wo,
+                  tm.mask, tm.firstLetter, tm.order)
+              : sse.text(y, pr, c0, bpos, c4, m3, e < 0 ? 0 : e, len2, no, wo))
           : sse.generic(y, pr, c0, bpos, c4, m3, e < 0 ? 0 : e, len2, no, wo);
       _pr = pf >> 4;
       return pf;
@@ -558,16 +645,14 @@ final class ZcmPredictor implements ZcmBitPredictor {
         if (a3 == null) {
           pf = (pf * 2 + p1 + p2 + 2) >> 2;
         } else {
-          final p3 =
-              a3.pp16(y, pr, (hash2(c4 & 0xFFFFFF, c0 + 256)) & 0xFFFF);
+          final p3 = a3.pp16(y, pr, (hash2(c4 & 0xFFFFFF, c0 + 256)) & 0xFFFF);
           final a4 = _a4;
           int pa;
           if (a4 == null) {
             pa = (pf + p2 + p3 * 2 + 2) >> 2;
           } else {
             final e = _match.expectedByte;
-            final p4 =
-                a4.pp16(y, pr, e < 0 ? c0 : (hash3(e, mq, c0) & 0xFFFF));
+            final p4 = a4.pp16(y, pr, e < 0 ? c0 : (hash3(e, mq, c0) & 0xFFFF));
             pa = (pf + p2 + p3 + p4 + 2) >> 2;
           }
           pf = (pa * 3 + p1 + 2) >> 2;
@@ -645,8 +730,7 @@ final class _SsePx {
     return b;
   }
 
-  static int _b1Contexts(int bits) =>
-      bits >= 16 ? 256 * 257 : 1 << bits;
+  static int _b1Contexts(int bits) => bits >= 16 ? 256 * 257 : 1 << bits;
 
   /// Bytes of one chain.
   static int bytesFor(int bits) =>
@@ -654,8 +738,8 @@ final class _SsePx {
       (_b1Contexts(bits) + 2 * (1 << bits)) * 33 * 2 +
       2 * 8 * 4096 * 8;
 
-  _SsePx(int bits)
-      : a0 = ApmPx(2048, 24),
+  _SsePx(int bits, [int a0n = 2048])
+      : a0 = ApmPx(a0n, 24),
         a1 = ApmPx(1 << bits, 24),
         a2 = ApmPx(1 << bits, 24),
         a3 = ApmPx(1 << bits, 24),
@@ -679,8 +763,28 @@ final class _SsePx {
     final p2 = a2.pp(y, pr, hash2(c0, e << 2 | len2) & mask);
     final p3 = a3.pp(y, pr, hash3(c0, c4 & 0xFFFF, wo) & mask);
     final pA = _avg4(pr << 4, p1, p2, p3);
+    final p4 = b1.pp(
+        y, pA >> 4, _b1cx(e + ((wo >> 2) << 5 | len2 << 3 | (no >> 1)) * 257));
+    final p5 = b2.pp(y, p0 >> 4, hash2(c0, c4 & 0xFFFFFF) & mask);
+    final p6 = b3.pp(y, p0 >> 4, hash2(c0, c4) & mask);
+    final pB = _avg4(p0, p4, p5, p6);
+    var p = (postA.pp(y, pA >> 4, bpos) + postB.pp(y, pB >> 4, bpos) + 1) >> 1;
+    if (p < 1) p = 1;
+    if (p > 65535) p = 65535;
+    return p;
+  }
+
+  // SSE::p, TEXT with the TextModel's state.
+  int textPx(int y, int pr, int c0, int bpos, int c4, int m3, int e, int len2,
+      int no, int wo, int tmask, int tfirst, int torder) {
+    final p0 = a0.pp(y, pr, (c0 << 7 | (tmask & 0x0F) | m3 << 4) & 0x7FFF);
+    final p1 =
+        a1.pp(y, pr, hash4(bpos, m3 & 3, c4 & 0xFFFF, tmask >> 4) & mask);
+    final p2 = a2.pp(y, pr, hash2(c0, e << 2 | len2) & mask);
+    final p3 = a3.pp(y, pr, hash3(c0, c4 & 0xFFFF, tfirst) & mask);
+    final pA = _avg4(pr << 4, p1, p2, p3);
     final p4 = b1.pp(y, pA >> 4,
-        _b1cx(e + ((wo >> 2) << 5 | len2 << 3 | (no >> 1)) * 257));
+        _b1cx(e + ((wo >> 2) << 5 | len2 << 3 | (torder >> 1)) * 257));
     final p5 = b2.pp(y, p0 >> 4, hash2(c0, c4 & 0xFFFFFF) & mask);
     final p6 = b3.pp(y, p0 >> 4, hash2(c0, c4) & mask);
     final pB = _avg4(p0, p4, p5, p6);
@@ -710,18 +814,19 @@ final class _SsePx {
   }
 
   // SSE::p, DEFAULT
-  int generic(int y, int pr, int c0, int bpos, int c4, int m3, int e,
-      int len2, int no, int wo) {
+  int generic(int y, int pr, int c0, int bpos, int c4, int m3, int e, int len2,
+      int no, int wo) {
     final p0 = a0.pp(y, pr, len2 << 6 | bpos << 3 | m3);
     final p1 = a1.pp(y, pr, (no << 5 | len2 << 3 | bpos) & mask);
     final p2 = a2.pp(y, pr, (c0 | (c4 & 0xFF) << 8) & mask);
     final p3 = a3.pp(y, pr, hash2(c0, c4 & 0xFFFF) & mask);
     final pA = _avg4(pr << 4, p1, p2, p3);
-    final p4 =
-        b1.pp(y, pA >> 4, _b1cx(e + (m3 << 5 | no << 2 | len2) * 257));
+    final p4 = b1.pp(y, pA >> 4, _b1cx(e + (m3 << 5 | no << 2 | len2) * 257));
     final p5 =
         b2.pp(y, p0 >> 4, (m3 << 13 | len2 << 11 | (wo >> 2) << 8 | c0) & mask);
-    final p6 = b3.pp(y, p0 >> 4,
+    final p6 = b3.pp(
+        y,
+        p0 >> 4,
         ((m3 & 3) << 14 | (bpos >> 1) << 12 | (c4 & 0xFF) << 4 | (wo >> 1)) &
             mask);
     final pB = _avg4(p0, p4, p5, p6);

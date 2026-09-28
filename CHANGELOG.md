@@ -1,5 +1,16 @@
 ## Unreleased
 
+- **zcm stream version 3** (versions 1 and 2 are refused with a message
+  that names the version): the budget of small inputs follows the level
+  (up to 2 KiB of tables per input byte at levels 8 and 9, 1 KiB at 7,
+  256 bytes at 6, 64 bytes below: the strong levels were starved of
+  context map memory, -2 to -4% on text, code and x86), paq8px's match
+  model with four candidates, recovery and minimum lengths per data type
+  (levels 7 to 9), paq8px's text model with its English stemmer and word
+  classes (levels 8 and 9, with its state in the text SSE chain). Ported
+  but not used by any level (measured, gains below 0.3% for their cost):
+  paq8px's sparse match, sparse bit, linear prediction and similarity
+  models (`zcm_sparse.dart`).
 - **.zx dedup at scale**: the chunks of earlier generations are kept in
   chunk runs (block type 6, Index record 0x36, `docs/zx-format.md`
   section 6.4.1), sorted by SHA-256 and searched on disk through fences

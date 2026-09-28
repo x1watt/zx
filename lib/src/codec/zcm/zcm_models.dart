@@ -186,9 +186,18 @@ final class OrderModel implements ZcmOrders {
   }
 }
 
+/// A match model as the predictor sees it (mixer selectors, SSE).
+abstract interface class ZcmMatchInfo implements ZcmModel {
+  /// Current match length (0 when no match).
+  int get length;
+
+  /// Expected byte, or -1.
+  int get expectedByte;
+}
+
 /// Match model: finds the last occurrence of the recent bytes (two hash
 /// lengths, the longer one preferred) and predicts the byte that followed.
-final class MatchModel implements ZcmModel {
+final class MatchModel implements ZcmMatchInfo {
   final Int32List _htS;
   final Int32List _htL;
   final int _mask;
@@ -201,10 +210,10 @@ final class MatchModel implements ZcmModel {
   final StateMap _sm2 = StateMap(256 * 8 * 2 * 4);
   final int _bufMask;
 
-  /// Expected byte for other models, or -1.
+  @override
   int get expectedByte => _len > 0 ? _exp : -1;
 
-  /// Current match length (0 when no match).
+  @override
   int get length => _len;
 
   MatchModel(int tableEntries, int bufBytes, {this.minS = 5, this.minL = 12})

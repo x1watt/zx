@@ -381,8 +381,11 @@ decision:
   Marcio Pais, Andrew Epstein, Zoltan Gotthardt and others, GNU GPL
   version 2 or later. The nonstationary state table, its priorities and
   groups (zcm_state_table.dart) are copied from paq8px StateTable.hpp;
-  the word, chart, nest, XML, x86, image and audio models, the SSE
-  stages and the APMPost follow paq8px, whose image models come from
+  the word, text (with its English stemmer, after Martin Porter's
+  Porter2), match, sparse match, sparse bit, linear prediction,
+  similarity, chart, nest, XML, x86, image and audio models, the
+  stationary and residual maps, the SSE stages and the APMPost follow
+  paq8px, whose image models come from
   Marcio Pais's Emma, whose OLS and LMS predictors are by Sebastian
   Lehmann, and whose audio model follows Florin Ghido's paper on stereo
   lossless audio prediction.

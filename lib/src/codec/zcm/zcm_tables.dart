@@ -126,3 +126,13 @@ int log2Exact(int x) {
   }
   return n;
 }
+
+/// Hash bits of a table of 2^bits entries of [entryBytes] each that fits
+/// in [bytes] (10 to 22).
+int zcmHashBitsFor(int bytes, int entryBytes) {
+  var b = 10;
+  while (b < 22 && (entryBytes << (b + 1)) <= bytes) {
+    b++;
+  }
+  return b;
+}

@@ -172,7 +172,58 @@ same time on the 16 core machine, so the speeds are 10 to 20% below a
 quiet machine (alone: level 1 1,278 KB/s, level 3 209 KB/s, level 5 89
 KB/s on the small corpus).
 
-Small corpus:
+Small corpus, stream version 3 (one process per level, alone on the
+machine, capped at 3 GiB, encode only; the round trips are checked by
+test/zcm_test.dart):
+
+| Level | text.md | source.dart | x86.bin | kernel.bin | total | enc KB/s | peak RSS MiB |
+|---|---|---|---|---|---|---|---|
+| 1 | 26,632 | 36,163 | 52,805 | 250,952 | 366,552 | 1,228 | 40 |
+| 2 | 25,291 | 32,400 | 48,676 | 249,474 | 355,841 | 303 | 34 |
+| 3 | 24,730 | 30,923 | 45,767 | 249,515 | 350,935 | 202 | 26 |
+| 4 | 24,353 | 29,810 | 39,558 | 248,646 | 342,367 | 95 | 28 |
+| 5 | 24,202 | 29,138 | 39,474 | 248,392 | 341,206 | 85 | 34 |
+| 6 | 23,330 | 27,598 | 37,686 | 248,676 | 337,290 | 24 | 93 |
+| 7 | 22,554 | 25,886 | 36,843 | 248,232 | 333,515 | 10 | 166 |
+| 8 | 22,339 | 25,386 | 36,379 | 247,999 | 332,103 | 6 | 437 |
+| 9 | 22,325 | 25,366 | 36,341 | 248,107 | 332,139 | 6 | 403 |
+| paq8px v216 -8 | 23,481 | 25,611 | 34,961 | 246,748 | 330,801 | 3.5 to 7 | 1,800 to 2,300 |
+
+Steps of version 3, measured at level 7 on the small corpus (text.md,
+source.dart, x86.bin, kernel.bin) and on the first 300,000 bytes of
+book.txt without the dictionary (book300):
+
+- The memory of small inputs: the budget was 64 bytes per input byte
+  plus 8 MiB at every level, so a 200 KB file at level 7 had about 7 MiB
+  for all its context maps (a hundred contexts, three bucket lookups per
+  byte each) and they thrashed. With 1 KiB per input byte at level 7:
+  text.md 23,110 to 22,581 (-2.3%), source.dart 27,107 to 25,998
+  (-4.1%), x86.bin 38,004 to 36,986 (-2.7%), kernel.bin unchanged; 4 KiB
+  per byte gains another 0.3% at twice the memory. Levels 2 to 5 do not
+  gain (few contexts), level 6 gains 0.5% with 256 bytes per byte.
+  `zcmTableBytesPerInputByte` is 64 (levels 1 to 5), 256 (6), 1 KiB
+  (7) and 2 KiB (8, 9).
+- paq8px's match model (four candidates, recovery after a one byte
+  mismatch, minimum lengths 4/6/8 for text and binary, 3/5/8 for x86):
+  text.md -0.1%, source.dart -0.4%, book300 -0.2%, x86.bin -0.6%,
+  about 10% slower. At levels 3 and 5 it gains 0.8% and 0.3% but costs
+  40% and 25% of the speed (below the targets): only levels 7 to 9 use
+  it.
+- paq8px's text model with its English stemmer (28 contexts with run
+  and byte history inputs, ten mixer weight sets, its state in the text
+  SSE chain): text.md -0.8%, source.dart -1.7%, book300 -1.3%, but half
+  the speed; levels 8 and 9 use it. With the old memory budget it gained
+  nothing (0.1%): the new contexts only diluted the starved maps.
+- Level 9 is 36 bytes above level 8 in total: kernel.bin (compressed
+  data) loses 0.04% with PPMd and DMC while the other files gain; levels
+  1 to 8 are monotonic.
+- Ported and measured, not used by any level (gains below 0.3% on these
+  files for their cost): paq8px's sparse bit model (-0.05%), linear
+  prediction (-0.02%), sparse match (+0.07%) and the similarity model
+  pair with a 2,048 byte window (-0.26%, 2.4 times slower), all on
+  x86.bin, kernel.bin and 256 KiB of firmware.bin.
+
+Small corpus, stream version 2 (before the steps above):
 
 | Level | text.md | source.dart | x86.bin | kernel.bin | total | enc KB/s | dec KB/s | peak RSS MiB |
 |---|---|---|---|---|---|---|---|---|
@@ -194,7 +245,8 @@ Small corpus:
 | paq8px v216 -5 | 23,494 | 25,686 | 35,029 | 246,744 | 330,953 | 4 to 7.5 | | 600 to 900 |
 | paq8px v216 -8 | 23,481 | 25,611 | 34,961 | 246,748 | 330,801 | 3.5 to 7 | | 1,800 to 2,300 |
 
-Large corpus (6,758,876 bytes):
+Large corpus (6,758,876 bytes), stream version 2 (not measured again
+for version 3 yet):
 
 | Level | book.txt | source.cpp | x86_64.elf | firmware.bin | photo.ppm | photo.bmp | gray.pgm | music.wav | voice8.wav | total | enc KB/s | peak RSS MiB |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
