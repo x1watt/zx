@@ -10,8 +10,11 @@
 // every byte. The output is a probability for each of the 256 next
 // bytes.
 //
-// Differences from cmix: doubles instead of floats; no auxiliary inputs
-// (cmix also feeds the byte predictions of its other models); the output
+// With [ZcmLstm.aux] = 256 it is cmix's ByteMixer (mixer/byte-mixer.cpp):
+// the byte distributions of the other byte models are dense inputs of
+// every layer beside the previous byte.
+//
+// Differences from cmix: doubles instead of floats; the output
 // layer is shared across the horizon (cmix keeps a copy per step); the
 // weights are initialised from a fixed seed.
 //
@@ -93,6 +96,12 @@ final class ZcmLstm {
   final int cells;
   final int layers;
   final int horizon;
+
+  /// Dense inputs besides the previous byte (0, or 256 for the byte
+  /// mixer: the byte distributions of other models, as cmix's ByteMixer
+  /// feeds its LSTM), given by [setAux] before each [perceive].
+  final int aux;
+  final Float64List _aux;
   final double learningRate;
   final double gradientClip;
   final List<_Layer> _layers = [];
@@ -116,6 +125,7 @@ final class ZcmLstm {
       {this.cells = 64,
       this.layers = 1,
       this.horizon = 20,
+      this.aux = 0,
       this.learningRate = 0.03,
       this.gradientClip = 10.0})
       : hidden = Float64List(layers * cells + 1),
@@ -123,11 +133,12 @@ final class ZcmLstm {
         _wOut = Float64List(256 * (layers * cells + 1)),
         _out = Float64List(horizon * 256)..fillRange(0, horizon * 256, 1 / 256),
         _inputHist = Int32List(horizon),
+        _aux = Float64List(aux),
         _beta1Pow = Float64List(3001),
         _beta2Pow = Float64List(3001) {
     hidden[hidden.length - 1] = 1.0;
     for (var l = 0; l < layers; l++) {
-      final inputs = cells + (l > 0 ? cells : 0) + 1;
+      final inputs = cells + (l > 0 ? cells : 0) + aux + 1;
       final layer = _Layer(cells, inputs, horizon);
       _layers.add(layer);
       // Bias input of every step.
@@ -157,6 +168,13 @@ final class ZcmLstm {
   double _rand() {
     _seed = (_seed * 1103515245 + 12345) & 0x7FFFFFFF;
     return _seed / 2147483648.0;
+  }
+
+  /// Sets the dense inputs of the next prediction ([aux] values).
+  void setAux(Float64List v) {
+    for (var i = 0; i < aux; i++) {
+      _aux[i] = v[i];
+    }
   }
 
   /// Probabilities of the next byte after the last [predict].
@@ -219,10 +237,16 @@ final class ZcmLstm {
       for (var j = 0; j < cells; j++) {
         x[xb + j] = hidden[l * cells + j];
       }
+      var ab = xb + cells;
       if (l > 0) {
         for (var j = 0; j < cells; j++) {
           x[xb + cells + j] = hidden[(l - 1) * cells + j];
         }
+        ab += cells;
+      }
+      // The dense inputs (byte mixer), after the hidden states.
+      for (var j = 0; j < aux; j++) {
+        x[ab + j] = _aux[j];
       }
       _forward(layer, e, symbol);
       // The new output of the layer.

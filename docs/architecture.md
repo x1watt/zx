@@ -771,10 +771,21 @@ around one predictor, and the file headers name their sources.
   models; ported, tested and measured, see docs/performance.md), `zcm_x86.dart` (the paq8px x86
   parser), `zcm_image.dart` (images: residual histograms, paq8px's six
   least squares fits per plane, neighborhood and palette contexts, the
-  1 and 4 bit image model), `zcm_audio.dart` (PCM audio: least
-  squares and LMS predictors, residual contexts), `zcm_ols.dart` (the
+  1 and 4 bit image model), `zcm_image_px.dart` (levels 7 to 9: paq8px's
+  Image24BitModel and the gray part of Image8BitModel ported as whole
+  models, with their 122 and 74 predictors through three residual maps,
+  six and five least squares fits, hashed and bit contexts, their mixer
+  selectors (a mixer per color plane for 24 and 32-bit pixels) and their
+  SSE stages; the predictor wires them in `_pxImageP`), `zcm_audio.dart` (PCM audio of levels 3
+  to 6: least squares and LMS predictors, residual contexts),
+  `zcm_audio_px.dart` (levels 7 to 9: paq8px's Audio8BitModel and
+  Audio16BitModel with their exact least squares taps, LMS filters,
+  residual maps, mixer selectors and audio SSE stage, plus a weight set
+  and an APM in the residual of the predictor with the smallest recent
+  errors; OLS rows in Float64x2), `zcm_ols.dart` (the
   least squares fit), `zcm_byte_models.dart` (PPMd var.H of
-  `lib/src/codec/ppmd` and the LSTM as byte predictors), `zcm_lstm.dart`,
+  `lib/src/codec/ppmd`, the LSTM and cmix's byte mixer as byte
+  predictors), `zcm_lstm.dart`,
   `zcm_math.dart` (deterministic exp, tanh, logistic, sqrt),
   `zcm_fast.dart` (the level 1 predictor, one class),
   `zcm_predictor.dart` (the level table, the memory split, the mixer
@@ -796,17 +807,23 @@ around one predictor, and the file headers name their sources.
 - **Levels.** 1: `ZcmFastPredictor` (orders 1 to 6 in nibble tables,
   match, one mixer set, one APM); 2 to 5: orders 2, 3, 4, 6 with bit
   histories, the word model (5, 10 or 16 contexts), exe contexts (the
-  paq8px x86 parser from 4), sparse contexts from 4, light image and
+  paq8px x86 parser from 4, its inputs doubled as paq8px does on exe
+  blocks), sparse contexts from 4, light image and
   audio models from 3; 6: more orders, indirect, record, char groups,
   the full x86 parser, the full image and audio models; 7: byte history
   inputs, the paq8px word model and match model, paq8px's mixer
-  selectors and SSE chains; 8: word contexts on binary data too and the
+  selectors and SSE chains, paq8px's audio models (without the order-n
+  contexts on audio), paq8px's gray and color image models (palette
+  images keep the full zcm image model); 8: word contexts on binary data too and the
   paq8px text model on text (its state also feeds the text SSE chain); 9: PPMd (its memory
   beside the budget) and DMC behind a quick gain check (`ZcmGainGate`:
   their inputs are zero while their own predictions save less than about
   1/32 bit per bit, so compressed data does not lose), paq8px's
   similarity model pair on binary and x86 data, and the optional LSTM
-  (`lstm=small|medium|large` or C/L/H). The chart, nest and XML models
+  (`lstm=small|medium|large` or C/L/H; at level 9 it is cmix's byte
+  mixer on text, binary and x86 data: its inputs are the previous byte
+  and PPMd's byte distribution, `ByteMixerModel`; image and audio
+  segments get a plain LSTM). The chart, nest and XML models
   are ported but no level uses them (they did not pay on the benchmark
   corpora, docs/performance.md).
 - **Determinism.** A stream must decode on every machine, so the model

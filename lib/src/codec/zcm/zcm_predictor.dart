@@ -8,10 +8,12 @@
 import 'dart:typed_data';
 
 import 'zcm_audio.dart';
+import 'zcm_audio_px.dart';
 import 'zcm_byte_models.dart';
 import 'zcm_components.dart';
 import 'zcm_fast.dart';
 import 'zcm_image.dart';
+import 'zcm_image_px.dart'; // image agent
 import 'zcm_match.dart';
 import 'zcm_models.dart';
 import 'zcm_sparse.dart';
@@ -207,12 +209,12 @@ final class ZcmLevelSpec {
             bh: true,
             charGroup: true,
             image: 2,
-            audio: level >= 8 ? 3 : 2, // media agent: paq8px's set at 8, 9
+            audio: 3, // audio agent: paq8px's audio models at 7 to 9
             selectors: 7,
             apms: 5,
             dmc: level >= 9,
             ppmdOrder: level >= 9 ? 16 : 0,
-            text: level >= 8 ? 1 : 0,
+            text: level >= 8 ? (x.contains('txbin') ? 2 : 1) : 0,
             sparseMatch: x.contains('sm') ? 1 : 0,
             sparseBit: x.contains('sb') ? 1 : 0,
             linearPrediction: x.contains('lp'),
@@ -258,12 +260,23 @@ final class ZcmPredictor implements ZcmBitPredictor {
   final NestModel? _nest;
   final XmlModel? _xml;
   final PpmdByteModel? _ppmd;
-  final LstmByteModel? _lstm;
+  // The LSTM (option lstm): with PPMd (level 9) it is cmix's byte mixer
+  // on text, binary and x86 data (its inputs are the previous byte and
+  // PPMd's distribution), and a plain LSTM on image and audio segments,
+  // built on the first one.
+  LstmByteModel? _lstm;
+  ByteMixerModel? _byteMixer;
+  final int _lstmCells, _lstmLayers, _lstmHorizon;
   final int _imageBytes;
   final int _audioBytes;
   ImageModel? _image;
   ZcmBitImageModel? _bitImage; // media agent: 1 and 4 bit images
   AudioModel? _audio;
+  AudioPxModel? _audioPx; // audio agent: levels 7 to 9
+  AudioSse? _sseAudio;
+  // audio agent: the predictor's weight sets for paq8px's audio models
+  // (c0 only; the audio model selects five more).
+  static const int _audioSelectors = 1;
   final List<Mixer?> _mixers = List<Mixer?>.filled(ZcmBlockType.count, null);
   final List<List<ZcmModel>?> _active =
       List<List<ZcmModel>?>.filled(ZcmBlockType.count, null);
@@ -406,9 +419,9 @@ final class ZcmPredictor implements ZcmBitPredictor {
             ? (PpmdByteModel(spec.ppmdOrder, ppmdBytes)
               ..gate = spec.gainGate ? ZcmGainGate() : null)
             : null,
-        _lstm = lstmCells > 0
-            ? LstmByteModel(lstmCells, lstmLayers, lstmHorizon)
-            : null,
+        _lstmCells = lstmCells,
+        _lstmLayers = lstmLayers,
+        _lstmHorizon = lstmHorizon,
         _orders = OrderModel(spec.orders, bo,
             rich: spec.rich, bh: spec.bh, pairs: spec.bh),
         _match = spec.pxMatch
@@ -475,16 +488,26 @@ final class ZcmPredictor implements ZcmBitPredictor {
   /// Bytes the image and audio models add when such data appears.
   int get mediaTableBytes =>
       (_imageBytes > 0 ? ImageModel.tableBytes(_imageBytes) : 0) +
-      (_audioBytes > 0 ? AudioModel.tableBytes(_audioBytes) : 0);
+      (_audioBytes > 0
+          ? (spec.audio >= 3 // audio agent
+              ? AudioPxModel.tableBytes + AudioSse.tableBytes
+              : AudioModel.tableBytes(_audioBytes))
+          : 0);
+
+  LstmByteModel _plainLstm() =>
+      _lstm ??= LstmByteModel(_lstmCells, _lstmLayers, _lstmHorizon);
 
   List<ZcmModel> _modelsFor(int type) {
     final l = <ZcmModel>[_orders, _match];
     if (type == ZcmBlockType.audio && _audioBytes > 0) {
-      // media agent: audio 3 is paq8px's full predictor set.
-      l.add(_audio ??= AudioModel(_audioBytes,
-          full: spec.audio >= 2, big: spec.audio >= 3));
+      // audio agent: audio 3 is paq8px's audio models (zcm_audio_px.dart).
+      l.add(spec.audio >= 3
+          ? (_audioPx ??= AudioPxModel())
+          : (_audio ??= AudioModel(_audioBytes, full: spec.audio >= 2)));
       if (_record != null) l.add(_record);
-      if (_lstm != null) l.add(_lstm);
+      // The order-n contexts do not pay beside paq8px's audio models.
+      if (spec.audio >= 3) l.remove(_orders);
+      if (_lstmCells > 0) l.add(_plainLstm());
       return l;
     }
     // media agent: 1 and 4 bit images (a quarter of the image budget).
@@ -494,7 +517,7 @@ final class ZcmPredictor implements ZcmBitPredictor {
     }
     if (ZcmBlockType.isImage(type) && _imageBytes > 0) {
       l.add(_image ??= ImageModel(_imageBytes, full: spec.image >= 2));
-      if (_lstm != null) l.add(_lstm);
+      if (_lstmCells > 0) l.add(_plainLstm());
       return l;
     }
     final w = _word;
@@ -518,16 +541,32 @@ final class ZcmPredictor implements ZcmBitPredictor {
     if (_indirect != null) l.add(_indirect);
     if (_record != null) l.add(_record);
     final x = _exe;
-    if (x != null && type == ZcmBlockType.exe) l.add(x);
+    if (x != null &&
+        (type == ZcmBlockType.exe ||
+            (zcmExperiment.contains('exeall') &&
+                type == ZcmBlockType.binary))) {
+      l.add(x);
+    }
     if (_charGroup != null) l.add(_charGroup);
     if (_chart != null) l.add(_chart);
     if (_nest != null && type != ZcmBlockType.exe) l.add(_nest);
     if (_xml != null && type == ZcmBlockType.text) l.add(_xml);
     if (_dmc != null) l.add(_dmc);
     if (_ppmd != null) l.add(_ppmd);
-    if (_lstm != null) l.add(_lstm);
+    if (_lstmCells > 0) {
+      final pm = _ppmd;
+      l.add(pm != null
+          ? (_byteMixer ??=
+              ByteMixerModel(pm, _lstmCells, _lstmLayers, _lstmHorizon))
+          : _plainLstm());
+    }
     return l;
   }
+
+  // audio agent: paq8px's audio models bring their own weight sets.
+  int _selectorsFor(int type) => type == ZcmBlockType.audio && spec.audio >= 3
+      ? _audioSelectors
+      : spec.selectors;
 
   Mixer _mixerFor(int type, List<ZcmModel> models) {
     var n = 1;
@@ -535,7 +574,7 @@ final class ZcmPredictor implements ZcmBitPredictor {
       n += m.inputs;
     }
     final sizes = <int>[256];
-    final sel = spec.selectors;
+    final sel = _selectorsFor(type);
     if (sel >= 2) sizes.add(64 * 8);
     if (sel >= 3) sizes.add(256);
     if (sel >= 4) sizes.add(16 * 4 * 8);
@@ -554,7 +593,8 @@ final class ZcmPredictor implements ZcmBitPredictor {
     var w0 = (65536 * 12) ~/ n;
     if (w0 > 16384) w0 = 16384;
     return Mixer(n, sizes,
-        finalContexts: 8,
+        // audio agent: the final layer of audio by the bit of the sample.
+        finalContexts: type == ZcmBlockType.audio ? 16 : 8,
         initWeight: w0,
         finalRate: spec.finalRate,
         finalRateMin: spec.finalRateMin);
@@ -567,6 +607,7 @@ final class ZcmPredictor implements ZcmBitPredictor {
     final type = st.blockType;
     final last = _last;
     if (last != null) last.update(y);
+    if (_isPxImage(type)) return _pxImageP(type); // image agent
     var models = _active[type];
     if (models == null) {
       models = _active[type] = _modelsFor(type);
@@ -592,7 +633,7 @@ final class ZcmPredictor implements ZcmBitPredictor {
     final mq = ml == 0
         ? 0
         : (ml < 16 ? 1 + (ml >> 2) : (ml < 32 ? 5 : (ml < 64 ? 6 : 7)));
-    final sel = spec.selectors;
+    final sel = _selectorsFor(type);
     final hits = _orders.hits;
     if (sel >= 2) m.set(mq << 3 | bpos);
     if (sel >= 3) m.set(c4 & 255);
@@ -635,9 +676,23 @@ final class ZcmPredictor implements ZcmBitPredictor {
     for (var i = 0; i < extra.length; i++) {
       extra[i].setMixerContexts(st, m);
     }
-    m.setFinal(bpos);
+    final ap = _audioPx;
+    final isAudioPx = ap != null && type == ZcmBlockType.audio;
+    m.setFinal(isAudioPx ? ap.finalContext : bpos);
     final pr = m.p();
     _prMix = pr;
+    if (isAudioPx) {
+      // audio agent: paq8px's audio SSE stage; the model reads the final
+      // probability for its coding loss contexts.
+      var pf = pr << 4;
+      if (spec.apms >= 5) {
+        pf = (_sseAudio ??= AudioSse())
+            .p(y, pr, bpos, m3, ap.sseContext, ap.apmContext);
+      }
+      ap.lastP = pf;
+      _pr = pf >> 4;
+      return pf;
+    }
     final img = _image;
     if (spec.apms >= 5 && img != null && ZcmBlockType.isImage(type)) {
       final sse = _sseImage ??= _SsePx(_sseBits);
@@ -714,6 +769,97 @@ final class ZcmPredictor implements ZcmBitPredictor {
   @override
   @pragma('vm:prefer-inline')
   void update(int bit) => s.update(bit);
+
+  // image agent (from here to the end of the class): paq8px's
+  // Image24BitModel with a mixer per color plane and Image8BitModel
+  // (gray), their mixer selectors and SSE stages (zcm_image_px.dart), at
+  // levels 7 to 9. Like paq8px, the other selectors are only the order
+  // and the match length.
+  PxImage24Model? _pxImg24;
+  PxImage8Model? _pxImg8;
+  final List<Mixer?> _pxMixers = List<Mixer?>.filled(4, null);
+  List<ZcmModel>? _pxModels24, _pxModels8;
+  ZcmImageSse? _pxSse24, _pxSse8;
+
+  bool _isPxImage(int type) =>
+      spec.level >= 7 &&
+      _imageBytes > 0 &&
+      (type == ZcmBlockType.image24 ||
+          type == ZcmBlockType.image32 ||
+          type == ZcmBlockType.image8);
+
+  int _pxImageP(int type) {
+    final st = s;
+    final y = st.y;
+    final gray = type == ZcmBlockType.image8;
+    final PxImageModel img;
+    final List<ZcmModel> models;
+    if (gray) {
+      final g = _pxImg8 ??= PxImage8Model(_imageBytes);
+      img = g;
+      models = _pxModels8 ??= <ZcmModel>[_orders, _match, g];
+    } else {
+      final c = _pxImg24 ??= PxImage24Model(_imageBytes);
+      img = c;
+      models = _pxModels24 ??= <ZcmModel>[_orders, _match, c];
+    }
+    img.prepare(st);
+    final plane = img.plane;
+    final mi = gray ? 3 : (plane == 0 ? 0 : (plane == 1 ? 1 : 2));
+    var m = _pxMixers[mi];
+    if (m == null) {
+      var n = 1;
+      for (final x in models) {
+        n += x.inputs;
+      }
+      var w0 = (65536 * 12) ~/ n;
+      if (w0 > 16384) w0 = 16384;
+      m = _pxMixers[mi] = Mixer(n, [64, 64, ...img.mixerContextSizes],
+          finalContexts: 8,
+          // A slower first layer (20 to 6 instead of 56 to 14) gave -1.2%
+          // and -2.2% on the first 128 and 100 rows of photo.bmp and
+          // photo.ppm but -0.1% and +0.45% on the whole files.
+          initWeight: w0,
+          finalRate: spec.finalRate,
+          finalRateMin: spec.finalRateMin);
+    }
+    _last = m;
+    for (var i = 0; i < models.length; i++) {
+      models[i].mix(st, m);
+    }
+    m.add(256);
+    final c0 = st.c0;
+    final bpos = st.bpos;
+    final miss = (_pr >= 2048) != (y == 1) ? 1 : 0;
+    _misses = ((_misses << 1) | miss) & 0xFFFF;
+    final m3 = (_misses & 1) |
+        ((_misses & 0xFE) != 0 ? 2 : 0) |
+        ((_misses & 0xFF00) != 0 ? 4 : 0);
+    final hits = _orders.hits;
+    final ml = _match.length;
+    final mq = ml == 0
+        ? 0
+        : (ml < 16 ? 1 + (ml >> 2) : (ml < 32 ? 5 : (ml < 64 ? 6 : 7)));
+    m.set((hits > 7 ? 7 : hits) << 3 | bpos);
+    m.set(mq << 3 | bpos);
+    img.setMixerContexts(st, m);
+    m.setFinal(bpos);
+    final pr = m.p();
+    _prMix = pr;
+    var pf = pr << 4;
+    if (spec.apms >= 5) {
+      final e = _match.expectedByte;
+      final sse = gray
+          ? (_pxSse8 ??= ZcmImageSse(_sseBits, gray: true))
+          : (_pxSse24 ??= ZcmImageSse(_sseBits, gray: false));
+      pf = sse.p(y, pr, c0, bpos, m3, img, e < 0 ? 0 : e);
+    }
+    if (pf < 1) pf = 1;
+    if (pf > 65535) pf = 65535;
+    img.finalP = pf;
+    _pr = pf >> 4;
+    return pf;
+  }
 }
 
 final Uint8List _charClass = () {

@@ -1,4 +1,5 @@
-// zcm: the audio model (8 and 16 bit PCM, mono or stereo).
+// zcm: the audio model of levels 3 to 6 (8 and 16 bit PCM, mono or stereo;
+// levels 7 to 9 use paq8px's models, zcm_audio_px.dart).
 //
 // After the Audio8BitModel and Audio16BitModel of paq8px (Marcio Pais,
 // after Florin Ghido's 'An asymptotically optimal predictor for stereo
@@ -174,30 +175,11 @@ final class AudioModel implements ZcmModel, ZcmMixerContexts {
     [640, 64, 7e-5, 1e-5],
     [256, 32, 2e-4, 5e-5],
   ];
-  // paq8px Audio16BitModel's fits and LMS filters (its own sample
-  // counts, solve intervals and forgetting factors), the big model of
-  // the slowest levels.
-  static const List<List<num>> _olsBig = [
-    [64, 64, 24, 0.9975],
-    [45, 45, 30, 0.9965],
-    [60, 30, 31, 0.996],
-    [30, 60, 32, 0.995],
-    [70, 20, 33, 0.995],
-    [45, 45, 34, 0.9985],
-    [14, 14, 4, 0.98],
-    [24, 8, 3, 0.992],
-  ];
-  static const List<List<num>> _rmsBig = [
-    [1280, 640, 3e-5, 2e-5],
-    [640, 64, 8e-5, 1e-5],
-    [2450, 8, 1.6e-5, 1e-6],
-  ];
   static const List<List<num>> _lmsLight = [
     [32, 8, 0.008],
   ];
 
   final bool full;
-  final bool big;
   final int _nPred;
   final int _nOls, _nLms, _nRms;
   // Per channel: sample history (most recent first).
@@ -219,24 +201,21 @@ final class AudioModel implements ZcmModel, ZcmMixerContexts {
   int _ch = 0, _lsb = 0; // channel and byte of the sample (0: MSB)
   int _mask = 0, _errLog = 0;
 
-  /// [full]: the larger least squares fits and LMS filters; [big]:
-  /// paq8px's full set (much slower). [allowance]: bytes for the tables.
-  factory AudioModel(int allowance, {bool full = true, bool big = false}) {
-    big = big && full;
-    final ols = big ? _olsBig : (full ? _olsFull : _olsLight);
+  /// [full]: the larger least squares fits and LMS filters (levels 7 to
+  /// 9 use paq8px's models, zcm_audio_px.dart). [allowance]: bytes for
+  /// the tables.
+  factory AudioModel(int allowance, {bool full = true}) {
+    final ols = full ? _olsFull : _olsLight;
     final lms = full ? _lmsFull : _lmsLight;
-    final rms = big ? _rmsBig : (full ? _rmsFull : const <List<num>>[]);
-    return AudioModel._(allowance, full, big, ols, lms, rms);
+    final rms = full ? _rmsFull : const <List<num>>[];
+    return AudioModel._(allowance, full, ols, lms, rms);
   }
 
-  AudioModel._(int allowance, this.full, this.big, List<List<num>> ols,
+  AudioModel._(int allowance, this.full, List<List<num>> ols,
       List<List<num>> lms, List<List<num>> rms)
-      : _hist = big ? 2560 : 720,
-        _h = [
-          Float64List((big ? 2560 : 720) * 2),
-          Float64List((big ? 2560 : 720) * 2)
-        ],
-        _hp = Int32List.fromList([big ? 2560 : 720, big ? 2560 : 720]),
+      : _hist = 720,
+        _h = [Float64List(720 * 2), Float64List(720 * 2)],
+        _hp = Int32List.fromList([720, 720]),
         _nOls = ols.length,
         _nLms = lms.length,
         _nRms = rms.length,
@@ -284,9 +263,8 @@ final class AudioModel implements ZcmModel, ZcmMixerContexts {
   int get inputs => _nPred * _nMaps * 2;
 
   @override
-  List<int> get mixerContextSizes => full
-      ? const [8192, 4096, 512, 2560, 256]
-      : const [8192, 4096, 512];
+  List<int> get mixerContextSizes =>
+      full ? const [8192, 4096, 512, 2560, 256] : const [8192, 4096, 512];
 
   /// Context bits of the residual maps for [allowance] bytes.
   static int mapBits(int allowance, [int nPred = _maxPred]) {
@@ -364,7 +342,7 @@ final class AudioModel implements ZcmModel, ZcmMixerContexts {
     var i = 0;
     for (var j = 0; j < _nOls; j++, i++) {
       final o = _ols[j][ch];
-      final cfg = (big ? _olsBig : (full ? _olsFull : _olsLight))[j];
+      final cfg = (full ? _olsFull : _olsLight)[j];
       final nOther = stereo ? cfg[1].toInt() : 0;
       final nOwn = o.n - nOther;
       for (var q = 0; q < nOwn; q++) {

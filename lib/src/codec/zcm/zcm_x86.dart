@@ -96,6 +96,11 @@ final class X86Model implements ZcmModel, ZcmMixerContexts {
   /// otherwise lighter (no byte history, the three small selectors).
   final bool full;
 
+  /// Input scale in 64ths: paq8px doubles the inputs of its ExeModel on
+  /// exe blocks (setScale(128), the only blocks zcm uses it on). On the
+  /// first 128 KiB of x86.bin: level 4 -0.8%, 5 -0.7%, 6 -0.5%, 8 -0.3%.
+  static const int scale = 128;
+
   X86Model(int bytes, {this.full = true})
       : _cm = ContextMap(bytes, 20, bh: full, rich: full);
 
@@ -471,7 +476,12 @@ final class X86Model implements ZcmModel, ZcmMixerContexts {
     // IndirectMap update of the last bit.
     _im[_imIdx] = nextState(_im[_imIdx], y, _rnd);
     if (s.bpos == 0) _update(s);
+    final k0 = m.nx;
     _cm.mix(m, y, s.bpos, s.c0, s.c4 & 255);
+    final t = m.tx;
+    for (var i = k0; i < m.nx; i++) {
+      t[i] = (t[i] * scale) >> 6;
+    }
     // IndirectMap: a bit history per (break context, bit position).
     _imIdx = hash2(_brkCtx, s.bpos) & ((1 << 20) - 1);
     final state = _im[_imIdx];
@@ -482,8 +492,8 @@ final class X86Model implements ZcmModel, ZcmMixerContexts {
       tx[k] = 0;
       tx[k + 1] = 0;
     } else {
-      tx[k] = kStretch[p1] >> 1;
-      tx[k + 1] = (p1 - 2048) >> 2;
+      tx[k] = ((kStretch[p1] >> 1) * scale) >> 6;
+      tx[k + 1] = (((p1 - 2048) >> 2) * scale) >> 6;
     }
     m.nx = k + 2;
   }

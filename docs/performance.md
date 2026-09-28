@@ -172,17 +172,53 @@ same time on the 16 core machine, so the speeds are 10 to 20% below a
 quiet machine (alone: level 1 1,278 KB/s, level 3 209 KB/s, level 5 89
 KB/s on the small corpus).
 
-Small corpus, zcm 1.0 (stream version 1), 2026-09-28: every table
-counted in the budget (the match model's too), the quick gain check on
-PPMd and DMC and the similarity model pair at level 9. Levels 7 to 9,
-one process each, alone, capped at 3 GiB, encode only (round trips in
-test/zcm_test.dart); levels 1 to 6 were not measured again:
+Small corpus, zcm 1.0 (stream version 1), 2026-09-28, second run:
+every table counted in the budget, the quick gain check on PPMd and DMC,
+the similarity model pair at level 9, paq8px's input boost of the x86
+model and cmix's byte mixer with the LSTM. One process per level, capped
+at 3 GiB, encode only (round trips in test/zcm_test.dart); another
+agent's benchmark ran beside it, so the speeds are about 10% low (level
+3 alone the same morning: 206 KB/s, level 1 1,238 KB/s). x86.bin was
+measured again after the x86 boost (the other files do not change):
 
 | Level | text.md | source.dart | x86.bin | kernel.bin | total | enc KB/s | peak RSS MiB |
 |---|---|---|---|---|---|---|---|
-| 7 | 22,554 | 25,886 | 36,843 | 248,247 | 333,530 | 10 | 419 (7 to 9 in one process) |
-| 8 | 22,339 | 25,386 | 36,397 | 247,999 | 332,121 | 6 | 419 |
-| 9 | 22,325 | 25,366 | 35,946 | 247,687 | 331,324 | 4 | 404 |
+| 1 | 26,632 | 36,163 | 52,805 | 250,952 | 366,552 | 1,068 | 40 |
+| 2 | 25,291 | 32,400 | 48,676 | 249,474 | 355,841 | 257 | 35 |
+| 3 | 24,730 | 30,923 | 45,767 | 249,515 | 350,935 | 181 | 27 |
+| 4 | 24,295 | 29,810 | 39,254 | 248,646 | 342,005 | 86 | 28 |
+| 5 | 24,105 | 29,138 | 39,212 | 248,392 | 340,847 | 75 | 34 |
+| 6 | 23,330 | 27,598 | 37,495 | 248,676 | 337,099 | 24 | 93 |
+| 7 | 22,554 | 25,886 | 36,682 | 248,247 | 333,369 | 10 | 166 |
+| 8 | 22,339 | 25,386 | 36,303 | 247,999 | 332,027 | 5 | 397 |
+| 9 | 22,325 | 25,366 | 35,877 | 247,687 | 331,255 | 4 | 404 |
+| 9, cmix preset (LSTM 64/1/20 as byte mixer) | 22,270 | 25,274 | 35,870 (before the boost) | 247,662 | 331,076 | 2 | 416 |
+| paq8px v216 -8 | 23,481 | 25,611 | 34,961 | 246,748 | 330,801 | 3.5 to 7 | 1,800 to 2,300 |
+
+Against paq8px -8: text.md -4.9%, source.dart -1.0% (-1.3% with the
+cmix preset), x86.bin +2.6%, kernel.bin +0.4%. On the large corpus at
+level 9 (same build before the x86 boost, alone except for one other
+benchmark): source.cpp 84,685 bytes (paq8px -8 85,093: -0.5%, it was
++4% for stream version 2), x86_64.elf 280,199 (272,823: +2.7%), 3 to 4
+KB/s, 1,781 MiB peak RSS (2 KiB of tables per input byte).
+
+- Level 3 speed: the detector (text, x86 and binary per 64 KiB block,
+  the media headers, the raw image test on binary blocks) takes 1 to 3
+  ms per file of the small corpus (`zcmDetectSegments`, JIT), under 0.1%
+  of the level 3 time; level 3 runs at 206 KB/s alone (181 KB/s with
+  another benchmark beside it), so nothing was changed there.
+- paq8px's input boost of the x86 model (ExeModel `setScale(128)` on exe
+  blocks; zcm's `X86Model.scale`): on the first 128 KiB of x86.bin, 64
+  (none), 80, 96, 112, 128: level 8 35,298, 35,230, 35,194, 35,186,
+  35,205; level 5 38,038, 37,839 (96), 37,795 (112), 37,775 (128); level
+  4 38,122 to 37,818 (128). zcm uses 128 like paq8px: x86.bin -0.8% at
+  level 4, -0.5% at 6, -0.2% at 9.
+- Measured and not used (level 8, x86.bin and kernel.bin, 284,396
+  bytes): the x86 model on binary blocks too (paq8px runs its ExeModel
+  on every block and lets it find code itself; `-x exeall`) 284,641
+  (+0.09%, kernel.bin +0.1%), paq8px's text model on binary blocks
+  (`-x txbin`) 284,992 (+0.2%). A larger memory budget does not change
+  the first 128 KiB of x86.bin (the budget is capped by the input size).
 
 Measured for zcm 1.0 (the memory budget of today, level 8 on x86.bin
 and kernel.bin, 284,396 bytes without them):
@@ -202,10 +238,26 @@ and kernel.bin, 284,396 bytes without them):
   (200/2/100) 8,721 at 1 KB/s. On inputs of this size the LSTM does not
   pay, so the cmix preset keeps the small network; the large one stays
   an explicit choice (`lstm=large`).
-- cmix's FXCM model and byte mixer were not ported yet: FXCM (fxcmv1,
-  about 4,900 lines) is fx2-cmix's enwik model with its own dictionary
-  stream, and the byte mixer needs byte distributions from every model
-  (zcm's models give bits).
+- cmix's byte mixer (mixer/byte-mixer.cpp, `ByteMixerModel` in
+  zcm_byte_models.dart): an LSTM whose inputs are the previous byte and
+  the byte distribution of PPMd (times 16; cmix's factor 2 was 0.1%
+  worse), its own byte distribution turned into bit inputs like the other
+  byte models. On the first 32 KiB of text.md and source.dart at level 9
+  (64 cells, 1 layer, horizon 20): without an LSTM 14,265 bytes at 4
+  KB/s, the plain LSTM 14,273 at 3 KB/s, the plain LSTM and the byte
+  mixer 14,261, the byte mixer alone 14,238 (-0.19%) at 2 KB/s; with 32
+  cells and no option 14,250 (-0.1%) at 3 KB/s. With the lstm option at
+  level 9 (the cmix preset) the LSTM is now the byte mixer; plain level 9
+  does not use it (-0.1% for a quarter of the speed).
+- cmix's FXCM model (fxcmv1.cpp, 4,910 lines) was read but not ported:
+  it is the whole fx-cmix enwik predictor (its own mixers, APMs, context
+  maps, the enwik dictionary decoder with its codeword streams 2b/3b/4b,
+  the wiki table and template column contexts, an English stemmer),
+  and it takes the final probability of cmix's LSTM byte mixer as an
+  input. Most of what is not tied to enwik (bracket, column and
+  indentation contexts, the stemmer, word classes) is already in zcm
+  through paq8px's text and word models (zcm_text.dart,
+  zcm_words.dart, the word model of zcm_models.dart).
 
 Small corpus, build of 2026-09-27 (one process per level, alone on the
 machine, capped at 3 GiB, encode only; the round trips are checked by
@@ -365,7 +417,49 @@ Findings:
   beside them +0.2%, so zcm keeps its two. paq8px Audio16BitModel's fit
   and LMS set (eight fits of 28 to 128 samples, LMS of 1920, 704 and
   2458 taps): -1.1% on the first 256 KiB of music.wav, +0.9% on
-  voice8.wav, at half the speed; levels 8 and 9 use it (`audio: 3`).
+  voice8.wav, at half the speed (replaced by the port below).
+- paq8px's audio models ported faithfully (`zcm_audio_px.dart`: the
+  exact sparse tap patterns of the eight fits per channel, the LMS rates,
+  the second prediction plus the other channel's last residual, the
+  residual maps of 8-bit audio with the coding loss contexts, the five
+  mixer selectors and the audio SSE stage), level 7, 2026-09-28:
+  music.wav 378,850 to 349,067 (+1.5% against paq8px -8), voice8.wav
+  15,360 to 14,998 (+0.5%). Then, on the first 256 KiB of music.wav
+  (paq8px -8 86,955) and voice8.wav: without the order-n contexts on
+  audio 88,318 to 88,106 and faster (paq8px uses only its order model's
+  one selector there too); one predictor selector instead of ten neutral
+  (-18) and faster; a weight set and an APM in the residual of the
+  predictor with the smallest recent errors -0.17%; the final mixer layer
+  by the bit of the sample (16 sets) -0.11%; the APM side of the SSE
+  stage weighed 7/8 instead of 1/2 -0.19%. Neutral or worse: other mixer
+  learning rates (24, 40, 72, 96), input scales 1/2 to 2, a third APM,
+  the final layer also by the error size, an 8 bit residual selector.
+  Result (levels 7 to 9 alike): music.wav 347,111 against 343,808
+  (+0.96%), voice8.wav 14,971 against 14,920 (+0.34%), 11 KB/s on
+  music.wav and 8 KB/s on voice8.wav (paq8px -8 about 21 KB/s on
+  music.wav); level 7 was 12 KB/s before with 378,850, level 8 5 KB/s.
+  The fits' covariance update and Cholesky factorization in Float64x2
+  gained about 10% of the speed; the LMS steps use a two step Newton
+  reciprocal square root from a bit pattern (no dart:math).
+- paq8px's image models as whole models (`zcm_image_px.dart`, levels 7
+  to 9, 2026-09-28): Image24BitModel (122 predictors through three
+  residual maps, six least squares fits, 31 hashed and 40 bit contexts,
+  20 mixer selectors, a mixer per color plane) and the gray part of
+  Image8BitModel, with their SSE stages and only the order and match
+  selectors of the predictor. Level 7 against paq8px v216 -8: photo.ppm
+  85,422 / 85,039 (+0.45%, was +11.1%), photo.bmp 126,768 / 122,539
+  (+3.45%, was +11.0%), gray.pgm 26,901 / 26,887 (+0.05%, was +13.4%).
+  The earlier finding that more predictors lose held only for zcm's
+  generic mixer selectors: with paq8px's selectors and SSE the whole set
+  pays. Speed 2 to 3 KB/s on color images and 7 KB/s on gray (was 9 to
+  12; paq8px -8 about 9 KB/s), peak RSS 589 MiB. Negative results: a
+  slower first mixer layer (20 to 6 instead of 56 to 14) -1.2 to -2.2% on
+  the first 100 to 128 rows but -0.1% (photo.bmp) and +0.45% (photo.ppm)
+  on the whole files; the final layer rate 3 to 1 or 20 to 4 +0.4 to
+  +0.8%; four times the context map and bit map memory, and paq8px's run
+  map with byte history inputs in the context map, neutral. The residual
+  maps, fits and SSE tables are fixed (about 25 MiB for color, 8 MiB for
+  gray) and can exceed the quarter of the budget for small images.
 - paq8px's chart, nest and XML models were ported (`zcm_words.dart`) but
   are not used by any level: on these files they cost 0.1 to 0.7% (more
   inputs than the data can train), the orders 16 and 24 likewise.

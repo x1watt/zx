@@ -261,6 +261,41 @@ final class LstmByteModel extends _ByteModelBase {
   }
 }
 
+/// cmix's ByteMixer (mixer/byte-mixer.cpp): an LSTM whose inputs are the
+/// previous byte and the byte distributions of the other byte models (here
+/// PPMd), giving a byte distribution of its own. It must come after
+/// [source] in the model list, so that [source] has its distribution of
+/// the next byte when this one learns the byte just coded.
+final class ByteMixerModel extends _ByteModelBase {
+  final ZcmLstm lstm;
+  final PpmdByteModel source;
+  final Float64List _in = Float64List(256);
+  final Float64List _probs = Float64List(256)..fillRange(0, 256, 1 / 256);
+
+  ByteMixerModel(this.source, int cells, int layers, int horizon)
+      : lstm = ZcmLstm(cells: cells, layers: layers, horizon: horizon, aux: 256);
+
+  @override
+  Float64List get distribution => _probs;
+
+  @override
+  void byteUpdate(int byte) {
+    // cmix scales the sum of the distributions by 2 / (number of models);
+    // 16 was better here (text.md and source.dart, 32 KiB each: -0.1%
+    // against 2).
+    final d = source.distribution;
+    for (var i = 0; i < 256; i++) {
+      _in[i] = d[i] * 16.0;
+    }
+    lstm.setAux(_in);
+    lstm.perceive(byte);
+    final o = lstm.probabilities;
+    for (var i = 0; i < 256; i++) {
+      _probs[i] = o[i] + 1e-7;
+    }
+  }
+}
+
 /// Updates the PPMd model with [symbol] (Ppmd7z_EncodeSymbol without the
 /// range coder: the same model changes, in the same order).
 void ppmdUpdateSymbol(Ppmd7 p, int symbol) {

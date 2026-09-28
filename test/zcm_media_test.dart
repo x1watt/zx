@@ -286,7 +286,7 @@ void main() {
     // Golden sizes and hashes: the output of the media models is pinned.
     const golden = <String, String>{
       'l3': '65212:8a4cc1f28039817f',
-      'l7': '49526:9bd25b5f3ea7d58c',
+      'l7': '47770:e2b0285afd3ae77e',
     };
     for (final level in [3, 7]) {
       test('golden media level $level', () {
