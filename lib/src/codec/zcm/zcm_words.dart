@@ -141,7 +141,8 @@ final class PxWordModel implements ZcmModel, ZcmMixerContexts {
         (c >= 0x30 && c <= 0x39) || (pC >= 0x30 && pC <= 0x39 && c == 0x2E);
     _isNewlinePc = _isNewline;
     _isNewline = isText ? (c == _newLine || c == 0) : c == 0;
-    _lastUpper = _lastUpper + 1 < _maxLastUpper ? _lastUpper + 1 : _maxLastUpper;
+    _lastUpper =
+        _lastUpper + 1 < _maxLastUpper ? _lastUpper + 1 : _maxLastUpper;
     _lastLetter =
         _lastLetter + 1 < _maxLastLetter ? _lastLetter + 1 : _maxLastLetter;
     _mask2 = (_mask2 << 8) & 0xFFFFFFFF;
@@ -396,75 +397,68 @@ final class PxWordModel implements ZcmModel, ZcmMixerContexts {
     final mayBeCaps = b1 >= 0x41 && b1 <= 0x5A && b0 >= 0x41 && b0 <= 0x5A;
     var k = 0;
     var i = 0;
-    void set(int h) => cm.set(k++, h);
-    void skip() {
-      cm.skip(k++);
-    }
-
-    set(hash3(++i, _text0 & 0xFFFFFFFF, _text0 >> 32));
+    cm.set(k++, hash3(++i, _text0 & 0xFFFFFFFF, _text0 >> 32));
     if (isText) {
-      set(hash4(++i, _expr0, _expr1, hash3(_expr2, _expr3, _expr4)));
-      set(hash4(++i, _expr0, _expr1, _expr2));
+      cm.set(k++, hash4(++i, _expr0, _expr1, hash3(_expr2, _expr3, _expr4)));
+      cm.set(k++, hash4(++i, _expr0, _expr1, _expr2));
     } else {
-      skip();
-      skip();
+      cm.skip(k++);
+      cm.skip(k++);
       i += 2;
     }
-    set(hash3(++i, _gapToken0, _keyword0));
-    set(hash4(++i, _word0, _c, _keyword0));
-    set(hash3(++i, _word0, dist));
-    set(hash4(++i, _word1, _gapToken0, dist));
-    set(hash3(++i, pos >> 10, _word0));
+    cm.set(k++, hash3(++i, _gapToken0, _keyword0));
+    cm.set(k++, hash4(++i, _word0, _c, _keyword0));
+    cm.set(k++, hash3(++i, _word0, dist));
+    cm.set(k++, hash4(++i, _word1, _gapToken0, dist));
+    cm.set(k++, hash3(++i, pos >> 10, _word0));
     final wmeMbc = (word0MayEndNow ? 2 : 0) | (mayBeCaps ? 1 : 0);
     final wl = _wordLen0 < 6 ? _wordLen0 : 6;
     final wlWmeMbc = wl << 2 | wmeMbc;
-    set(hash3(++i, wlWmeMbc, _mask2));
+    cm.set(k++, hash3(++i, wlWmeMbc, _mask2));
     for (var n = 1; n <= 4; n++) {
       if (_exprLen0 >= n) {
         final el = _exprLen0 < n + 3 ? _exprLen0 : n + 3;
-        final ch = n == 4
-            ? _expr0Chars
-            : _expr0Chars & ((1 << (8 * n)) - 1);
-        set(hash3(++i, el << 2 | wmeMbc, n == 1 ? _c : ch));
+        final ch = n == 4 ? _expr0Chars : _expr0Chars & ((1 << (8 * n)) - 1);
+        cm.set(k++, hash3(++i, el << 2 | wmeMbc, n == 1 ? _c : ch));
       } else {
-        skip();
+        cm.skip(k++);
         i++;
       }
     }
-    set(hash3(++i, _word0, 0));
-    set(hash3(++i, _word0, _gapToken0));
-    set(hash4(++i, _c, _word0, _gapToken1));
-    set(hash4(++i, _c, _gapToken0, _word1));
-    set(hash3(++i, _word0, _word1));
-    set(hash4(++i, _word0, _word1, _word2));
-    set(hash4(++i, _gapToken0, _word1, hash2(_gapToken1, _word2)));
-    set(hash4(++i, _word0, _word1, hash2(_gapToken1, _word2)));
-    set(hash4(++i, _word0, _word1, _gapToken1));
+    cm.set(k++, hash3(++i, _word0, 0));
+    cm.set(k++, hash3(++i, _word0, _gapToken0));
+    cm.set(k++, hash4(++i, _c, _word0, _gapToken1));
+    cm.set(k++, hash4(++i, _c, _gapToken0, _word1));
+    cm.set(k++, hash3(++i, _word0, _word1));
+    cm.set(k++, hash4(++i, _word0, _word1, _word2));
+    cm.set(k++, hash4(++i, _gapToken0, _word1, hash2(_gapToken1, _word2)));
+    cm.set(k++, hash4(++i, _word0, _word1, hash2(_gapToken1, _word2)));
+    cm.set(k++, hash4(++i, _word0, _word1, _gapToken1));
     final c1 = _c4 & 0xFF;
     if (isText) {
-      set(hash4(++i, _word0, c1, _word2));
-      set(hash4(++i, _word0, c1, _word3));
-      set(hash4(++i, _word0, c1, _word4));
-      set(hash4(++i, _word0, c1, hash2(_word1, _word4)));
-      set(hash4(++i, _word0, c1, hash2(_word1, _word3)));
-      set(hash4(++i, _word0, c1, hash2(_word2, _word3)));
+      cm.set(k++, hash4(++i, _word0, c1, _word2));
+      cm.set(k++, hash4(++i, _word0, c1, _word3));
+      cm.set(k++, hash4(++i, _word0, c1, _word4));
+      cm.set(k++, hash4(++i, _word0, c1, hash2(_word1, _word4)));
+      cm.set(k++, hash4(++i, _word0, c1, hash2(_word1, _word3)));
+      cm.set(k++, hash4(++i, _word0, c1, hash2(_word2, _word3)));
     } else {
       for (var n = 0; n < 6; n++) {
-        skip();
+        cm.skip(k++);
       }
       i += 6;
     }
     final g = _groups & 0xFF;
-    set(hash4(++i, _opened, wlWmeMbc, g));
-    set(hash4(++i, _opened, _c, dist != 0 ? 1 : 0));
-    set(hash3(++i, _opened, _word0));
+    cm.set(k++, hash4(++i, _opened, wlWmeMbc, g));
+    cm.set(k++, hash4(++i, _opened, _c, dist != 0 ? 1 : 0));
+    cm.set(k++, hash3(++i, _opened, _word0));
     final gl = _groups & 0xFFFFFFFF, gh = (_groups >> 32) & 0xFFFFFFFF;
-    set(hash3(++i, gl, gh));
-    set(hash4(++i, gl, gh, _c));
-    set(hash4(++i, gl, gh, _c4 & 0xFFFF));
+    cm.set(k++, hash3(++i, gl, gh));
+    cm.set(k++, hash4(++i, gl, gh, _c));
+    cm.set(k++, hash4(++i, gl, gh, _c4 & 0xFFFF));
     _f4 = ((_f4 << 4) | (c1 == 0x20 ? 0 : c1 >> 4)) & 0xFFFFFFFF;
-    set(hash2(++i, _f4 & 0x0FFF));
-    set(hash2(++i, _f4));
+    cm.set(k++, hash2(++i, _f4 & 0x0FFF));
+    cm.set(k++, hash2(++i, _f4));
     var fl = 0;
     if (c1 != 0) {
       if (_isAlpha(c1)) {
@@ -484,28 +478,30 @@ final class PxWordModel implements ZcmModel, ZcmMixerContexts {
       }
     }
     _mask = ((_mask << 3) | fl) & 0xFFFFFFFF;
-    set(hash2(++i, _mask));
-    set(hash3(++i, _mask, c1));
-    set(hash3(++i, _mask, _c4 & 0x00FFFF00));
-    set(hash3(++i, _mask & 0x1FF, _f4 & 0x00FFF0));
+    cm.set(k++, hash2(++i, _mask));
+    cm.set(k++, hash3(++i, _mask, c1));
+    cm.set(k++, hash3(++i, _mask, _c4 & 0x00FFFF00));
+    cm.set(k++, hash3(++i, _mask & 0x1FF, _f4 & 0x00FFF0));
     if (isText) {
-      set(hash4(
-          ++i,
-          hash2(_word0, c1),
-          zcmLlog(_wordGap),
-          (_mask & 0x1FF) << 3 |
-              (_wordLen1 > 3 ? 4 : 0) |
-              (_lastUpper < _lastLetter + _wordLen1 ? 2 : 0) |
-              (_lastUpper < _wordLen0 + _wordLen1 + _wordGap ? 1 : 0)));
+      cm.set(
+          k++,
+          hash4(
+              ++i,
+              hash2(_word0, c1),
+              zcmLlog(_wordGap),
+              (_mask & 0x1FF) << 3 |
+                  (_wordLen1 > 3 ? 4 : 0) |
+                  (_lastUpper < _lastLetter + _wordLen1 ? 2 : 0) |
+                  (_lastUpper < _wordLen0 + _wordLen1 + _wordGap ? 1 : 0)));
       final htoken = _iCtx.get(_currentToken);
-      set(hash2(++i, wlWmeMbc << 16 | htoken));
-      set(hash3(++i, wlWmeMbc << 8 | (htoken & 0xFF), _c));
-      set(hash3(++i, wlWmeMbc << 8 | (htoken & 0xFF), _c4 & 0xFFFF));
-      set(hash4(++i, htoken & 0xFF, gl, gh));
-      set(hash3(++i, htoken, gl));
+      cm.set(k++, hash2(++i, wlWmeMbc << 16 | htoken));
+      cm.set(k++, hash3(++i, wlWmeMbc << 8 | (htoken & 0xFF), _c));
+      cm.set(k++, hash3(++i, wlWmeMbc << 8 | (htoken & 0xFF), _c4 & 0xFFFF));
+      cm.set(k++, hash4(++i, htoken & 0xFF, gl, gh));
+      cm.set(k++, hash3(++i, htoken, gl));
     } else {
       for (var n = 0; n < 6; n++) {
-        skip();
+        cm.skip(k++);
       }
       i += 6;
     }
@@ -626,7 +622,8 @@ final class ChartModel implements ZcmModel {
     }
     final cnt = isText ? 1 : 3;
     for (var i = 0; i < cnt; i++) {
-      final e = i == 0 ? a0 : (i == 1 ? (c4 >> 2) & 0x00070707 : c4 & 0x00070707);
+      final e =
+          i == 0 ? a0 : (i == 1 ? (c4 >> 2) & 0x00070707 : c4 & 0x00070707);
       _chart[i << 3 | ((e >> 8) & 7)] = w0;
     }
     for (var i = 0; i < cnt * 8; i++) {
@@ -783,8 +780,10 @@ final class NestModel implements ZcmModel {
     while ((1 << (lb + 1)) <= _bc + 1) {
       lb++;
     }
-    cm.set(i, hash4(++i, (vv > 0 && vv < 3) ? 0 : (lc | 0x100), _ic & 0x3FF,
-        (_ec & 7) << 8 | (_ac & 7) << 4 | _uc));
+    cm.set(
+        i,
+        hash4(++i, (vv > 0 && vv < 3) ? 0 : (lc | 0x100), _ic & 0x3FF,
+            (_ec & 7) << 8 | (_ac & 7) << 4 | _uc));
     cm.set(i, hash4(++i, _ic, _w, lb));
     cm.set(i, hash2(++i, (3 * _vc + 77 * _pc + 373 * _ic + _qc) & 0xFFFF));
     cm.set(i, hash2(++i, (31 * _vc + 27 * _pc + 281 * _qc) & 0xFFFF));
@@ -881,8 +880,7 @@ final class XmlModel implements ZcmModel {
     }
     if ((c4 & 0xF0FFF0F0) == 0x303A3030 &&
         _digit(b(5)) &&
-        (!_digit(b(6)) ||
-            ((c8 & 0xF0F0FF00) == 0x30303A00 && !_digit(b(9))))) {
+        (!_digit(b(6)) || ((c8 & 0xF0F0FF00) == 0x30303A00 && !_digit(b(9))))) {
       t.cType |= _time;
     }
     if (t.cLength >= 8 && (c8 & 0x80808080) == 0 && (c4 & 0x80808080) == 0) {
@@ -931,12 +929,13 @@ final class XmlModel implements ZcmModel {
         if (c1 == 0x3C) {
           _state = _tagName;
           tag.clear();
-          tag.level =
-              (pTag.endTag || pTag.empty) ? pTag.level : pTag.level + 1;
+          tag.level = (pTag.endTag || pTag.empty) ? pTag.level : pTag.level + 1;
         }
         if (tag.level > 1) _detect(s, tag);
-        cm.set(0, hash3(_pState, _state,
-            ((pTag.level + 1) * _indentStep - _wsRun) & 0xFFFFFFFF));
+        cm.set(
+            0,
+            hash3(_pState, _state,
+                ((pTag.level + 1) * _indentStep - _wsRun) & 0xFFFFFFFF));
       case _tagName:
         if (tag.length > 0 && (c1 == 9 || c1 == 10 || c1 == 13 || c1 == 32)) {
           _state = _tag;
@@ -997,8 +996,7 @@ final class XmlModel implements ZcmModel {
           _state = _attrName;
           attr.name = c1 & 0xDF;
         }
-        cm.set(0,
-            hash4(_pState << 4 | _state, tag.name, c1, tag.attrIndex));
+        cm.set(0, hash4(_pState << 4 | _state, tag.name, c1, tag.attrIndex));
       case _attrName:
         if ((c4 & 0xFFF0) == 0x3D20 && (c1 == 0x22 || c1 == 0x27)) {
           _state = _attrValue;

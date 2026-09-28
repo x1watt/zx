@@ -152,7 +152,7 @@ int _clampBits(int x, int bits) {
 /// The model of audio segments.
 final class AudioModel implements ZcmModel, ZcmMixerContexts {
   // Samples kept per channel (most recent first, in a sliding window).
-  static const int _hist = 720;
+  final int _hist;
   // Least squares fits: samples of the channel, of the other one (stereo
   // only), solve interval, forgetting factor.
   static const List<List<num>> _olsFull = [
@@ -174,19 +174,35 @@ final class AudioModel implements ZcmModel, ZcmMixerContexts {
     [640, 64, 7e-5, 1e-5],
     [256, 32, 2e-4, 5e-5],
   ];
+  // paq8px Audio16BitModel's fits and LMS filters (its own sample
+  // counts, solve intervals and forgetting factors), the big model of
+  // the slowest levels.
+  static const List<List<num>> _olsBig = [
+    [64, 64, 24, 0.9975],
+    [45, 45, 30, 0.9965],
+    [60, 30, 31, 0.996],
+    [30, 60, 32, 0.995],
+    [70, 20, 33, 0.995],
+    [45, 45, 34, 0.9985],
+    [14, 14, 4, 0.98],
+    [24, 8, 3, 0.992],
+  ];
+  static const List<List<num>> _rmsBig = [
+    [1280, 640, 3e-5, 2e-5],
+    [640, 64, 8e-5, 1e-5],
+    [2450, 8, 1.6e-5, 1e-6],
+  ];
   static const List<List<num>> _lmsLight = [
     [32, 8, 0.008],
   ];
 
   final bool full;
+  final bool big;
   final int _nPred;
   final int _nOls, _nLms, _nRms;
   // Per channel: sample history (most recent first).
-  final List<Float64List> _h = [
-    Float64List(_hist * 2),
-    Float64List(_hist * 2)
-  ];
-  final Int32List _hp = Int32List.fromList([_hist, _hist]);
+  final List<Float64List> _h;
+  final Int32List _hp;
   final List<List<ZcmOls>> _ols; // [predictor][channel]
   final List<List<_Nlms>> _lms;
   final List<List<_RmsLms>> _rms;
@@ -203,18 +219,25 @@ final class AudioModel implements ZcmModel, ZcmMixerContexts {
   int _ch = 0, _lsb = 0; // channel and byte of the sample (0: MSB)
   int _mask = 0, _errLog = 0;
 
-  /// [full]: the larger least squares fits and LMS filters. [allowance]:
-  /// bytes for the tables.
-  factory AudioModel(int allowance, {bool full = true}) {
-    final ols = full ? _olsFull : _olsLight;
+  /// [full]: the larger least squares fits and LMS filters; [big]:
+  /// paq8px's full set (much slower). [allowance]: bytes for the tables.
+  factory AudioModel(int allowance, {bool full = true, bool big = false}) {
+    big = big && full;
+    final ols = big ? _olsBig : (full ? _olsFull : _olsLight);
     final lms = full ? _lmsFull : _lmsLight;
-    final rms = full ? _rmsFull : const <List<num>>[];
-    return AudioModel._(allowance, full, ols, lms, rms);
+    final rms = big ? _rmsBig : (full ? _rmsFull : const <List<num>>[]);
+    return AudioModel._(allowance, full, big, ols, lms, rms);
   }
 
-  AudioModel._(int allowance, this.full, List<List<num>> ols,
+  AudioModel._(int allowance, this.full, this.big, List<List<num>> ols,
       List<List<num>> lms, List<List<num>> rms)
-      : _nOls = ols.length,
+      : _hist = big ? 2560 : 720,
+        _h = [
+          Float64List((big ? 2560 : 720) * 2),
+          Float64List((big ? 2560 : 720) * 2)
+        ],
+        _hp = Int32List.fromList([big ? 2560 : 720, big ? 2560 : 720]),
+        _nOls = ols.length,
         _nLms = lms.length,
         _nRms = rms.length,
         _nPred = ols.length + lms.length + rms.length + 3,
@@ -252,7 +275,7 @@ final class AudioModel implements ZcmModel, ZcmMixerContexts {
   }
 
   /// Predictors of a full model (for the table sizes).
-  static const int _maxPred = 4 + 1 + 2 + 3;
+  static const int _maxPred = 8 + 1 + 3 + 3;
 
   // Residual maps per predictor (paq8px).
   int get _nMaps => 4;
@@ -341,7 +364,7 @@ final class AudioModel implements ZcmModel, ZcmMixerContexts {
     var i = 0;
     for (var j = 0; j < _nOls; j++, i++) {
       final o = _ols[j][ch];
-      final cfg = (full ? _olsFull : _olsLight)[j];
+      final cfg = (big ? _olsBig : (full ? _olsFull : _olsLight))[j];
       final nOther = stereo ? cfg[1].toInt() : 0;
       final nOwn = o.n - nOther;
       for (var q = 0; q < nOwn; q++) {

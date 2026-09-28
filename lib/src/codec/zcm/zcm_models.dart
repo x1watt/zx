@@ -770,6 +770,8 @@ final class ExeModel implements ZcmModel {
 /// often, starting from a bytewise order 1 graph and restarting when the
 /// node table is full.
 final class DmcModel implements ZcmModel {
+  /// The quick gain check (level 9), null for none.
+  ZcmGainGate? gate;
   final Int32List _nx0;
   final Int32List _nx1;
   final Uint8List _state;
@@ -873,6 +875,17 @@ final class DmcModel implements ZcmModel {
     if (p2 > 4095) p2 = 4095;
     final tx = m.tx;
     final k = m.nx;
+    final g = gate;
+    if (g != null) {
+      g.update(y);
+      g.record(p1);
+      if (!g.open) {
+        tx[k] = 0;
+        tx[k + 1] = 0;
+        m.nx = k + 2;
+        return;
+      }
+    }
     tx[k] = _str[p1];
     tx[k + 1] = _str[p2];
     m.nx = k + 2;

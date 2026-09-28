@@ -296,12 +296,35 @@ final class ImageModel implements ZcmModel, ZcmMixerContexts {
   final _ResidualBits? _rb;
   final _BitHashMap _bh;
   final Int32List _p = Int32List(_nPred);
-  final Int32List _feat = Int32List(24);
-  final List<ZcmOls> _olsA = [
-    for (var i = 0; i < 4; i++) ZcmOls(20, 4, 0.996)
+  // Least squares fits per color plane: features as (dx, dy, planes
+  // back) triples of [_px], for color and for gray images, the solve
+  // interval and the forgetting factor. paq8px Image24BitModel's six
+  // fits (32, 12, 15, 10, 14 and 8 pixels, forgetting 0.7 to 0.98,
+  // solved every byte) were tried instead of and beside these: 0.2 to
+  // 0.7% larger on photo.bmp, neutral on gray.pgm.
+  static const List<List<int>> _olsColor = [
+    [1, 0, 0, 0, 1, 0, 1, 1, 0, -1, 1, 0, 2, 0, 0, 0, 2, 0, 2, 1, 0, //
+      1, 2, 0, -1, 2, 0, -2, 1, 0, 3, 0, 0, 0, 3, 0, 0, 0, 1, 1, 0, 1, //
+      0, 1, 1, 1, 1, 1, -1, 1, 1, 0, 0, 2, 1, 0, 2, 0, 1, 2],
+    [1, 0, 0, 0, 1, 0, 1, 1, 0, -1, 1, 0, 2, 0, 0, 0, 2, 0, 2, 1, 0, //
+      1, 2, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 0, 2],
   ];
-  final List<ZcmOls> _olsB = [
-    for (var i = 0; i < 4; i++) ZcmOls(12, 2, 0.95)
+  static const List<List<int>> _olsGray = [
+    [1, 0, 0, 0, 1, 0, 1, 1, 0, -1, 1, 0, 2, 0, 0, 0, 2, 0, 2, 1, 0, //
+      1, 2, 0, -1, 2, 0, -2, 1, 0, 3, 0, 0, 0, 3, 0, -2, 2, 0, 2, 2, 0, //
+      -3, 1, 0, 3, 1, 0, -1, 3, 0, 1, 3, 0, 4, 0, 0, 0, 4, 0],
+    [1, 0, 0, 0, 1, 0, 1, 1, 0, -1, 1, 0, 2, 0, 0, 0, 2, 0, 2, 1, 0, //
+      1, 2, 0, -1, 2, 0, -2, 1, 0, 1, 2, 0, 2, 1, 0],
+  ];
+  static const List<int> _olsN = [20, 12];
+  static const List<int> _olsInterval = [4, 2];
+  static const List<double> _olsLambda = [0.996, 0.95];
+  final List<List<ZcmOls>> _ols = [
+    for (var i = 0; i < 2; i++)
+      [
+        for (var c = 0; c < 4; c++)
+          ZcmOls(_olsN[i], _olsInterval[i], _olsLambda[i])
+      ]
   ];
   int _olsPlane = -1;
   Uint8List _err = Uint8List(0);
@@ -311,6 +334,7 @@ final class ImageModel implements ZcmModel, ZcmMixerContexts {
   // Layout of the current segment.
   int _stride = 1, _bpp = 1, _width = 1;
   int _info = -1, _type = -1;
+  bool _palette = false;
   // Position of the byte being predicted.
   int _col = 0, _line = 0, _k = -1;
   int _color = 0; // plane, or 4 in the row padding
@@ -388,7 +412,8 @@ final class ImageModel implements ZcmModel, ZcmMixerContexts {
     _info = s.blockInfo;
     _stride = _info & 0xFFFFFF;
     final pad = (_info >> 24) & 3;
-    _bpp = _type == ZcmBlockType.image8
+    _palette = _type == ZcmBlockType.image8pal;
+    _bpp = _type == ZcmBlockType.image8 || _palette
         ? 1
         : (_type == ZcmBlockType.image24 ? 3 : 4);
     _width = _stride - pad;
@@ -476,8 +501,9 @@ final class ImageModel implements ZcmModel, ZcmMixerContexts {
       }
       if (_olsPlane >= 0) {
         final v = c1.toDouble();
-        _olsA[_olsPlane].update(v);
-        _olsB[_olsPlane].update(v);
+        for (final o in _ols) {
+          o[_olsPlane].update(v);
+        }
         _olsPlane = -1;
       }
     }
@@ -590,60 +616,14 @@ final class ImageModel implements ZcmModel, ZcmMixerContexts {
     if (_np > 40) {
       // Least squares fits over the neighborhood (paq8px OLS).
       _olsPlane = c;
-      final a = _olsA[c];
-      final b = _olsB[c];
-      final f = _feat;
-      var nf = 0;
-      f[nf++] = w;
-      f[nf++] = n;
-      f[nf++] = nw;
-      f[nf++] = ne;
-      f[nf++] = ww;
-      f[nf++] = nn;
-      f[nf++] = nww;
-      f[nf++] = nnw;
-      f[nf++] = nne;
-      f[nf++] = nee;
-      f[nf++] = www;
-      f[nf++] = nnn;
-      if (multi) {
-        f[nf++] = p1;
-        f[nf++] = wp1;
-        f[nf++] = np1;
-        f[nf++] = nwp1;
-        f[nf++] = nep1;
-        f[nf++] = p2;
-        f[nf++] = wp2;
-        f[nf++] = np2;
-      } else {
-        f[nf++] = nnee;
-        f[nf++] = nnww;
-        f[nf++] = neee;
-        f[nf++] = px(3, 1);
-        f[nf++] = px(-1, 3);
-        f[nf++] = px(1, 3);
-        f[nf++] = px(4, 0);
-        f[nf++] = px(0, 4);
+      for (var q = 0; q < 2; q++) {
+        final o = _ols[q][c];
+        final offs = multi ? _olsColor[q] : _olsGray[q];
+        for (var f = 0; f < offs.length; f += 3) {
+          o.add(_px(s, offs[f], offs[f + 1], offs[f + 2]).toDouble());
+        }
+        _pred(i++, _round(o.predict()), _abs(w - n));
       }
-      for (var q = 0; q < 20; q++) {
-        a.add(f[q].toDouble());
-      }
-      for (var q = 0; q < 8; q++) {
-        b.add(f[q].toDouble());
-      }
-      if (multi) {
-        b.add(p1.toDouble());
-        b.add(wp1.toDouble());
-        b.add(np1.toDouble());
-        b.add(p2.toDouble());
-      } else {
-        b.add(nne.toDouble());
-        b.add(nee.toDouble());
-        b.add(nnw.toDouble());
-        b.add(nww.toDouble());
-      }
-      _pred(i++, _round(a.predict()), _abs(w - n));
-      _pred(i++, _round(b.predict()), _abs(w - n));
     }
     // Activity: local gradients, quantized.
     var act = _abs(w - nw) + _abs(n - nw) + _abs(n - ne) + _abs(w - ww);
@@ -671,6 +651,11 @@ final class ImageModel implements ZcmModel, ZcmMixerContexts {
         final sq = sp >> 1;
         r2!.set(_p[j], (sq > 15 ? 15 : sq) << 2 | c);
       }
+    }
+    if (_palette) {
+      _paletteContexts(w, n, nw, ne, ww, nn, nne, nnw, nww, nee);
+      _mixCtx(s, w, n, nw, ne, ww, nn, nne, nnw, p1, np1, nep1);
+      return;
     }
     if (!multi) {
       _grayContexts(s, w, n, nw, ne, ww, nn, nnn, nnw, nww, nee, www, nnee,
@@ -708,6 +693,41 @@ final class ImageModel implements ZcmModel, ZcmMixerContexts {
       _bhSet(c, w, n, nw, ne, nne, p1, p2, np1, np2);
     }
     _mixCtx(s, w, n, nw, ne, ww, nn, nne, nnw, p1, np1, nep1);
+  }
+
+  // The contexts of palette images (paq8px Image8BitModel, !isGray): the
+  // indexes are not intensities, so only their combinations are hashed.
+  void _paletteContexts(int w, int n, int nw, int ne, int ww, int nn,
+      int nne, int nnw, int nww, int nee) {
+    final cm = _cm;
+    final nc = _ncm;
+    var h = 2048;
+    var j = 0;
+    void put(int x) {
+      if (j < nc) cm.set(j, hash2(++h, x));
+      j++;
+    }
+
+    put(w);
+    put(n);
+    put(w | n << 8);
+    put(w | ne << 8);
+    put(n | nn << 8);
+    put(w | ww << 8);
+    put(hash4(w, n, nw, ne));
+    put(hash4(w, ww, n, nn));
+    put(hash4(n, nw, ne, nne));
+    put(hash4(w, nw, nww, ww));
+    put(hash3(n, ne, nee));
+    put(hash3(w, n, nnw));
+    put(nw | ne << 8);
+    put(hash4(w, n, ne, nn << 8 | ww));
+    put(hash2(_width, _col));
+    put(hash3(w, n, _col));
+    put(nw);
+    put(ne);
+    put(hash3(ww, nn, nw));
+    put(hash4(w, ww, nw, n << 8 | ne));
   }
 
   // The contexts of gray images (paq8px Image8BitModel, gray).
@@ -866,5 +886,193 @@ final class ImageModel implements ZcmModel, ZcmMixerContexts {
         bpos << 2 |
         cc);
     m.set((_p1 >> 5) << 5 | (_p2 >> 5) << 2 | (bpos >> 1));
+  }
+}
+
+
+/// Images with 1 or 4 bits per pixel (after paq8px Image1BitModel and
+/// Image4BitModel): the pixels around the one being coded, read from the
+/// rows above and the bits of the current row, select adaptive
+/// probabilities (22 bits and a count, like paq8px's StateMap) in hashed
+/// tables, one that keeps adapting fast and one that settles.
+final class ZcmBitImageModel implements ZcmModel, ZcmMixerContexts {
+  static const int _nCtx = 8;
+  final int _bits;
+  final Uint32List _t;
+  final Int32List _idx = Int32List(_nCtx);
+  final Int32List _ctx = Int32List(_nCtx);
+  int _info = -1, _type = -1;
+  int _stride = 1, _width = 1;
+  int _mctx = 0;
+
+  /// [allowance]: bytes for the tables.
+  ZcmBitImageModel(int allowance)
+      : _bits = _bitsFor(allowance),
+        _t = Uint32List(_nCtx * 2 << _bitsFor(allowance))
+          ..fillRange(0, _nCtx * 2 << _bitsFor(allowance), 1 << 31);
+
+  static int _bitsFor(int allowance) {
+    var b = 12;
+    while (b < 20 && (_nCtx * 8 << (b + 1)) <= allowance) {
+      b++;
+    }
+    return b;
+  }
+
+  /// Bytes of the tables of a model with [allowance].
+  static int tableBytes(int allowance) => _nCtx * 8 << _bitsFor(allowance);
+
+  @pragma('vm:prefer-inline')
+  static int _learn(int e, int y, int limit) {
+    final n = e & 1023;
+    final p = e >> 10;
+    return ((p + ((((y << 22) - p) * kDt[n]) >> 30)) << 10) |
+        (n < limit ? n + 1 : n);
+  }
+
+  @override
+  int get inputs => _nCtx * 2 + 1;
+
+  @override
+  List<int> get mixerContextSizes => const [2048, 64];
+
+  // The byte of the image at row [row] and byte column [col] (absolute,
+  // already coded); 0 outside
+  // (s.blockPos is the byte being coded).
+  @pragma('vm:prefer-inline')
+  int _byteAt(ZcmState s, int row, int col) {
+    if (row < 0 || col < 0 || col >= _width) return 0;
+    final k = s.blockPos;
+    final off = k - (row * _stride + col);
+    if (off < 1 || off > k) return 0;
+    return s.back(off);
+  }
+
+  // Pixel [x] of row [row] (1 bit or a nibble), 0 outside.
+  int _pix(ZcmState s, int row, int x, int line, int col, int c0, int bpos) {
+    if (x < 0) return 0;
+    if (_type == ZcmBlockType.image1) {
+      final bc = x >> 3;
+      int v;
+      if (row == line && bc == col) {
+        final sh = bpos - 1 - (x & 7);
+        if (sh < 0) return 0;
+        v = c0 >> sh;
+      } else {
+        v = _byteAt(s, row, bc) >> (7 - (x & 7));
+      }
+      return v & 1;
+    }
+    final bc = x >> 1;
+    if (row == line && bc == col) {
+      // Only the high nibble of the current byte can be complete.
+      if ((x & 1) != 0 || bpos < 4) return 0;
+      return (c0 >> (bpos - 4)) & 15;
+    }
+    final v = _byteAt(s, row, bc);
+    return (x & 1) == 0 ? v >> 4 : v & 15;
+  }
+
+  @override
+  @pragma('vm:unsafe:no-bounds-checks')
+  void mix(ZcmState s, Mixer m) {
+    final bpos = s.bpos;
+    final c0 = s.c0;
+    final y = s.y;
+    final t = _t;
+    // Learn the last bit.
+    for (var i = 0; i < _nCtx; i++) {
+      final a = _idx[i];
+      t[a] = _learn(t[a], y, 20);
+      final b = a + (1 << _bits);
+      t[b] = _learn(t[b], y, 255);
+    }
+    if (bpos == 0 && (s.blockType != _type || s.blockInfo != _info)) {
+      _type = s.blockType;
+      _info = s.blockInfo;
+      _stride = _info & 0xFFFFFF;
+      _width = _stride - ((_info >> 24) & 3);
+      if (_width < 1) _width = _stride;
+    }
+    final k = s.blockPos;
+    final col = k % _stride;
+    final line = k ~/ _stride;
+    final mask = (1 << _bits) - 1;
+    final ctx = _ctx;
+    if (col >= _width) {
+      // Row padding.
+      for (var i = 0; i < _nCtx; i++) {
+        ctx[i] = hash2(i, bpos);
+      }
+      _mctx = 1024 + bpos;
+    } else if (_type == ZcmBlockType.image1) {
+      final x = col * 8 + bpos;
+      int row(int r, int from, int n) {
+        var v = 0;
+        for (var d = from; d < from + n; d++) {
+          v = v << 1 | _pix(s, line - r, x + d, line, col, c0, bpos);
+        }
+        return v;
+      }
+
+      final r0 = row(0, -12, 12); // the bits to the left
+      final r1 = row(1, -5, 11); // row above, x-5 .. x+5
+      final r2 = row(2, -3, 7);
+      final r3 = row(3, -2, 5);
+      ctx[0] = (r0 & 0xFF) | (r1 >> 3 & 0x1F) << 8;
+      ctx[1] = (r0 & 0xF) | (r1 >> 2 & 0x7F) << 4 | (r2 >> 1 & 0x1F) << 11;
+      ctx[2] = (r0 & 3) | (r1 >> 4 & 7) << 2 | (r2 >> 2 & 7) << 5 |
+          (r3 >> 1 & 7) << 8;
+      ctx[3] = r0 & 0xFFF;
+      ctx[4] = r1 | (r0 & 3) << 11;
+      ctx[5] = (r0 & 0x3F) | (r1 >> 3 & 0x1F) << 6 | (r2 >> 2 & 7) << 11 |
+          (r3 >> 2 & 1) << 14;
+      ctx[6] = hash3(r0 & 0x3FF, r1, r2);
+      ctx[7] = hash4(r0 & 0xFFF, r1, r2, r3);
+      for (var i = 0; i < _nCtx; i++) {
+        ctx[i] = hash2(ctx[i], i);
+      }
+      _mctx = (r0 & 0xF) | (r1 >> 4 & 7) << 4 | (r2 >> 3 & 1) << 7 |
+          (bpos & 3) << 8;
+    } else {
+      final x = col * 2 + (bpos >> 2);
+      final part = bpos < 4 ? c0 : (c0 & ((1 << (bpos - 4)) - 1)) |
+          (1 << (bpos - 4));
+      int px(int dx, int dy) =>
+          _pix(s, line - dy, x - dx, line, col, c0, bpos);
+      final w = px(1, 0), n = px(0, 1), nw = px(1, 1), ne = px(-1, 1);
+      final ww = px(2, 0), nn = px(0, 2), nne = px(-1, 2), nee = px(-2, 1);
+      ctx[0] = w | n << 4 | nw << 8 | ne << 12;
+      ctx[1] = w | ww << 4 | n << 8 | nn << 12;
+      ctx[2] = n | nn << 4 | ne << 8 | nne << 12;
+      ctx[3] = w | n << 4;
+      ctx[4] = w;
+      ctx[5] = n | ne << 4 | nee << 8;
+      ctx[6] = hash4(w, n, nw, ne << 4 | ww << 8 | nn << 12);
+      ctx[7] = hash3(w, x, line & 7);
+      for (var i = 0; i < _nCtx; i++) {
+        ctx[i] = hash3(ctx[i], i, part);
+      }
+      _mctx = 512 | (w == n ? 1 : 0) << 8 | (n == ne ? 1 : 0) << 7 |
+          (w == nw ? 1 : 0) << 6 | (bpos & 3) << 4 | part & 15;
+    }
+    final tx = m.tx;
+    var kk = m.nx;
+    final str = kStretch;
+    for (var i = 0; i < _nCtx; i++) {
+      final a = (i * 2 << _bits) + (ctx[i] & mask);
+      _idx[i] = a;
+      tx[kk] = str[t[a] >> 20];
+      tx[kk + 1] = str[t[a + (1 << _bits)] >> 20];
+      kk += 2;
+    }
+    m.nx = kk;
+    m.add(256);
+  }
+
+  @override
+  void setMixerContexts(ZcmState s, Mixer m) {
+    m.set(_mctx & 2047);
+    m.set(s.bpos << 3 | (_type == ZcmBlockType.image1 ? 0 : 1));
   }
 }

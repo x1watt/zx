@@ -2,7 +2,10 @@
 //
 //   dart compile exe tool/zcm_bench.dart -o /tmp/zcm_bench
 //   /tmp/zcm_bench [-l 1,2,3] [-m MiB] [-nodec] [-seg BYTES] [-par THREADS]
-//       [-lstm cells,layers,horizon] [-nodict] [-nodetect] file...
+//       [-lstm cells,layers,horizon] [-nodict] [-nodetect] [-x flags] file...
+//
+// -x sets zcmExperiment (zcm_predictor.dart) to try models at levels 7
+// to 9 before enabling them (the decoder does not see it: use -nodec).
 //
 // Prints, per file and level: packed size, encode and decode KB/s (input
 // KB per second of wall time) and whether the round trip matched.
@@ -12,6 +15,7 @@ import 'dart:typed_data';
 
 import 'package:zx/src/codec/zcm/zcm.dart';
 import 'package:zx/src/codec/zcm/zcm_parallel.dart';
+import 'package:zx/src/codec/zcm/zcm_predictor.dart';
 
 Future<void> main(List<String> args) async {
   var levels = [1, 2, 3, 4, 5];
@@ -36,6 +40,8 @@ Future<void> main(List<String> args) async {
       seg = int.parse(args[++i]);
     } else if (a == '-lstm') {
       lstm = args[++i].split(',').map(int.parse).toList();
+    } else if (a == '-x') {
+      zcmExperiment = args[++i];
     } else if (a == '-nodec') {
       dec = false;
     } else if (a == '-nodict') {

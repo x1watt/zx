@@ -960,3 +960,33 @@ final class DirectProbMap {
     return tt[_cx] >> 20;
   }
 }
+
+/// A quick gain check for a model whose inputs may only add noise (PPMd
+/// and DMC on compressed data): it follows the cost of the model's own
+/// 12 bit prediction against one bit per bit, decayed over about 4,096
+/// bits, and closes while the model saves less than about 1/32 bit per
+/// bit. The model keeps learning; a closed gate only zeroes its inputs.
+/// Integers only, so the decoder sees the same gate.
+final class ZcmGainGate {
+  final Uint8List _ilog = kIlog;
+  int _acc = -65536; // 4096 * mean saving, in 1/16 bit; starts open
+  int _pr = -1;
+
+  /// Whether the inputs are used for the bit after [y].
+  bool get open => _acc < -2048;
+
+  /// Learns the last bit [y] against the prediction of [record].
+  @pragma('vm:prefer-inline')
+  void update(int y) {
+    final pr = _pr;
+    if (pr < 0) return;
+    final p = y != 0 ? pr : 4096 - pr;
+    // Cost of the bit minus one bit, in 1/16 bit (ilog = 16 log2).
+    final d = 192 - _ilog[p < 1 ? 1 : p] - 16;
+    _acc += d - (_acc >> 12);
+  }
+
+  /// The model's probability (12 bits) that the next bit is 1.
+  @pragma('vm:prefer-inline')
+  void record(int p12) => _pr = p12;
+}

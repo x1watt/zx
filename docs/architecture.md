@@ -747,9 +747,12 @@ around one predictor, and the file headers name their sources.
 - **Files.** `zcm.dart` (options, the stream format, `ZcmCompressor`,
   `ZcmDecoderStream`, `zcmDecoder`, the segment coding, the x86 E8/E9
   transform), `zcm_detect.dart` (the data types: text, x86, binary per
-  64 KiB block, and BMP, PGM, PPM, WAV and AIFF by their headers),
+  64 KiB block; BMP (1, 4, 8 bits gray or palette, 24, 32), PBM, PGM,
+  PPM, WAV and AIFF by their headers; raw images without a header by
+  their row period),
   `zcm_dict.dart` and `zcm_dict_words.dart` (the English dictionary
-  transform of cmix and its word list), `zcm_coder.dart` (the 32-bit
+  transform of cmix and its word list, deflated and base64 encoded,
+  inflated on first use; `tool/zcm_gen_dict.dart` regenerates it), `zcm_coder.dart` (the 32-bit
   carryless binary arithmetic coder of paq8/lpaq, 16 bit
   probabilities), `zcm_tables.dart` and `zcm_state_table.dart` (squash,
   stretch, ilog, reciprocals, the paq8px nonstationary state table),
@@ -765,9 +768,10 @@ around one predictor, and the file headers name their sources.
   StationaryMap, LargeStationaryMap, SmallStationaryContextMap,
   IndirectContext, MTFList and ResidualMap), `zcm_sparse.dart`
   (paq8px's sparse match, sparse bit, linear prediction and similarity
-  models; ported and tested, no level uses them yet), `zcm_x86.dart` (the paq8px x86
-  parser), `zcm_image.dart` (images: residual histograms, least squares
-  fits, neighborhood contexts), `zcm_audio.dart` (PCM audio: least
+  models; ported, tested and measured, see docs/performance.md), `zcm_x86.dart` (the paq8px x86
+  parser), `zcm_image.dart` (images: residual histograms, paq8px's six
+  least squares fits per plane, neighborhood and palette contexts, the
+  1 and 4 bit image model), `zcm_audio.dart` (PCM audio: least
   squares and LMS predictors, residual contexts), `zcm_ols.dart` (the
   least squares fit), `zcm_byte_models.dart` (PPMd var.H of
   `lib/src/codec/ppmd` and the LSTM as byte predictors), `zcm_lstm.dart`,
@@ -779,15 +783,16 @@ around one predictor, and the file headers name their sources.
   isolates; the only asynchronous file, rule 4). `ZcmCompressor(threads:
   N)` codes independent segments on the synchronous pool of
   `lib/src/sync_pool.dart` with the same output.
-- **Stream version 3.** A chunk is a series of segments, each with its
+- **Stream version 1 (zcm 1.0).** zcm is experimental: the version
+  stays 1 when the output changes (the golden hashes of
+  `test/zcm_test.dart` are updated instead), and other versions are
+  refused. A chunk is a series of segments, each with its
   type, length and (images, audio) layout coded in the arithmetic stream,
   so the decoder does not run the detector. x86 segments go through the
   E8/E9 transform, 16-bit little endian audio is coded most significant
   byte first, and a text segment whose words are mostly English goes
   through the dictionary transform when its inverse gives the text back
   exactly (the encoder checks it). The final probability has 16 bits.
-  Version 1 (zx 0.5) and version 2 streams are refused with a message
-  that names the version: their models no longer exist here.
 - **Levels.** 1: `ZcmFastPredictor` (orders 1 to 6 in nibble tables,
   match, one mixer set, one APM); 2 to 5: orders 2, 3, 4, 6 with bit
   histories, the word model (5, 10 or 16 contexts), exe contexts (the
@@ -797,7 +802,10 @@ around one predictor, and the file headers name their sources.
   inputs, the paq8px word model and match model, paq8px's mixer
   selectors and SSE chains; 8: word contexts on binary data too and the
   paq8px text model on text (its state also feeds the text SSE chain); 9: PPMd (its memory
-  beside the budget) and DMC, and the optional LSTM
+  beside the budget) and DMC behind a quick gain check (`ZcmGainGate`:
+  their inputs are zero while their own predictions save less than about
+  1/32 bit per bit, so compressed data does not lose), paq8px's
+  similarity model pair on binary and x86 data, and the optional LSTM
   (`lstm=small|medium|large` or C/L/H). The chart, nest and XML models
   are ported but no level uses them (they did not pay on the benchmark
   corpora, docs/performance.md).
@@ -814,7 +822,8 @@ around one predictor, and the file headers name their sources.
   `test/zcm_test.dart` pin the output of every level. The code relies on
   64-bit ints (the native VM; not for the web).
 - **Memory.** Every table takes its size from the budget in the header
-  (`ZcmPredictor`): the history buffer, the match tables, the SSE chains,
+  (`ZcmPredictor`, and `tableBytes` counts them all, the match model's
+  context map and maps too): the history buffer, the match tables, the SSE chains,
   then the context maps in proportion to their contexts (DMC and PPMd
   only with 16 MiB or more; PPMd gets a quarter of the budget on top of
   it at level 9); the sizes are

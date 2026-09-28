@@ -66,6 +66,9 @@ abstract class _ByteModelBase implements ZcmModel {
   final Int16List _str = kStretch;
   bool _started = false;
 
+  /// The quick gain check (PPMd at level 9), null for none.
+  ZcmGainGate? gate;
+
   @override
   int get inputs => 3;
 
@@ -89,6 +92,18 @@ abstract class _ByteModelBase implements ZcmModel {
     final p2 = _sm.p(s.y, (p >> 4) << 3 | s.bpos);
     final tx = m.tx;
     var k = m.nx;
+    final g = gate;
+    if (g != null) {
+      g.update(s.y);
+      g.record(p);
+      if (!g.open) {
+        tx[k] = 0;
+        tx[k + 1] = 0;
+        tx[k + 2] = 0;
+        m.nx = k + 3;
+        return;
+      }
+    }
     tx[k] = st;
     tx[k + 1] = (p - 2048) >> 2;
     tx[k + 2] = _str[p2];

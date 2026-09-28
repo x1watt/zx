@@ -26,8 +26,8 @@
 //
 // Stream layout (all integers little endian, vint = unsigned LEB128):
 //   'z' 'c' 'm'           magic
-//   u8  version           3 (versions 1 and 2, written by earlier zx
-//                         builds, are refused: their models differ)
+//   u8  version           1 (zcm 1.0; zcm is experimental, so the
+//                         version is not bumped when the output changes)
 //   u8  level             1..9
 //   u8  flags             bit 0: independent segments, bit 1: LSTM,
 //                         bit 2: data type detection, bit 3: x86 E8/E9
@@ -75,7 +75,7 @@ import 'zcm_dict.dart';
 import 'zcm_predictor.dart';
 
 /// Format version written by this code.
-const int zcmVersion = 3;
+const int zcmVersion = 1;
 
 /// Experimental codec id for the zx registry (section 11 of zx-format.md).
 const int zcmCodecId = 0x10000;
@@ -363,13 +363,6 @@ ZcmHeader zcmParseProps(Uint8List props) {
 ZcmHeader _readHeaderBody(InStream s, Uint8List one, int? originalSize) {
   if (s.read(one, 0, 1) != 1) throw _truncated();
   final version = one[0];
-  if (version == 1 || version == 2) {
-    throw SevenZipException(
-        'zcm: stream version $version (written by ${version == 1 ? 'zx 0.5' : 'an earlier zx 0.6 build'}) '
-        'is not supported, its models changed; decode it with the zx '
-        'version that wrote it',
-        SevenZipError.unsupportedMethod);
-  }
   if (version != zcmVersion) {
     throw SevenZipException(
         'zcm: unsupported version $version', SevenZipError.unsupportedMethod);

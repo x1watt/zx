@@ -172,7 +172,42 @@ same time on the 16 core machine, so the speeds are 10 to 20% below a
 quiet machine (alone: level 1 1,278 KB/s, level 3 209 KB/s, level 5 89
 KB/s on the small corpus).
 
-Small corpus, stream version 3 (one process per level, alone on the
+Small corpus, zcm 1.0 (stream version 1), 2026-09-28: every table
+counted in the budget (the match model's too), the quick gain check on
+PPMd and DMC and the similarity model pair at level 9. Levels 7 to 9,
+one process each, alone, capped at 3 GiB, encode only (round trips in
+test/zcm_test.dart); levels 1 to 6 were not measured again:
+
+| Level | text.md | source.dart | x86.bin | kernel.bin | total | enc KB/s | peak RSS MiB |
+|---|---|---|---|---|---|---|---|
+| 7 | 22,554 | 25,886 | 36,843 | 248,247 | 333,530 | 10 | 419 (7 to 9 in one process) |
+| 8 | 22,339 | 25,386 | 36,397 | 247,999 | 332,121 | 6 | 419 |
+| 9 | 22,325 | 25,366 | 35,946 | 247,687 | 331,324 | 4 | 404 |
+
+Measured for zcm 1.0 (the memory budget of today, level 8 on x86.bin
+and kernel.bin, 284,396 bytes without them):
+
+- paq8px's similarity model pair (2,048 byte window): 283,680 (-0.25%),
+  6 to 4 KB/s. Level 9 uses it on binary and x86 data.
+- Sparse bit model 284,306 (-0.03%), linear prediction 284,341
+  (-0.02%), sparse match 284,468 (+0.03%): no level uses them.
+- The quick gain check (`ZcmGainGate`, zcm_components.dart): PPMd and
+  DMC give their inputs to the mixer only while their own prediction
+  saves more than about 1/32 bit per bit over the last 4,096 bits. Level
+  9 was 29 bytes above level 8 without it (kernel.bin, compressed data,
+  248,107 against 247,999); with it every file of level 9 is below level
+  8 (kernel.bin 247,990 before the similarity model).
+- The LSTM at level 9 on the first 32 KiB of text.md: without 8,717
+  bytes at 5 KB/s, small (64/1/20) 8,721 at 3 KB/s, cmix's large
+  (200/2/100) 8,721 at 1 KB/s. On inputs of this size the LSTM does not
+  pay, so the cmix preset keeps the small network; the large one stays
+  an explicit choice (`lstm=large`).
+- cmix's FXCM model and byte mixer were not ported yet: FXCM (fxcmv1,
+  about 4,900 lines) is fx2-cmix's enwik model with its own dictionary
+  stream, and the byte mixer needs byte distributions from every model
+  (zcm's models give bits).
+
+Small corpus, build of 2026-09-27 (one process per level, alone on the
 machine, capped at 3 GiB, encode only; the round trips are checked by
 test/zcm_test.dart):
 
@@ -214,9 +249,9 @@ book.txt without the dictionary (book300):
   SSE chain): text.md -0.8%, source.dart -1.7%, book300 -1.3%, but half
   the speed; levels 8 and 9 use it. With the old memory budget it gained
   nothing (0.1%): the new contexts only diluted the starved maps.
-- Level 9 is 36 bytes above level 8 in total: kernel.bin (compressed
-  data) loses 0.04% with PPMd and DMC while the other files gain; levels
-  1 to 8 are monotonic.
+- Level 9 was 36 bytes above level 8 in total: kernel.bin (compressed
+  data) lost 0.04% with PPMd and DMC while the other files gained (fixed
+  in zcm 1.0 by the quick gain check, above).
 - Ported and measured, not used by any level (gains below 0.3% on these
   files for their cost): paq8px's sparse bit model (-0.05%), linear
   prediction (-0.02%), sparse match (+0.07%) and the similarity model
@@ -321,6 +356,16 @@ Findings:
   (-43%), voice8.wav -8.5%. The mixer weight sets selected by the recent
   residual sizes matter most: with one set instead of three the light
   model loses 7%.
+- Media against paq8px v216 -8 (level 7, stream version 1): photo.ppm
+  94,454 / 85,039 (+11.1%), photo.bmp 136,032 / 122,539 (+11.0%),
+  gray.pgm 30,494 / 26,887 (+13.4%), music.wav 378,850 / 343,808
+  (+10.2%), voice8.wav 15,360 / 14,920 (+2.9%). paq8px's six image fits
+  (32 to 8 pixels, forgetting 0.7 to 0.98, solved every byte) instead of
+  zcm's two: +0.7% on the first half of photo.bmp, neutral on gray.pgm;
+  beside them +0.2%, so zcm keeps its two. paq8px Audio16BitModel's fit
+  and LMS set (eight fits of 28 to 128 samples, LMS of 1920, 704 and
+  2458 taps): -1.1% on the first 256 KiB of music.wav, +0.9% on
+  voice8.wav, at half the speed; levels 8 and 9 use it (`audio: 3`).
 - paq8px's chart, nest and XML models were ported (`zcm_words.dart`) but
   are not used by any level: on these files they cost 0.1 to 0.7% (more
   inputs than the data can train), the orders 16 and 24 likewise.

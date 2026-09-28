@@ -71,7 +71,7 @@ final class ZcmLevelSpec {
   final bool charGroup;
   final bool dmc;
   final int image; // 0: none, 1: light, 2: full image model
-  final int audio; // 0: none, 1: light, 2: full audio model
+  final int audio; // 0: none, 1: light, 2: full, 3: paq8px's full set
   final bool chart;
   final bool nest;
   final bool xml;
@@ -84,6 +84,7 @@ final class ZcmLevelSpec {
   final bool linearPrediction; // paq8px LinearPredictionModel (binary)
   final int similarity; // paq8px SimilarityModelPair window (0: none)
   final bool pxMatch; // the paq8px match model instead of MatchModel
+  final bool gainGate; // PPMd and DMC inputs only while they gain
 
   const ZcmLevelSpec({
     required this.level,
@@ -119,6 +120,7 @@ final class ZcmLevelSpec {
     this.linearPrediction = false,
     this.similarity = 0,
     this.pxMatch = false,
+    this.gainGate = false,
   });
 
   static ZcmLevelSpec of(int level) {
@@ -190,6 +192,7 @@ final class ZcmLevelSpec {
             selectors: 6,
             apms: 4);
       default:
+        final x = zcmExperiment;
         return ZcmLevelSpec(
             level: level,
             orders: const [2, 3, 4, 5, 6, 7, 8, 12],
@@ -204,16 +207,25 @@ final class ZcmLevelSpec {
             bh: true,
             charGroup: true,
             image: 2,
-            audio: 2,
+            audio: level >= 8 ? 3 : 2, // media agent: paq8px's set at 8, 9
             selectors: 7,
             apms: 5,
             dmc: level >= 9,
             ppmdOrder: level >= 9 ? 16 : 0,
             text: level >= 8 ? 1 : 0,
+            sparseMatch: x.contains('sm') ? 1 : 0,
+            sparseBit: x.contains('sb') ? 1 : 0,
+            linearPrediction: x.contains('lp'),
+            similarity: level >= 9 || x.contains('sim') ? 2048 : 0,
+            gainGate: !x.contains('nogate'),
             pxMatch: true);
     }
   }
 }
+
+/// Measurement switches for tool/zcm_bench.dart only (never set by the
+/// codec: the decoder must build the same predictor from the header).
+String zcmExperiment = '';
 
 /// The byte history size for a budget.
 int zcmBufferBytes(int budgetBytes) {
@@ -250,6 +262,7 @@ final class ZcmPredictor implements ZcmBitPredictor {
   final int _imageBytes;
   final int _audioBytes;
   ImageModel? _image;
+  ZcmBitImageModel? _bitImage; // media agent: 1 and 4 bit images
   AudioModel? _audio;
   final List<Mixer?> _mixers = List<Mixer?>.filled(ZcmBlockType.count, null);
   final List<List<ZcmModel>?> _active =
@@ -280,7 +293,15 @@ final class ZcmPredictor implements ZcmBitPredictor {
     final mediaBytes = budgetBytes ~/ 4;
     final imageBytes = spec.image > 0 ? mediaBytes : 0;
     final audioBytes = spec.audio > 0 ? mediaBytes : 0;
-    var rest = budgetBytes - bufBytes - matchEntries * 8 - (2 << 20) - sseBytes;
+    // The match model: paq8px's (positions, its context map, its large
+    // stationary map and fixed maps) or the simple one (two tables).
+    final matchBytes = spec.pxMatch
+        ? PxMatchModel.tableBytes(
+                matchEntries * 8, zcmHashBitsFor(matchEntries * 4, 42)) +
+            floorPow2(matchEntries * 4) +
+            64
+        : floorPow2(matchEntries) * 8;
+    var rest = budgetBytes - bufBytes - matchBytes - (1 << 20) - sseBytes;
     if (rest < (256 << 10)) rest = 256 << 10;
     // PPMd (level 9) takes a quarter of the budget on top of the rest.
     var ppmdBytes = 0;
@@ -326,6 +347,7 @@ final class ZcmPredictor implements ZcmBitPredictor {
         spec,
         bufBytes,
         matchEntries,
+        matchBytes,
         share(wo),
         share(ww),
         share(ws),
@@ -355,6 +377,7 @@ final class ZcmPredictor implements ZcmBitPredictor {
       this.spec,
       int bufBytes,
       int matchEntries,
+      int matchBytes,
       int bo,
       int bw,
       int bs,
@@ -379,7 +402,10 @@ final class ZcmPredictor implements ZcmBitPredictor {
       this._imageBytes,
       this._audioBytes)
       : s = ZcmState(bufBytes),
-        _ppmd = ppmdBytes > 0 ? PpmdByteModel(spec.ppmdOrder, ppmdBytes) : null,
+        _ppmd = ppmdBytes > 0
+            ? (PpmdByteModel(spec.ppmdOrder, ppmdBytes)
+              ..gate = spec.gainGate ? ZcmGainGate() : null)
+            : null,
         _lstm = lstmCells > 0
             ? LstmByteModel(lstmCells, lstmLayers, lstmHorizon)
             : null,
@@ -403,7 +429,9 @@ final class ZcmPredictor implements ZcmBitPredictor {
         _indirect =
             spec.indirect ? IndirectModel(bi, full: spec.fullIndirect) : null,
         _charGroup = spec.charGroup ? CharGroupModel(bg) : null,
-        _dmc = bd > 0 ? DmcModel(bd) : null,
+        _dmc = bd > 0
+            ? (DmcModel(bd)..gate = spec.gainGate ? ZcmGainGate() : null)
+            : null,
         _chart = spec.chart ? ChartModel(bc) : null,
         _nest = spec.nest ? NestModel(bn) : null,
         _xml = spec.xml ? XmlModel(bx) : null,
@@ -425,7 +453,7 @@ final class ZcmPredictor implements ZcmBitPredictor {
         _a3 = spec.apms >= 3 && spec.apms <= 4 ? Apm(65536) : null,
         _a4 = spec.apms == 4 ? Apm(65536) : null,
         tableBytes = bufBytes +
-            matchEntries * 8 +
+            matchBytes +
             bo +
             bw +
             bs +
@@ -438,7 +466,7 @@ final class ZcmPredictor implements ZcmBitPredictor {
             bn +
             bx +
             bt +
-            bsm +
+            (bsm > 0 ? SparseMatchModel.tableBytes(bsm, 17) : 0) +
             bsb +
             bsi +
             ppmdBytes +
@@ -452,9 +480,16 @@ final class ZcmPredictor implements ZcmBitPredictor {
   List<ZcmModel> _modelsFor(int type) {
     final l = <ZcmModel>[_orders, _match];
     if (type == ZcmBlockType.audio && _audioBytes > 0) {
-      l.add(_audio ??= AudioModel(_audioBytes, full: spec.audio >= 2));
+      // media agent: audio 3 is paq8px's full predictor set.
+      l.add(_audio ??= AudioModel(_audioBytes,
+          full: spec.audio >= 2, big: spec.audio >= 3));
       if (_record != null) l.add(_record);
       if (_lstm != null) l.add(_lstm);
+      return l;
+    }
+    // media agent: 1 and 4 bit images (a quarter of the image budget).
+    if (ZcmBlockType.isBitImage(type) && _imageBytes > 0) {
+      l.add(_bitImage ??= ZcmBitImageModel(_imageBytes ~/ 4));
       return l;
     }
     if (ZcmBlockType.isImage(type) && _imageBytes > 0) {

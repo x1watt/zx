@@ -31,12 +31,27 @@ abstract final class ZcmBlockType {
   /// PCM audio; info: [zcmAudioInfo].
   static const audio = 6;
 
-  static const count = 7;
+  /// 1 bit per pixel, most significant bit first; info: [zcmImageInfo].
+  static const image1 = 7;
+
+  /// 4 bits per pixel, high nibble first; info: [zcmImageInfo].
+  static const image4 = 8;
+
+  /// 8-bit palette indexes (a palette that is not gray); info:
+  /// [zcmImageInfo].
+  static const image8pal = 9;
+
+  static const count = 10;
 
   /// Whether segments of [type] carry an info field.
-  static bool hasInfo(int type) => type >= image8 && type <= audio;
+  static bool hasInfo(int type) => type >= image8 && type <= image8pal;
 
-  static bool isImage(int type) => type >= image8 && type <= image32;
+  /// Images with one or more bytes per pixel (ImageModel).
+  static bool isImage(int type) =>
+      (type >= image8 && type <= image32) || type == image8pal;
+
+  /// Images with less than a byte per pixel (ZcmBitImageModel).
+  static bool isBitImage(int type) => type == image1 || type == image4;
 }
 
 /// Largest row of an image segment (bytes).
@@ -110,8 +125,9 @@ final class _Media {
   const _Media(this.type, this.start, this.len, this.info);
 }
 
-// BMP (paq8px detect, BMP): BITMAPINFOHEADER and later, uncompressed 8,
-// 24 or 32 bits per pixel.
+// BMP (paq8px detect, BMP): BITMAPINFOHEADER and later, uncompressed 1,
+// 4, 8, 24 or 32 bits per pixel. An 8-bit image whose palette is not a
+// gray ramp is an image8pal segment (paq8px Image8BitModel, !isGray).
 _Media? _bmp(Uint8List b, int i, int end) {
   if (i + 54 > end) return null;
   final hdr = _u32le(b, i + 14);
@@ -125,31 +141,57 @@ _Media? _bmp(Uint8List b, int i, int end) {
   final planes = _u16le(b, i + 26);
   final bpp = _u16le(b, i + 28);
   final comp = _u32le(b, i + 30);
-  if (planes != 1 || (bpp != 8 && bpp != 24 && bpp != 32)) return null;
+  if (planes != 1 ||
+      (bpp != 1 && bpp != 4 && bpp != 8 && bpp != 24 && bpp != 32)) {
+    return null;
+  }
   if (comp != 0 && !(comp == 3 && bpp == 32)) return null;
   if (width < 1 || width > 0x8000 || height < 1 || height > 0x10000) {
     return null;
   }
   if (dataOff < 14 + hdr || dataOff > 14 + hdr + 1024 + 256) return null;
-  final stride = ((width * (bpp >> 3)) + 3) & ~3;
+  final rowBytes = (width * bpp + 7) >> 3;
+  final stride = (rowBytes + 3) & ~3;
   final start = i + dataOff;
   var len = stride * height;
   if (start >= end) return null;
   if (start + len > end) len = (end - start) ~/ stride * stride;
   if (len < _minMedia || len < stride * 4) return null;
-  final type = bpp == 8
-      ? ZcmBlockType.image8
-      : (bpp == 24 ? ZcmBlockType.image24 : ZcmBlockType.image32);
-  return _Media(type, start, len,
-      zcmImageInfo(stride, stride - width * (bpp >> 3)));
+  int type;
+  if (bpp == 1) {
+    type = ZcmBlockType.image1;
+  } else if (bpp == 4) {
+    type = ZcmBlockType.image4;
+  } else if (bpp == 8) {
+    type = _grayPalette(b, i + 14 + hdr, _u32le(b, i + 46), start)
+        ? ZcmBlockType.image8
+        : ZcmBlockType.image8pal;
+  } else {
+    type = bpp == 24 ? ZcmBlockType.image24 : ZcmBlockType.image32;
+  }
+  return _Media(type, start, len, zcmImageInfo(stride, stride - rowBytes));
 }
 
-// Netpbm P5 (gray) and P6 (RGB) with a maximum value below 256.
+// Whether the palette of an 8-bit BMP at [p] (BGRx entries) is a gray
+// ramp: entry k is (k, k, k) (paq8px detect, isGray).
+bool _grayPalette(Uint8List b, int p, int colors, int limit) {
+  final n = colors == 0 || colors > 256 ? 256 : colors;
+  if (p + n * 4 > limit) return false;
+  for (var k = 0; k < n; k++) {
+    final q = p + k * 4;
+    if (b[q] != k || b[q + 1] != k || b[q + 2] != k) return false;
+  }
+  return true;
+}
+
+// Netpbm P4 (bits), P5 (gray) and P6 (RGB) with a maximum value below
+// 256.
 _Media? _pnm(Uint8List b, int i, int end) {
   final kind = b[i + 1];
   var p = i + 2;
   final vals = <int>[];
-  while (vals.length < 3) {
+  final nvals = kind == 0x34 ? 2 : 3;
+  while (vals.length < nvals) {
     // Whitespace and comments.
     while (p < end) {
       final c = b[p];
@@ -178,8 +220,16 @@ _Media? _pnm(Uint8List b, int i, int end) {
   final ws = b[p];
   if (ws != 32 && ws != 9 && ws != 10 && ws != 13) return null;
   p++;
-  final width = vals[0], height = vals[1], maxval = vals[2];
+  final width = vals[0], height = vals[1];
+  final maxval = nvals == 3 ? vals[2] : 1;
   if (width < 1 || height < 1 || maxval < 1 || maxval > 255) return null;
+  if (kind == 0x34) {
+    final stride = (width + 7) >> 3;
+    var len = stride * height;
+    if (p + len > end) len = (end - p) ~/ stride * stride;
+    if (len < _minMedia || len < stride * 4) return null;
+    return _Media(ZcmBlockType.image1, p, len, zcmImageInfo(stride, 0));
+  }
   final bpp = kind == 0x35 ? 1 : 3;
   final stride = width * bpp;
   if (stride > zcmMaxImageStride) return null;
@@ -260,6 +310,98 @@ _Media? _aiff(Uint8List b, int i, int end) {
   return null;
 }
 
+// Mean absolute difference of the bytes [d] apart, over [samples]
+// positions spread over [from, to) (paq8px has no such test; this is the
+// row periodicity test of zcm's raw image detection).
+int _meanDiff(Uint8List b, int from, int to, int d, int samples) {
+  final n = to - from - d;
+  if (n <= 0) return 1 << 20;
+  final step = n > samples ? n ~/ samples : 1;
+  var sum = 0, cnt = 0;
+  for (var i = from + d; i < to; i += step) {
+    final x = b[i] - b[i - d];
+    sum += x < 0 ? -x : x;
+    cnt++;
+  }
+  return (sum << 4) ~/ cnt; // 12.4 fixed point
+}
+
+/// Raw (headerless) images: a block of [len] bytes at [off] whose bytes
+/// are smooth along a row (at 1, 3 or 4 bytes per pixel) and much closer
+/// to the byte one row up than to unrelated bytes. Returns the segment
+/// type and info, or null. Only well structured data passes, so text,
+/// code and compressed data are left alone.
+({int type, int info})? zcmDetectRawImage(Uint8List b, int off, int len) {
+  if (len < 16384) return null;
+  final end = off + len;
+  // Unrelated bytes: a large, odd distance.
+  final r = _meanDiff(b, off, end, 7919, 2048);
+  if (r < 8 << 4) return null; // flat or nearly constant data
+  var bpp = 1;
+  var h = _meanDiff(b, off, end, 1, 4096);
+  for (final c in const [3, 4]) {
+    final hc = _meanDiff(b, off, end, c, 4096);
+    if (hc * 5 < h * 4) {
+      h = hc;
+      bpp = c;
+    }
+  }
+  if (h * 4 > r) return null; // not smooth along a row
+  // The row: the smallest distance whose difference is near the lowest.
+  var maxStride = len >> 2;
+  if (maxStride > 16384) maxStride = 16384;
+  final v = Int32List(maxStride + 1);
+  var best = 1 << 30;
+  for (var st = 16; st <= maxStride; st++) {
+    final d = _meanDiff(b, off, end, st, 512);
+    v[st] = d;
+    if (d < best) best = d;
+  }
+  if (best * 3 > r || best * 2 > h * 3) return null;
+  var stride = 0;
+  for (var st = 16; st <= maxStride; st++) {
+    if (v[st] * 8 <= best * 9) {
+      // Confirm with more samples.
+      final d = _meanDiff(b, off, end, st, 4096);
+      if (d * 3 <= r && d * 2 <= h * 3) {
+        stride = st;
+        break;
+      }
+    }
+  }
+  if (stride == 0 || stride % bpp != 0 || stride > zcmMaxImageStride) {
+    return null;
+  }
+  // Most distances must be clearly worse than the row (a periodic
+  // pattern, not just smooth data).
+  var worse = 0, total = 0;
+  for (var st = 16; st <= maxStride; st += 7) {
+    total++;
+    if (v[st] * 2 > best * 3) worse++;
+  }
+  if (worse * 2 < total) return null;
+  final type = bpp == 1
+      ? ZcmBlockType.image8
+      : (bpp == 3 ? ZcmBlockType.image24 : ZcmBlockType.image32);
+  return (type: type, info: zcmImageInfo(stride, 0));
+}
+
+// Whether [len] bytes at [off] go on with the rows of a raw image of
+// [type] and [info]: as close to the byte one row up as to the pixel on
+// the left (or closer).
+bool _continuesImage(Uint8List b, int off, int len, int type, int info) {
+  if (len < 4096 || (info >> 24) != 0) return false;
+  final bpp = type == ZcmBlockType.image8
+      ? 1
+      : (type == ZcmBlockType.image24 ? 3 : 4);
+  final stride = info & 0xFFFFFF;
+  if (stride * 2 > len) return false;
+  final r = _meanDiff(b, off, off + len, 7919, 1024);
+  final h = _meanDiff(b, off, off + len, bpp, 2048);
+  final v = _meanDiff(b, off, off + len, stride, 2048);
+  return v * 2 <= h * 3 + 16 && v * 3 <= r * 2 + 16;
+}
+
 /// Splits [len] bytes at [off] of [b] into segments (offsets relative to
 /// [off]). With [media] false only the generic types are used.
 List<ZcmSegment> zcmDetectSegments(Uint8List b, int off, int len,
@@ -273,7 +415,7 @@ List<ZcmSegment> zcmDetectSegments(Uint8List b, int off, int len,
       _Media? m;
       if (c == 0x42 && b[i + 1] == 0x4D) {
         m = _bmp(b, i, end);
-      } else if (c == 0x50 && (b[i + 1] == 0x35 || b[i + 1] == 0x36)) {
+      } else if (c == 0x50 && b[i + 1] >= 0x34 && b[i + 1] <= 0x36) {
         final n = b[i + 2];
         if (n == 32 || n == 9 || n == 10 || n == 13) m = _pnm(b, i, end);
       } else if (c == 0x52 && _u32be(b, i) == 0x52494646) {
@@ -293,15 +435,34 @@ List<ZcmSegment> zcmDetectSegments(Uint8List b, int off, int len,
   void generic(int from, int to) {
     for (var p = from; p < to; p += zcmDetectBlockSize) {
       final n = to - p < zcmDetectBlockSize ? to - p : zcmDetectBlockSize;
-      final t = zcmDetectBlockType(b, p, n);
+      var t = zcmDetectBlockType(b, p, n);
+      var info = 0;
+      if (media &&
+          t == ZcmBlockType.binary &&
+          out.isNotEmpty &&
+          out.last.off + out.last.len == p - off &&
+          (out.last.type == ZcmBlockType.image8 ||
+              out.last.type == ZcmBlockType.image24 ||
+              out.last.type == ZcmBlockType.image32) &&
+          _continuesImage(b, p, n, out.last.type, out.last.info)) {
+        // The rows of the raw image before it go on.
+        t = out.last.type;
+        info = out.last.info;
+      } else if (media && t == ZcmBlockType.binary) {
+        final raw = zcmDetectRawImage(b, p, n);
+        if (raw != null) {
+          t = raw.type;
+          info = raw.info;
+        }
+      }
       if (out.isNotEmpty &&
           out.last.type == t &&
-          !ZcmBlockType.hasInfo(t) &&
+          out.last.info == info &&
           out.last.off + out.last.len == p - off) {
         final l = out.removeLast();
-        out.add(ZcmSegment(t, l.off, l.len + n));
+        out.add(ZcmSegment(t, l.off, l.len + n, info));
       } else {
-        out.add(ZcmSegment(t, p - off, n));
+        out.add(ZcmSegment(t, p - off, n, info));
       }
     }
   }
