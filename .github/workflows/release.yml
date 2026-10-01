@@ -46,6 +46,12 @@ jobs:
         shell: bash
       - run: dart compile exe ${{ matrix.args }} bin/zx.dart -o dist/${{ matrix.name }}
         shell: bash
+      # the icon and version information of the Windows executables; the
+      # edited file replaces the original only when it still runs
+      - name: Windows icon
+        if: runner.os == 'Windows'
+        shell: bash
+        run: tool/windows_exe_icon.sh dist/${{ matrix.name }}
       - name: Smoke test
         if: ${{ !contains(matrix.args, 'arm64') }}
         shell: bash
