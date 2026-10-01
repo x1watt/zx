@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>zx archiver</title>
-<meta name="description" content="zx: one archiver for everything, in pure Dart. 7z, zip, rar, tar, zpaq and the .zx format, firmware and disk images, context mixing compression, a SQL database inside every archive and versions signed with NOSTR keys.">
+<meta name="description" content="zx is an archiver and an archive format written in pure Dart: a port of the LZMA SDK that reads and writes 7z, zip, RAR5, tar and zpaq, with an appendable .zx format, context mixing compression, an embedded SQL database and optional signed generations.">
 <meta property="og:title" content="zx archiver">
-<meta property="og:description" content="One archiver for everything, in pure Dart: 7-Zip compatible, context mixing compression, a database in every archive.">
+<meta property="og:description" content="An archiver and archive format in pure Dart: a port of the LZMA SDK, an appendable .zx format, context mixing compression and an embedded database.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -16,389 +16,399 @@
 <meta property="og:image" content="https://x1watt.github.io/zx/logo-512.png">
 <meta property="og:image:width" content="512">
 <meta property="og:image:height" content="512">
-<meta property="og:image:alt" content="The zx logo: a database marked ZX squeezed in a clamp">
+<meta property="og:image:alt" content="The zx logo: a database marked ZX held in a clamp">
 <meta name="twitter:card" content="summary">
 <style>
 :root {
   --bg: #ffffff;
-  --bg-soft: #f4f6fb;
-  --fg: #141821;
-  --fg-dim: #4c5568;
-  --line: #dde2ec;
-  --accent: #2f5bea;
-  --accent-soft: #e6ecff;
-  --good: #11865a;
-  --code-bg: #0f1420;
-  --code-fg: #d8e1f4;
-  --shadow: 0 1px 2px rgba(20, 24, 33, 0.06), 0 8px 24px rgba(20, 24, 33, 0.06);
+  --bg-soft: #f5f6f8;
+  --fg: #1a1d23;
+  --fg-dim: #545b68;
+  --line: #dfe2e8;
+  --accent: #2448c8;
+  --code-bg: #f5f6f8;
+  --code-fg: #1a1d23;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0d1017;
-    --bg-soft: #141925;
-    --fg: #e8ecf5;
-    --fg-dim: #a3adc2;
-    --line: #262d3d;
-    --accent: #7b9cff;
-    --accent-soft: #1b2440;
-    --good: #4ccf98;
-    --code-bg: #080b11;
-    --code-fg: #d8e1f4;
-    --shadow: none;
+    --bg: #111318;
+    --bg-soft: #181b22;
+    --fg: #e4e7ee;
+    --fg-dim: #9aa2b2;
+    --line: #2a2f3a;
+    --accent: #8aa6ff;
+    --code-bg: #181b22;
+    --code-fg: #e4e7ee;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #0d1017; --bg-soft: #141925; --fg: #e8ecf5; --fg-dim: #a3adc2;
-  --line: #262d3d; --accent: #7b9cff; --accent-soft: #1b2440;
-  --good: #4ccf98; --code-bg: #080b11; --code-fg: #d8e1f4; --shadow: none;
+  --bg: #111318; --bg-soft: #181b22; --fg: #e4e7ee; --fg-dim: #9aa2b2;
+  --line: #2a2f3a; --accent: #8aa6ff; --code-bg: #181b22; --code-fg: #e4e7ee;
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);
-  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
 }
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-code, pre { font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
-.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
-header.top {
-  position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+a { color: var(--accent); }
+code, pre { font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; font-size: 0.92em; }
+p code, li code, td code { background: var(--bg-soft); padding: 1px 4px; border-radius: 3px; }
+.wrap { max-width: 860px; margin: 0 auto; padding: 0 16px; }
+header.top { border-bottom: 1px solid var(--line); }
+header.top .wrap { display: flex; align-items: center; gap: 16px; height: 52px; }
+.logo { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--fg); text-decoration: none; }
+.logo img { width: 26px; height: 26px; }
+header nav { display: flex; gap: 14px; margin-left: auto; flex-wrap: wrap; font-size: 14px; }
+header nav a { color: var(--fg-dim); text-decoration: none; }
+header nav a:hover { color: var(--fg); }
+.theme-btn { border: 1px solid var(--line); background: var(--bg); color: var(--fg-dim); border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 13px; }
+.intro { padding: 40px 0 8px; }
+.intro .head { display: flex; gap: 20px; align-items: center; }
+.intro img { width: 96px; height: 96px; flex: none; }
+.intro h1 { font-size: 30px; margin: 0; letter-spacing: -0.01em; }
+.intro .tagline { margin: 2px 0 0; color: var(--fg-dim); }
+.meta { font-size: 14px; color: var(--fg-dim); margin: 18px 0 0; }
+.meta a { margin-right: 14px; }
+section { padding: 28px 0 8px; }
+h2 { font-size: 21px; margin: 0 0 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+h3 { font-size: 16px; margin: 22px 0 6px; }
+p { margin: 0 0 12px; }
+ul { margin: 0 0 12px; padding-left: 22px; }
+li { margin: 4px 0; }
+.note { font-size: 14px; color: var(--fg-dim); }
+pre {
+  background: var(--code-bg); color: var(--code-fg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 12px 14px; overflow-x: auto; line-height: 1.55; margin: 0 0 14px;
 }
-header.top .wrap { display: flex; align-items: center; gap: 20px; height: 56px; }
-.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--fg); }
-.logo img { width: 28px; height: 28px; }
-.emblem { display: block; width: 128px; height: 128px; margin: 0 auto 18px; filter: drop-shadow(0 10px 24px rgba(36, 64, 200, 0.3)); }
-nav { display: flex; gap: 18px; margin-left: auto; flex-wrap: wrap; }
-nav a { color: var(--fg-dim); font-size: 14px; }
-nav a:hover { color: var(--fg); text-decoration: none; }
-.hero { padding-top: 72px; padding-bottom: 48px; text-align: center; }
-.hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.1; margin: 0 0 16px; letter-spacing: -0.02em; }
-.hero p.lead { font-size: clamp(17px, 2.2vw, 20px); color: var(--fg-dim); max-width: 760px; margin: 0 auto 28px; }
-.cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-.btn { display: inline-block; padding: 10px 18px; border-radius: 10px; font-weight: 600; border: 1px solid var(--line); color: var(--fg); background: var(--bg-soft); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn:hover { text-decoration: none; filter: brightness(1.05); }
-.term {
-  margin: 36px auto 0; max-width: 760px; text-align: left; background: var(--code-bg);
-  color: var(--code-fg); border-radius: 12px; padding: 18px 20px; overflow-x: auto;
-  font-size: 14px; line-height: 1.7; box-shadow: var(--shadow);
-}
-.term .c { color: #7f8aa3; }
-.term .p { color: #7b9cff; }
-section { padding: 56px 0; border-top: 1px solid var(--line); }
-section h2 { font-size: 30px; margin: 0 0 8px; letter-spacing: -0.01em; }
-section p.sub { color: var(--fg-dim); margin: 0 0 28px; max-width: 760px; }
-.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-.card { border: 1px solid var(--line); border-radius: 14px; padding: 20px; background: var(--bg); box-shadow: var(--shadow); }
-.card h3 { margin: 0 0 6px; font-size: 17px; }
-.card p { margin: 0; color: var(--fg-dim); font-size: 15px; }
-.tag { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); margin-bottom: 10px; font-weight: 600; }
-.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+.tablewrap { overflow-x: auto; margin: 0 0 14px; }
 table { border-collapse: collapse; width: 100%; font-size: 15px; }
-th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--line); }
-td code, .card code { white-space: nowrap; }
-th { background: var(--bg-soft); font-weight: 600; }
-tr:last-child td { border-bottom: none; }
-td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-.bar { display: inline-block; height: 10px; border-radius: 5px; background: var(--accent); vertical-align: middle; margin-right: 8px; }
-.bar.alt { background: var(--fg-dim); opacity: 0.45; }
-.win { color: var(--good); font-weight: 600; }
-pre.code {
-  background: var(--code-bg); color: var(--code-fg); border-radius: 12px; padding: 16px 18px;
-  overflow-x: auto; font-size: 14px; line-height: 1.6; margin: 0;
-}
-.two { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); align-items: start; }
-.formats { display: flex; flex-wrap: wrap; gap: 8px; }
-.formats span { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font-size: 14px; background: var(--bg-soft); }
-.formats span.w { border-color: var(--accent); color: var(--accent); }
-footer { border-top: 1px solid var(--line); padding: 32px 0 48px; color: var(--fg-dim); font-size: 14px; }
-footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; }
-.theme-btn { border: 1px solid var(--line); background: var(--bg-soft); color: var(--fg-dim); border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
-@media (max-width: 640px) {
-  nav { display: none; }
-  .hero { padding-top: 48px; padding-bottom: 32px; }
+th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; border-bottom: 2px solid var(--line); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+dl { margin: 0 0 12px; }
+dt { font-weight: 600; margin-top: 10px; }
+dd { margin: 2px 0 0 0; }
+footer { border-top: 1px solid var(--line); margin-top: 32px; padding: 20px 0 40px; color: var(--fg-dim); font-size: 14px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
+@media (max-width: 720px) {
+  header nav { display: none; }
   .theme-btn { margin-left: auto; }
-  section { padding: 40px 0; }
+  .intro img { width: 64px; height: 64px; }
 }
 </style>
 </head>
 <body>
 <header class="top">
   <div class="wrap">
-    <a class="logo" href="#">
-      <img src="logo-512.png" width="28" height="28" alt="">
-      zx
-    </a>
+    <a class="logo" href="#"><img src="logo-512.png" width="26" height="26" alt="">zx</a>
     <nav>
-      <a href="#features">Features</a>
+      <a href="#overview">Overview</a>
+      <a href="#install">Install</a>
       <a href="#cli">Command line</a>
       <a href="#formats">Formats</a>
-      <a href="#zxformat">.zx</a>
+      <a href="#zx">.zx</a>
       <a href="#zcm">Compression</a>
       <a href="#zxdb">Database</a>
-      <a href="#seals">Signed</a>
+      <a href="#seals">Signing</a>
       <a href="#app">App</a>
     </nav>
     <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button>
   </div>
 </header>
 
-<main>
-<div class="hero wrap">
-  <img class="emblem" src="logo-512.png" alt="The zx logo: a database marked ZX squeezed in a clamp" width="128" height="128">
-  <h1>Every archive is a database.</h1>
-  <p class="lead">Backups that remember every version. Files found in microseconds by SHA-256 or by
-  similarity. Compression with the models of cmix and paq8px when you have the time.
-  And it still opens every 7z, zip, rar and tar you have. Pure Dart: a library, a command line
-  and a file explorer for desktop and Android.</p>
-  <div class="cta">
-    <a class="btn primary" href="#install">Install</a>
-    <a class="btn" href="https://github.com/x1watt/zx">Source on GitHub</a>
-    <a class="btn" href="https://github.com/x1watt/zx/blob/main/docs/zx-format.md">.zx specification</a>
+<main class="wrap">
+<div class="intro">
+  <div class="head">
+    <img src="logo-512.png" width="96" height="96" alt="The zx logo: a database marked ZX held in a clamp">
+    <div>
+      <h1>zx</h1>
+      <p class="tagline">An archiver and an archive format, written in pure Dart.</p>
+    </div>
   </div>
-  <pre class="term"><span class="p">$</span> zx a backup.zx ~/docs                         <span class="c"># daily: only what changed is stored</span>
-<span class="p">$</span> zx x backup.zx -mversion=2026-09-01 -oold     <span class="c"># everything as it was that day</span>
-<span class="p">$</span> zx sql backup.zx "SELECT path FROM similar('report.pdf', 20)"
-<span class="p">$</span> zx a -m0=zcm:cmix -mmem=8g corpus.zx texts/   <span class="c"># cmix-class ultra compression</span>
-<span class="p">$</span> zx seal -full book.zx                         <span class="c"># signed by which npub? changed since?</span></pre>
+  <p class="meta">Version 0.5.0 &middot; BSD 3-clause &middot; Linux, Windows, macOS, Android<br>
+  <a href="https://github.com/x1watt/zx">Source</a><a href="https://github.com/x1watt/zx/releases">Releases</a><a href="https://github.com/x1watt/zx/blob/main/docs/zx-format.md">.zx specification</a><a href="https://github.com/x1watt/zx/blob/main/docs/performance.md">Measurements</a></p>
 </div>
 
-<section id="features">
-  <div class="wrap">
-    <h2>Five ideas no other archiver combines</h2>
-    <p class="sub">zx reads and writes the formats you already use, then goes further.</p>
-    <div class="grid">
-      <div class="card"><span class="tag">zcm</span><h3>Ultra-compression, cmix class</h3><p>The models of cmix and paq8px in a normal archiver: smaller than paq8px on English text and source code, within 0.05 to 3.5% on images, audio and binaries. <code>-m0=zcm:auto -mtime=10m</code> picks the strongest level your machine can do in the time you give it.</p></div>
-      <div class="card"><span class="tag">backup</span><h3>Backups that remember (zpaq style)</h3><p>Every update appends a dated version and never rewrites old data. Identical chunks are stored once across files and versions; restore the archive as it was on any day, or list one file's timeline. Real zpaq archives too.</p></div>
-      <div class="card"><span class="tag">zxdb</span><h3>Every archive is a database</h3><p>SQL in SQLite's dialect, key-value stores, time series, full-text search and time travel, inside the archive and 5 to 20 times smaller than SQLite. Descriptions, tags, subtitles and screenshots travel with the files.</p></div>
-      <div class="card"><span class="tag">search</span><h3>Find files instantly</h3><p>SHA-256 lookup in 2 microseconds; the 20 files most similar to any file, among a million, in under 15 ms (TLSH). Duplicates and near-duplicates in one query.</p></div>
-      <div class="card"><span class="tag">NOSTR</span><h3>Signed with NOSTR keys</h3><p>An admin and maintainers, named by their npubs, sign each version. Anyone can check who signed what and that nothing changed afterwards, even without the password of an encrypted archive. <a href="#seals">How it works</a></p></div>
-    </div>
-    <h2 style="margin-top:40px">And everything an archiver should do</h2>
-    <div class="grid" style="margin-top:16px">
-      <div class="card"><span class="tag">7-Zip, ported</span><h3>Same bytes as 7-Zip</h3><p>The LZMA SDK ported function by function: identical output at the same settings, and 7-Zip's commands and switches.</p></div>
-      <div class="card"><span class="tag">Formats</span><h3>Read and write the rest</h3><p>zip and jar with AES, RAR 1.5 to 7 (writing RAR5), tar and compressed tars, zpaq, ARJ, LHA, gzip, bzip2, xz.</p></div>
-      <div class="card"><span class="tag">Images</span><h3>Firmware opened like folders</h3><p>ISO, UDF, GPT, FAT, ext4, SquashFS, UBI/UBIFS, JFFS2, U-Boot images and device trees, through every nesting level.</p></div>
-      <div class="card"><span class="tag">.zx</span><h3>A format that never goes stale</h3><p>Codecs named per block, the oldest zx that can read it stated up front, encryption, volumes across disks, parallel blocks.</p></div>
-    </div>
-  </div>
+<section id="overview">
+  <h2>Overview</h2>
+  <p>zx is a function-by-function port of the public domain LZMA SDK (the 7-Zip
+  command line, <code>7zr</code>), extended with readers and writers for the other
+  common archive formats and with a format of its own, <code>.zx</code>. At equal
+  settings it writes the same bytes as 7-Zip, and it accepts 7-Zip's commands and
+  switches. The library is pure Dart, with no FFI and no native libraries, so the
+  same code runs as the command line program, as a library in Dart and Flutter
+  applications, and in the desktop and Android app.</p>
+  <p>The <code>.zx</code> format adds what the established formats lack:</p>
+  <ul>
+    <li><strong>Generations.</strong> Updates are appended and earlier bytes are never
+    rewritten, as in zpaq. Any earlier state can be read back by number or by date;
+    content-defined deduplication stores identical chunks once across files and
+    generations.</li>
+    <li><strong>An embedded database.</strong> SQL in the SQLite dialect, key-value
+    stores and time series are stored in the archive itself, versioned with it.</li>
+    <li><strong>Content lookup.</strong> Each file carries its SHA-256 and a TLSH
+    digest, so exact and approximate matches are index lookups.</li>
+    <li><strong>Context mixing compression</strong> (zcm), from the models of zpaq,
+    paq8px and cmix, with deterministic arithmetic.</li>
+    <li><strong>Optional signed generations</strong> with NOSTR keys, checkable
+    without the archive's password.</li>
+  </ul>
+  <p>The test suite compares results against the reference tools wherever they
+  exist: 7z, xz, zip and unzip, tar, gzip, bzip2, rar and unrar, arj, lhasa, zpaq,
+  zpaqfranz, sqlite3, mksquashfs, xorriso, the mkfs tools and paq8px.</p>
 </section>
 
 <section id="install">
-  <div class="wrap">
-    <h2>Install</h2>
-    <p class="sub">No runtime, no native libraries. One binary or one Dart command.</p>
-    <div class="tablewrap"><table>
-      <tr><th>You have</th><th>Do</th></tr>
-      <tr><td>Linux, Windows or macOS</td><td>Download <code>zx-linux-x64</code>, <code>zx-windows-x64.exe</code> or <code>zx-macos-arm64</code> from the releases, rename it <code>zx</code>, put it on the PATH</td></tr>
-      <tr><td>The Dart SDK</td><td><code>dart pub global activate --source git https://github.com/x1watt/zx</code></td></tr>
-      <tr><td>Linux desktop app</td><td>The <code>.deb</code> package, or <code>tool/install_linux.sh</code> from the source</td></tr>
-      <tr><td>Android</td><td>The APK from the releases</td></tr>
-    </table></div>
-  </div>
+  <h2>Install</h2>
+  <p>zx consists of two programs: <code>zx</code>, the command line, and
+  <code>zx-gui</code>, the desktop application. On Android the application is
+  distributed as <code>zx.apk</code>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Target</th><th>Method</th></tr>
+    <tr><td>Linux, Windows, macOS</td><td>A single executable from the <a href="https://github.com/x1watt/zx/releases">releases</a> (<code>zx-linux-x64</code>, <code>zx-linux-arm64</code>, <code>zx-windows-x64.exe</code>, <code>zx-windows-arm64.exe</code>, <code>zx-macos-arm64</code>, <code>zx-macos-x64</code>), renamed to <code>zx</code> and placed on the PATH. No runtime is required.</td></tr>
+    <tr><td>Any platform with the Dart SDK</td><td><code>dart pub global activate --source git https://github.com/x1watt/zx</code></td></tr>
+    <tr><td>Linux desktop</td><td>The Debian package (<code>tool/build_deb.sh</code>) or <code>tool/install_linux.sh</code>; both install <code>zx</code> and <code>zx-gui</code>.</td></tr>
+    <tr><td>Android</td><td><code>zx.apk</code>, built with <code>tool/build_apk.sh</code> (<code>--split</code> for one APK per ABI).</td></tr>
+    <tr><td>Termux</td><td><code>pkg install dart git</code>, then the <code>dart pub global activate</code> line above.</td></tr>
+  </table></div>
 </section>
 
 <section id="cli">
-  <div class="wrap">
-    <h2>The command line speaks 7-Zip</h2>
-    <p class="sub"><code>zx &lt;command&gt; [&lt;switches&gt;...] &lt;archive&gt; [&lt;files&gt;...]</code>. If you know <code>7z</code>, you know <code>zx</code>; the extensions are marked below.</p>
-    <div class="two">
-      <div class="tablewrap"><table>
-        <tr><th>Command</th><th>Does</th></tr>
-        <tr><td><code>a</code> / <code>u</code></td><td>add / update</td></tr>
-        <tr><td><code>x</code> / <code>e</code></td><td>extract with / without paths</td></tr>
-        <tr><td><code>l</code> / <code>t</code></td><td>list / test</td></tr>
-        <tr><td><code>d</code> / <code>rn</code></td><td>delete / rename inside</td></tr>
-        <tr><td><code>h</code> / <code>i</code> / <code>b</code></td><td>hashes / formats / benchmark</td></tr>
-        <tr><td><code>sql</code></td><td>SQL on a .zx database <em>(zx)</em></td></tr>
-        <tr><td><code>seal</code></td><td>show, check and sign the seals <em>(zx)</em></td></tr>
-        <tr><td><code>readme</code></td><td>show or check an archive's README <em>(zx)</em></td></tr>
-      </table></div>
-      <div class="tablewrap"><table>
-        <tr><th>zx extension</th><th>Meaning</th></tr>
-        <tr><td><code>-snest</code></td><td>through nested archives and images</td></tr>
-        <tr><td><code>-mversion=2026-09-01</code></td><td>read the archive as of a date</td></tr>
-        <tr><td><code>-mtimeline=path</code></td><td>every version of one file</td></tr>
-        <tr><td><code>-mcompact[=N]</code></td><td>keep only the last N versions</td></tr>
-        <tr><td><code>-m0=zcm:auto -mtime=10m</code></td><td>strongest compression in 10 minutes</td></tr>
-        <tr><td><code>-mvdir=/mnt/b:full</code></td><td>spread volumes over disks</td></tr>
-        <tr><td><code>-msign=@admin.nsec</code></td><td>sign the new version with a NOSTR key</td></tr>
-      </table></div>
-    </div>
-    <pre class="code" style="margin-top:20px">zx a -mx9 -psecret -mhe backup.7z ~/docs       # 7z, encrypted names
-zx a src.tar.gz src/                           # tar straight into gzip
-zx x photos.rar                                # any RAR, 1.5 to 7
-zx a -v700m -mrr=5% big.rar data/              # RAR5 volumes + recovery
-zx a -m0=zcm:cmix -mmem=8g corpus.zx texts/    # cmix-class, smallest
-zx a -v4g -v25g -mvdir=/mnt/a:full -mvdir=/mnt/b:full huge.zx data/
-zx x -snest -snld20 firmware.pak -oout         # a whole root file system</pre>
-  </div>
+  <h2>Command line</h2>
+  <p>The syntax is that of 7-Zip:
+  <code>zx &lt;command&gt; [&lt;switches&gt;...] &lt;archive&gt; [&lt;files&gt;...]</code>.
+  Commands and switches that 7-Zip has behave as in 7-Zip; the ones below marked
+  zx are extensions.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Command</th><th>Function</th></tr>
+    <tr><td><code>a</code>, <code>u</code></td><td>Add files; update changed and new files</td></tr>
+    <tr><td><code>x</code>, <code>e</code></td><td>Extract with and without paths</td></tr>
+    <tr><td><code>l</code>, <code>t</code></td><td>List; test integrity</td></tr>
+    <tr><td><code>d</code>, <code>rn</code></td><td>Delete; rename inside the archive</td></tr>
+    <tr><td><code>h</code>, <code>i</code>, <code>b</code></td><td>Hashes of files; supported formats; benchmark</td></tr>
+    <tr><td><code>sql</code> (zx)</td><td>SQL on the database of a <code>.zx</code> archive, or an interactive shell</td></tr>
+    <tr><td><code>seal</code> (zx)</td><td>Show, check and sign the seals of a <code>.zx</code> archive</td></tr>
+    <tr><td><code>readme</code> (zx)</td><td>Print or check the README of an archive or of a folder in it</td></tr>
+  </table></div>
+  <div class="tablewrap"><table>
+    <tr><th>Switch (zx)</th><th>Function</th></tr>
+    <tr><td><code>-snest</code></td><td>List, test or extract through nested archives and disk images as one tree</td></tr>
+    <tr><td><code>-mversion=N</code>, <code>-mversion=DATE</code></td><td>Read a <code>.zx</code> or zpaq archive as it was at a generation or date</td></tr>
+    <tr><td><code>-mtimeline=PATH</code></td><td>Every version of one file, with dates</td></tr>
+    <tr><td><code>-mcompact[=N]</code></td><td>Rewrite a <code>.zx</code> archive keeping the last N generations</td></tr>
+    <tr><td><code>-m0=zcm:auto -mtime=T -mmem=M</code></td><td>The strongest zcm level that fits a time and memory budget</td></tr>
+    <tr><td><code>-mvdir=DIR[:SIZE|:full]</code></td><td>Write volumes to several folders or disks in order</td></tr>
+    <tr><td><code>-msign=KEY</code></td><td>Sign the new generation with a NOSTR key</td></tr>
+  </table></div>
+<pre>zx a -mx9 -psecret -mhe backup.7z ~/docs        # 7z, LZMA2 level 9, encrypted file names
+zx x release.tar.xz -oout                       # tar.xz extracted in one pass
+zx a -v700m -mrr=5% big.rar data/               # RAR5 volumes with a recovery record
+zx a backup.zx ~/docs                           # first generation; later runs store changes only
+zx x backup.zx -mversion=2026-09-01 -oold       # the archive as of a date
+zx x -snest -snld20 firmware.pak -oout          # the root file system inside a firmware image
+zx sql backup.zx "SELECT path, size FROM zx_files ORDER BY size DESC LIMIT 10"</pre>
+  <p class="note">Every switch: <a href="https://github.com/x1watt/zx/blob/main/docs/cli.md">docs/cli.md</a>.</p>
 </section>
 
 <section id="formats">
-  <div class="wrap">
-    <h2>Formats</h2>
-    <p class="sub">Highlighted: read and write. The rest: read. Files are recognized by content, not by name.</p>
-    <div class="formats">
-      <span class="w">zx</span><span class="w">7z</span><span class="w">zip / jar</span><span class="w">rar (RAR5)</span><span class="w">tar</span><span class="w">tar.gz / tgz</span><span class="w">tar.bz2</span><span class="w">tar.xz</span><span class="w">gz</span><span class="w">bz2</span><span class="w">xz</span><span class="w">lzma</span><span class="w">zpaq</span><span class="w">arj</span><span class="w">lzh / lha</span>
-      <span>rar 1.5 to 7</span><span>ISO 9660</span><span>UDF</span><span>MBR</span><span>GPT</span><span>FAT</span><span>ext2/3/4</span><span>SquashFS</span><span>cramfs</span><span>JFFS2</span><span>UBI</span><span>UBIFS</span><span>cpio</span><span>uImage</span><span>device tree</span><span>Reolink pak</span><span>split volumes</span>
-    </div>
-  </div>
+  <h2>Formats</h2>
+  <p>Formats are detected by content, not by file name.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Access</th><th>Formats</th></tr>
+    <tr><td>Read and write</td><td>zx, 7z, zip and jar (ZipCrypto, WinZip AES, Zip64), RAR5, tar, tar.gz, tar.bz2, tar.xz, gzip, bzip2, xz, lzma, zpaq, ARJ, LHA</td></tr>
+    <tr><td>Read</td><td>RAR 1.5 to 7, ISO 9660, UDF, MBR, GPT, FAT, ext2/3/4, SquashFS, cramfs, JFFS2, UBI, UBIFS, cpio, U-Boot images, device trees, Reolink firmware, split volumes</td></tr>
+  </table></div>
 </section>
 
-<section id="zxformat">
-  <div class="wrap">
-    <h2>The .zx format</h2>
-    <p class="sub">The extension only says "zx can read this". Every block names the codecs that made it, so new algorithms never need a new extension.</p>
-    <div class="grid">
-      <div class="card"><h3>Explicit compatibility</h3><p>Each file records the oldest zx that can decode it. An older zx refuses at once: "needs zx 0.7.0 or later".</p></div>
-      <div class="card"><h3>Versions with dates</h3><p>Updates append; old bytes are never rewritten. Read the archive as of any date, list one file's timeline, compact when you want the space back.</p></div>
-      <div class="card"><h3>Deduplication</h3><p>Content-defined chunks are stored once across files and versions: a second version of a source tree costs 0.3 MB instead of 4.8 MB.</p></div>
-      <div class="card"><h3>Parallel and safe</h3><p>Blocks coded by worker isolates, 3x faster on 4 threads with identical output, within a memory budget. A crash mid-update is simply ignored.</p></div>
-      <div class="card"><h3>Find by content</h3><p>SHA-256 per file in a sorted table, and a TLSH digest to find similar files.</p></div>
-      <div class="card"><h3>Volumes over disks</h3><p>Volume sizes per disk, destination folders with budgets, search folders when reading; old disks can stay offline.</p></div>
-      <div class="card"><h3>Archives that describe themselves</h3><p>A <code>README.md</code> inside is shown when the archive or one of its folders is opened, like a git repository. Its images come from the archive itself: links out are allowed, fetching is not (<code>zx readme -check</code>).</p></div>
-    </div>
-  </div>
+<section id="zx">
+  <h2>The .zx format</h2>
+  <p>A <code>.zx</code> file is a header, a sequence of blocks, and an index with a
+  footer; each update appends further blocks, a new index and a new footer. Every
+  block names the codec chain that produced it, and the file states the oldest
+  version of zx that can decode it, so new codecs do not require a new format and an
+  older reader refuses a file it can not read instead of misreading it. The complete
+  specification is <a href="https://github.com/x1watt/zx/blob/main/docs/zx-format.md">docs/zx-format.md</a>.</p>
+  <dl>
+    <dt>Generations</dt>
+    <dd>Earlier bytes are never rewritten. A reader opens the last valid footer, so an
+    update interrupted by a crash leaves the previous generation intact. Any
+    generation can be listed or extracted; <code>-mcompact</code> reclaims space.</dd>
+    <dt>Deduplication</dt>
+    <dd>Content-defined chunks (64 KiB average) are stored once across files and
+    generations. A second version of a source tree added to an archive of the first
+    costs 0.31 MB instead of 4.76 MB; the chunk index of a 100 GiB archive needs
+    13 MB of memory.</dd>
+    <dt>Parallel coding</dt>
+    <dd>Blocks are coded by worker isolates within a memory budget, with output
+    identical to the single-threaded coder: 2.9 times faster on 4 threads than on one
+    (LZMA2 level 5, 40 MB of C sources in 2 MiB blocks).</dd>
+    <dt>Content hashes</dt>
+    <dd>SHA-256 per file in a sorted table, verified on extraction and test, and a
+    TLSH digest per file for similarity search.</dd>
+    <dt>Encryption</dt>
+    <dd>AES-256-CTR with HMAC-SHA-256 per block (encrypt then MAC), keys from scrypt;
+    file names and sizes are encrypted by default.</dd>
+    <dt>Volumes</dt>
+    <dd>Volumes of different sizes over several folders or disks, with budgets or
+    until a disk is full; earlier volumes are not needed to append.</dd>
+    <dt>READMEs</dt>
+    <dd>A <code>README.md</code> in the archive, or in one of its folders, is shown by
+    the app as the description of that folder. Images and linked files must be
+    entries of the archive; links to external sites are permitted, fetching
+    external resources is not (<code>zx readme -check</code> reports violations).</dd>
+  </dl>
 </section>
 
 <section id="zcm">
-  <div class="wrap">
-    <h2>Compression: zcm</h2>
-    <p class="sub">zx's context mixing family, built on the models of zpaq, paq8px and cmix, with deterministic arithmetic so every machine decodes the same bytes. <code>-m0=zcm:auto</code> picks the strongest level that fits your time and memory.</p>
-    <div class="two">
-      <div class="tablewrap"><table>
-        <tr><th>Compressor</th><th class="num">Bytes (700,986 in)</th></tr>
-        <tr><td><span class="bar alt" style="width:100px"></span>7z PPMd</td><td class="num">384,433</td></tr>
-        <tr><td><span class="bar alt" style="width:99px"></span>xz -9e</td><td class="num">381,240</td></tr>
-        <tr><td><span class="bar alt" style="width:93px"></span>zpaq method 5</td><td class="num">357,160</td></tr>
-        <tr><td><span class="bar" style="width:91px"></span>zcm level 3</td><td class="num">350,935</td></tr>
-        <tr><td><span class="bar" style="width:89px"></span>zcm level 5</td><td class="num">341,206</td></tr>
-        <tr><td><span class="bar" style="width:86px"></span>zcm level 9</td><td class="num">331,324</td></tr>
-        <tr><td><span class="bar alt" style="width:86px"></span>paq8px -8 (2.4 GB RAM)</td><td class="num">330,801</td></tr>
-      </table></div>
-      <div class="tablewrap"><table>
-        <tr><th>Data</th><th class="num">zcm vs paq8px -8</th></tr>
-        <tr><td>English text</td><td class="num win">0.7 to 5% smaller</td></tr>
-        <tr><td>Source code</td><td class="num win">0.5 to 1% smaller</td></tr>
-        <tr><td>Grayscale image</td><td class="num">+0.05%</td></tr>
-        <tr><td>Color photo</td><td class="num">+0.45 to 3.45%</td></tr>
-        <tr><td>Music, 16-bit stereo</td><td class="num">+0.96%</td></tr>
-        <tr><td>x86 binary</td><td class="num">+2.6%</td></tr>
-      </table></div>
-    </div>
-    <div class="tablewrap" style="margin-top:20px"><table>
-      <tr><th>Level</th><th>Speed</th><th>Memory</th><th>Character</th></tr>
-      <tr><td>1</td><td>1.2 MB/s</td><td>~40 MiB</td><td>fast, already better than xz</td></tr>
-      <tr><td>3</td><td>200 KB/s</td><td>~30 MiB</td><td>beats zpaq's strongest method</td></tr>
-      <tr><td>5</td><td>85 KB/s</td><td>~35 MiB</td><td>data-type detection, paq8 models</td></tr>
-      <tr><td>7</td><td>10 KB/s</td><td>~170 MiB</td><td>paq8px text, image and audio models</td></tr>
-      <tr><td>9</td><td>4 to 6 KB/s</td><td>~400 MiB</td><td>everything, PPMd, gain gating</td></tr>
-      <tr><td>cmix</td><td>2 to 3 KB/s</td><td>as budget allows</td><td>cmix's LSTM byte mixer</td></tr>
-    </table></div>
-  </div>
+  <h2>Compression: zcm</h2>
+  <p>zcm is a family of context mixing compressors built from the models of zpaq,
+  paq8px and cmix: data type detection per block (text, x86 code, images including
+  headerless raw ones, audio), an English dictionary transform, word, match, sparse,
+  image and audio models, two-layer mixers with SSE stages, PPMd and DMC predictors
+  gated by measured gain, and cmix's LSTM byte mixer at the top level. The
+  arithmetic is deterministic, so every machine decodes the same bytes.
+  <code>-m0=zcm:auto</code> selects the strongest level that fits a given time and
+  memory budget on the machine at hand.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Compressor</th><th class="num">Output bytes</th></tr>
+    <tr><td>7z, PPMd</td><td class="num">384,433</td></tr>
+    <tr><td>xz -9e</td><td class="num">381,240</td></tr>
+    <tr><td>zpaq, method 5</td><td class="num">357,160</td></tr>
+    <tr><td>zcm level 1</td><td class="num">366,552</td></tr>
+    <tr><td>zcm level 3</td><td class="num">350,935</td></tr>
+    <tr><td>zcm level 5</td><td class="num">341,206</td></tr>
+    <tr><td>zcm level 9</td><td class="num">331,324</td></tr>
+    <tr><td>paq8px -8 (C++, 2.4 GB of memory)</td><td class="num">330,801</td></tr>
+  </table></div>
+  <p class="note">Input: a 700,986 byte corpus of text, source code, an x86 binary and
+  a firmware slice. Method and further corpora:
+  <a href="https://github.com/x1watt/zx/blob/main/docs/performance.md">docs/performance.md</a>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Data type</th><th class="num">zcm level 9 relative to paq8px -8</th></tr>
+    <tr><td>English text</td><td class="num">0.7 to 5% smaller</td></tr>
+    <tr><td>Source code (C++, Dart)</td><td class="num">0.5 to 1% smaller</td></tr>
+    <tr><td>Grayscale image</td><td class="num">0.05% larger</td></tr>
+    <tr><td>Color photograph (PPM, BMP)</td><td class="num">0.45 to 3.45% larger</td></tr>
+    <tr><td>16-bit stereo audio</td><td class="num">0.96% larger</td></tr>
+    <tr><td>x86 binary</td><td class="num">2.6% larger</td></tr>
+  </table></div>
+  <div class="tablewrap"><table>
+    <tr><th>Level</th><th class="num">Speed (AOT)</th><th class="num">Memory</th><th>Models</th></tr>
+    <tr><td>1</td><td class="num">1.2 MB/s</td><td class="num">40 MiB</td><td>Fastest level; smaller than xz -9e</td></tr>
+    <tr><td>3</td><td class="num">200 KB/s</td><td class="num">30 MiB</td><td>Smaller than zpaq method 5</td></tr>
+    <tr><td>5</td><td class="num">85 KB/s</td><td class="num">35 MiB</td><td>Data type detection, paq8 models</td></tr>
+    <tr><td>7</td><td class="num">10 KB/s</td><td class="num">170 MiB</td><td>paq8px text, image and audio models</td></tr>
+    <tr><td>9</td><td class="num">4 to 6 KB/s</td><td class="num">400 MiB</td><td>All models, PPMd and DMC, gain gating</td></tr>
+    <tr><td>cmix</td><td class="num">2 to 3 KB/s</td><td class="num">per budget</td><td>Level 9 with cmix's LSTM byte mixer</td></tr>
+  </table></div>
 </section>
 
 <section id="zxdb">
-  <div class="wrap">
-    <h2>zxdb: a database inside every archive</h2>
-    <p class="sub">SQLite's SQL, checked against sqlite3 with fuzzing, plus key-value stores, time series and search, all stored with zx's compression. Every commit is a version, so every table can be read as it was.</p>
-    <div class="two">
-      <pre class="code">-- built into every archive
-SELECT path, size FROM zx_files
-  WHERE sha256 = x'9f86d081...';
-SELECT path, distance
-  FROM similar('photos/IMG_0042.jpg', 20);
+  <h2>Database: zxdb</h2>
+  <p>A <code>.zx</code> archive can hold a database next to its files: SQL tables in
+  the SQLite dialect (cross-checked against sqlite3 by differential fuzzing),
+  key-value stores with expiry, partitioned time series and full-text search. Pages
+  are compressed with the archive's codecs. Each commit is a generation of the
+  archive, so every table can be read as of an earlier commit
+  (<code>AS OF '2026-09-01'</code>). Read-only system tables expose the archive's
+  files, generations and similarity search to SQL.</p>
+<pre>SELECT path, size FROM zx_files WHERE sha256 = x'9f86d081...';
+SELECT path, distance FROM similar('photos/IMG_0042.jpg', 20);
 SELECT * FROM zx_files AS OF '2026-09-01';
 
--- your data
-CREATE TABLE notes (id INTEGER PRIMARY KEY,
-  body TEXT) WITH (compression = 'max');
+CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT) WITH (compression = 'max');
 CREATE KV STORE settings WITH (ttl = '30d');
-CREATE TIMESERIES logs (ts DATETIME,
-  level TEXT, msg TEXT)
+CREATE TIMESERIES logs (ts DATETIME, level TEXT, msg TEXT)
   PARTITION BY DAY RETENTION '400d';</pre>
-      <div class="tablewrap"><table>
-        <tr><th>Measure</th><th class="num">zxdb</th><th class="num">sqlite3</th></tr>
-        <tr><td>Point select</td><td class="num win">4.8 us</td><td class="num">11.7 us</td></tr>
-        <tr><td>20k JSON records</td><td class="num win">158 KiB</td><td class="num">2,680 KiB</td></tr>
-        <tr><td>1M log lines</td><td class="num win">17.8 MiB</td><td class="num">153.9 MiB</td></tr>
-        <tr><td>KV get (hot)</td><td class="num">1.4 us</td><td class="num">-</td></tr>
-        <tr><td>Random puts, 1M keys</td><td class="num">161k/s</td><td class="num">-</td></tr>
-        <tr><td>SHA-256 lookup</td><td class="num">2 us</td><td class="num">-</td></tr>
-        <tr><td>20 most similar of 1M</td><td class="num">&lt; 15 ms</td><td class="num">-</td></tr>
-      </table></div>
-    </div>
-  </div>
+  <div class="tablewrap"><table>
+    <tr><th>Measurement</th><th class="num">zxdb</th><th class="num">sqlite3</th></tr>
+    <tr><td>Point select, 100k rows</td><td class="num">4.8 us</td><td class="num">11.7 us</td></tr>
+    <tr><td>File size, 20k JSON records (2.4 MiB)</td><td class="num">158 KiB</td><td class="num">2,680 KiB</td></tr>
+    <tr><td>File size, 1M log lines</td><td class="num">17.8 MiB</td><td class="num">153.9 MiB</td></tr>
+    <tr><td>Key-value get, cached</td><td class="num">1.4 us</td><td class="num"></td></tr>
+    <tr><td>Key-value put, random keys into a 1M-key tree</td><td class="num">161k/s</td><td class="num"></td></tr>
+    <tr><td>SHA-256 lookup</td><td class="num">2 us</td><td class="num"></td></tr>
+    <tr><td>20 nearest files by TLSH among 1M</td><td class="num">&lt; 15 ms</td><td class="num"></td></tr>
+  </table></div>
+  <p class="note">The sizes are at compression level <code>max</code>. SQL reference:
+  <a href="https://github.com/x1watt/zx/blob/main/docs/zxdb-sql.md">docs/zxdb-sql.md</a>.</p>
 </section>
 
 <section id="seals">
-  <div class="wrap">
-    <h2>Signed versions, with NOSTR keys</h2>
-    <p class="sub">Anyone who holds a file can change it. A sealed .zx archive makes every change visible. Its admin and maintainers are NOSTR identities: each version is signed with one of their keys, and the npubs that may sign are written in the archive for every reader to see.</p>
-    <div class="two">
-      <pre class="term" style="margin:0"><span class="p">$</span> zx a -msign=@admin.nsec book.zx chapters/     <span class="c"># sealed, this key is the admin</span>
-<span class="p">$</span> zx seal -sign=@admin.nsec -add=npub1l702... book.zx
-<span class="p">$</span> zx u -msign=@maint.nsec book.zx chapters/     <span class="c"># a maintainer's update</span>
-<span class="p">$</span> zx seal -full book.zx
-book.zx: sealed by npub1l702... (maintainer) at generation 3
-  Gen  State    Signer         Role
-    1  sealed   npub1l2nam...  admin, activation
-    2  sealed   npub1l2nam...  admin
-    3  sealed   npub1l702...   maintainer
-Admin: npub1l2nam...
-Maintainers (may sign):
-  npub1l702...</pre>
-      <div class="tablewrap"><table>
-        <tr><th>Measure</th><th class="num">time</th></tr>
-        <tr><td>Write, LZMA2, signed vs unsigned</td><td class="num win">+0.4%</td></tr>
-        <tr><td>Write, stored (no compression)</td><td class="num">+4.4%</td></tr>
-        <tr><td>Open and list a sealed archive</td><td class="num win">unchanged</td></tr>
-        <tr><td>Quick check: Indexes, signatures, roles</td><td class="num">10 ms</td></tr>
-        <tr><td>Full check, every byte, 41 MB</td><td class="num">0.33 s</td></tr>
-        <tr><td>Sign / verify one seal</td><td class="num">2.3 / 1.6 ms</td></tr>
-      </table></div>
-    </div>
-    <div class="grid" style="margin-top:20px">
-      <div class="card"><h3>Npubs you can see</h3><p>The admin, every maintainer and the signer of every version are listed as npubs by <code>zx seal</code>, by <code>zx l -slt</code> and in the app. They are stored in the clear, so even an encrypted archive tells you who maintains it.</p></div>
-      <div class="card"><h3>Changes show</h3><p>Each version's seal covers a SHA-256 of every byte it stored and of its index, chained to the version before, and is signed (BIP-340). A changed byte, a forged version, a stripped seal or a key that may not sign is reported.</p></div>
-      <div class="card"><h3>Roles that change</h3><p>The admin adds and removes maintainers, decides whether they may sign, and can hand the admin role to a new key, which accepts it with its own signature. Versions signed by a removed maintainer stay valid; its later ones do not.</p></div>
-      <div class="card"><h3>Optional, any time</h3><p>Switch sealing on for a new archive or one with years of history, and off again. An archive that is never sealed is written and read exactly as before. Updates without a key stay "not signed" until an allowed key signs a later version.</p></div>
-      <div class="card"><h3>Databases too</h3><p>Every database commit is a version: it can be signed at each commit or every few seconds, and the last commits are signed when the database is closed. A compaction is sealed again by the admin.</p></div>
-      <div class="card"><h3>What it can not prove</h3><p>A seal tells you which npub signed; recognizing that npub is up to you, as on NOSTR. And an older, validly sealed copy can not tell that newer versions exist: publish your latest version where your readers follow you.</p></div>
-    </div>
-    <p class="sub" style="margin-top:16px">Keys are given as an nsec, as <code>@file</code>, or in the <code>ZX_NSEC</code> variable, so they never appear on the command line. The format is in <a href="https://github.com/x1watt/zx/blob/main/docs/zx-format.md">the .zx specification</a>, section 17.</p>
-  </div>
+  <h2>Signed generations</h2>
+  <p>Whoever holds a file can modify it; signing can not prevent that, but it can make
+  any modification detectable. When sealing is enabled, each generation of a
+  <code>.zx</code> archive ends with a seal: a SHA-256 over the stored bytes of the
+  generation and over its index, chained to the seal of the previous generation and
+  signed with a NOSTR key (BIP-340 Schnorr over secp256k1). Because the hashes cover
+  the stored bytes, the seals of an encrypted archive can be verified without its
+  password.</p>
+  <p>The seal also carries the archive's roles: one admin and any number of
+  maintainers, identified by their npubs and readable by anyone. The admin adds and
+  removes maintainers, decides whether they may sign, and can transfer the admin role
+  to a new key, which must countersign its acceptance. A reader replays the role
+  history offline and checks each generation against the roles in force when it
+  was written; generations signed by a maintainer before their removal remain
+  valid.</p>
+<pre>zx a -msign=@admin.nsec book.zx chapters/          # new archive; the key becomes the admin
+zx seal -sign=@admin.nsec -add=npub1... book.zx     # add a maintainer
+zx u -msign=@maintainer.nsec book.zx chapters/     # an update signed by the maintainer
+zx seal -full book.zx                              # verify every byte and every signature</pre>
+  <p>A modified byte, a forged generation, a removed seal, a signature by a key that
+  may not sign and an unauthorized change of roles are all reported. Two limits are
+  inherent to any scheme of this kind: the verification establishes which npub
+  signed, not who controls it; and a truncated copy that ends at an earlier, validly
+  sealed generation can only be recognized against an independent record of the
+  latest one. Sealing is optional, can be enabled on an existing archive, and has no
+  effect on archives that do not use it. Keys are passed as a file or through the
+  <code>ZX_NSEC</code> environment variable, not on the command line.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Cost</th><th class="num">Measured</th></tr>
+    <tr><td>Write time, LZMA2 level 5, signed relative to unsigned</td><td class="num">+0.4%</td></tr>
+    <tr><td>Write time, stored (no compression)</td><td class="num">+4.4%</td></tr>
+    <tr><td>Opening and listing a sealed archive</td><td class="num">unchanged</td></tr>
+    <tr><td>Quick check (indexes, signatures, roles)</td><td class="num">10 ms</td></tr>
+    <tr><td>Full check of a 41 MB archive</td><td class="num">0.33 s</td></tr>
+    <tr><td>One signature; one verification</td><td class="num">2.3 ms; 1.6 ms</td></tr>
+  </table></div>
+  <p class="note">The block workers hash the payloads in parallel, so the cost appears
+  only where the coder is faster than SHA-256. Specification: section 17 of
+  <a href="https://github.com/x1watt/zx/blob/main/docs/zx-format.md">docs/zx-format.md</a>.</p>
 </section>
 
 <section id="app">
-  <div class="wrap">
-    <h2>The app: a file explorer that walks into archives</h2>
-    <p class="sub">Desktop and Android. Browse your drives, and step into archives, nested archives, disk images and firmware as if they were folders.</p>
-    <div class="grid">
-      <div class="card"><h3>Explorer</h3><p>Places, drives and bookmarks, breadcrumbs that continue into archives, list and icon views, search, trash, conflict handling.</p></div>
-      <div class="card"><h3>Archives as folders</h3><p>Copy out to extract, paste in to add. Compress to .zx, Extract here and Extract to folder in every context menu.</p></div>
-      <div class="card"><h3>Versions and data</h3><p>.zx archives show their versions and a Data view: tables, key-value stores, time series, queries, metadata and "find similar".</p></div>
-      <div class="card"><h3>Seals at a glance</h3><p>A sealed archive shows Sealed, Not signed or Seal broken in the status bar; one click lists the npub that signed each version, the admin and the maintainers, and runs the full check.</p></div>
-      <div class="card"><h3>Integrated</h3><p>File associations and "Extract to folder" in the file manager on Linux; storage access, SD and USB volumes, open-with and share on Android.</p></div>
-    </div>
-  </div>
+  <h2>Desktop and Android application</h2>
+  <p><code>zx-gui</code> is a file manager built with Flutter on the same library. It
+  opens archives, nested archives, disk images and firmware as folders: copying out
+  extracts, pasting in adds. For <code>.zx</code> archives it lists the generations,
+  shows the archive's README, provides a view of the embedded database (tables,
+  key-value stores, time series, queries, file metadata, similarity search) and
+  reports the state of the seals. All archive work runs in background isolates.</p>
+  <p>On Linux it registers file associations and an "Extract to folder" entry for
+  Nautilus and Thunar; on Android it supports the system's storage access, SD and
+  USB volumes, opening from and sharing to other applications. Details:
+  <a href="https://github.com/x1watt/zx/blob/main/docs/app.md">docs/app.md</a>.</p>
 </section>
 
 <section id="credits">
-  <div class="wrap">
-    <h2>Credits</h2>
-    <p class="sub">zx stands on the work of Igor Pavlov (7-Zip, LZMA SDK), Matt Mahoney (zpaq, paq8), the paq8px authors, Byron Knoll (cmix), Dmitry Shkarin (PPMd), Jean-loup Gailly and Mark Adler (zlib), Julian Seward (bzip2), Tim Kientzle and the libarchive contributors, Nicholas Waples (rardecode), Simon Howard (lhasa), Franco Corbelli (zpaqfranz), the TLSH authors, Pieter Wuille, Jonas Nick and Tim Ruffing (BIP-340) and many more, credited in every file. 7-Zip is a registered trademark of Igor Pavlov; zx is not affiliated with or endorsed by him.</p>
-  </div>
+  <h2>Credits and license</h2>
+  <p>zx is distributed under the BSD 3-clause license. It is derived from, or
+  follows, the work of Igor Pavlov (7-Zip and the LZMA SDK), Matt Mahoney (zpaq,
+  paq8, lpaq), the paq8px authors, Byron Knoll (cmix), Dmitry Shkarin (PPMd),
+  Jean-loup Gailly and Mark Adler (zlib), Julian Seward (bzip2), Tim Kientzle and the
+  libarchive contributors, Nicholas Waples (rardecode), Simon Howard (lhasa), Franco
+  Corbelli (zpaqfranz), Wei Dai (SHA-256), the TLSH and BLAKE2 authors, and Pieter
+  Wuille, Jonas Nick and Tim Ruffing (BIP-340). Each source file names its origins.
+  7-Zip is a registered trademark of Igor Pavlov; zx is not affiliated with or
+  endorsed by him.</p>
 </section>
 </main>
 
 <footer>
   <div class="wrap">
-    <span>zx, BSD 3-clause, Copyright (c) 2026 Max Brito</span>
-    <span><a href="https://github.com/x1watt/zx">GitHub</a> &middot; <a href="https://github.com/x1watt/zx/blob/main/docs/performance.md">Benchmarks</a> &middot; <a href="https://github.com/x1watt/zx/blob/main/docs/zxdb-sql.md">SQL reference</a></span>
+    <span>zx 0.5.0 &middot; BSD 3-clause &middot; Copyright (c) 2026 Max Brito</span>
+    <span><a href="https://github.com/x1watt/zx">Source</a> &middot; <a href="https://github.com/x1watt/zx/blob/main/docs/performance.md">Measurements</a> &middot; <a href="https://github.com/x1watt/zx/blob/main/docs/zxdb-sql.md">SQL reference</a> &middot; <a href="https://github.com/x1watt/zx/blob/main/CHANGELOG.md">Changes</a></span>
   </div>
 </footer>
 
