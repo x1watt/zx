@@ -4,10 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>zx archiver</title>
-<meta name="description" content="zx: one archiver for everything, in pure Dart. 7z, zip, rar, tar, zpaq and the .zx format, firmware and disk images, context mixing compression and a SQL database inside every archive.">
+<meta name="description" content="zx: one archiver for everything, in pure Dart. 7z, zip, rar, tar, zpaq and the .zx format, firmware and disk images, context mixing compression, a SQL database inside every archive and versions signed with NOSTR keys.">
 <meta property="og:title" content="zx archiver">
 <meta property="og:description" content="One archiver for everything, in pure Dart: 7-Zip compatible, context mixing compression, a database in every archive.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="canonical" href="https://x1watt.github.io/zx/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://x1watt.github.io/zx/">
+<meta property="og:image" content="https://x1watt.github.io/zx/logo-512.png">
+<meta property="og:image:width" content="512">
+<meta property="og:image:height" content="512">
+<meta property="og:image:alt" content="The zx logo: a database marked ZX squeezed in a clamp">
+<meta name="twitter:card" content="summary">
 <style>
 :root {
   --bg: #ffffff;
@@ -58,7 +68,8 @@ header.top {
 }
 header.top .wrap { display: flex; align-items: center; gap: 20px; height: 56px; }
 .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--fg); }
-.logo svg { width: 28px; height: 28px; }
+.logo img { width: 28px; height: 28px; }
+.emblem { display: block; width: 128px; height: 128px; margin: 0 auto 18px; filter: drop-shadow(0 10px 24px rgba(36, 64, 200, 0.3)); }
 nav { display: flex; gap: 18px; margin-left: auto; flex-wrap: wrap; }
 nav a { color: var(--fg-dim); font-size: 14px; }
 nav a:hover { color: var(--fg); text-decoration: none; }
@@ -117,7 +128,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 <header class="top">
   <div class="wrap">
     <a class="logo" href="#">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="7" fill="#2f5bea"/><path d="M9 10h14L9 22h14" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <img src="logo-512.png" width="28" height="28" alt="">
       zx
     </a>
     <nav>
@@ -127,6 +138,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
       <a href="#zxformat">.zx</a>
       <a href="#zcm">Compression</a>
       <a href="#zxdb">Database</a>
+      <a href="#seals">Signed</a>
       <a href="#app">App</a>
     </nav>
     <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button>
@@ -135,6 +147,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 
 <main>
 <div class="hero wrap">
+  <img class="emblem" src="logo-512.png" alt="The zx logo: a database marked ZX squeezed in a clamp" width="128" height="128">
   <h1>Every archive is a database.</h1>
   <p class="lead">Backups that remember every version. Files found in microseconds by SHA-256 or by
   similarity. Compression with the models of cmix and paq8px when you have the time.
@@ -148,18 +161,20 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
   <pre class="term"><span class="p">$</span> zx a backup.zx ~/docs                         <span class="c"># daily: only what changed is stored</span>
 <span class="p">$</span> zx x backup.zx -mversion=2026-09-01 -oold     <span class="c"># everything as it was that day</span>
 <span class="p">$</span> zx sql backup.zx "SELECT path FROM similar('report.pdf', 20)"
-<span class="p">$</span> zx a -m0=zcm:cmix -mmem=8g corpus.zx texts/   <span class="c"># cmix-class ultra compression</span></pre>
+<span class="p">$</span> zx a -m0=zcm:cmix -mmem=8g corpus.zx texts/   <span class="c"># cmix-class ultra compression</span>
+<span class="p">$</span> zx seal -full book.zx                         <span class="c"># signed by which npub? changed since?</span></pre>
 </div>
 
 <section id="features">
   <div class="wrap">
-    <h2>Four ideas no other archiver combines</h2>
+    <h2>Five ideas no other archiver combines</h2>
     <p class="sub">zx reads and writes the formats you already use, then goes further.</p>
     <div class="grid">
       <div class="card"><span class="tag">zcm</span><h3>Ultra-compression, cmix class</h3><p>The models of cmix and paq8px in a normal archiver: smaller than paq8px on English text and source code, within 0.05 to 3.5% on images, audio and binaries. <code>-m0=zcm:auto -mtime=10m</code> picks the strongest level your machine can do in the time you give it.</p></div>
       <div class="card"><span class="tag">backup</span><h3>Backups that remember (zpaq style)</h3><p>Every update appends a dated version and never rewrites old data. Identical chunks are stored once across files and versions; restore the archive as it was on any day, or list one file's timeline. Real zpaq archives too.</p></div>
       <div class="card"><span class="tag">zxdb</span><h3>Every archive is a database</h3><p>SQL in SQLite's dialect, key-value stores, time series, full-text search and time travel, inside the archive and 5 to 20 times smaller than SQLite. Descriptions, tags, subtitles and screenshots travel with the files.</p></div>
       <div class="card"><span class="tag">search</span><h3>Find files instantly</h3><p>SHA-256 lookup in 2 microseconds; the 20 files most similar to any file, among a million, in under 15 ms (TLSH). Duplicates and near-duplicates in one query.</p></div>
+      <div class="card"><span class="tag">NOSTR</span><h3>Signed with NOSTR keys</h3><p>An admin and maintainers, named by their npubs, sign each version. Anyone can check who signed what and that nothing changed afterwards, even without the password of an encrypted archive. <a href="#seals">How it works</a></p></div>
     </div>
     <h2 style="margin-top:40px">And everything an archiver should do</h2>
     <div class="grid" style="margin-top:16px">
@@ -198,6 +213,8 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
         <tr><td><code>d</code> / <code>rn</code></td><td>delete / rename inside</td></tr>
         <tr><td><code>h</code> / <code>i</code> / <code>b</code></td><td>hashes / formats / benchmark</td></tr>
         <tr><td><code>sql</code></td><td>SQL on a .zx database <em>(zx)</em></td></tr>
+        <tr><td><code>seal</code></td><td>show, check and sign the seals <em>(zx)</em></td></tr>
+        <tr><td><code>readme</code></td><td>show or check an archive's README <em>(zx)</em></td></tr>
       </table></div>
       <div class="tablewrap"><table>
         <tr><th>zx extension</th><th>Meaning</th></tr>
@@ -207,6 +224,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
         <tr><td><code>-mcompact[=N]</code></td><td>keep only the last N versions</td></tr>
         <tr><td><code>-m0=zcm:auto -mtime=10m</code></td><td>strongest compression in 10 minutes</td></tr>
         <tr><td><code>-mvdir=/mnt/b:full</code></td><td>spread volumes over disks</td></tr>
+        <tr><td><code>-msign=@admin.nsec</code></td><td>sign the new version with a NOSTR key</td></tr>
       </table></div>
     </div>
     <pre class="code" style="margin-top:20px">zx a -mx9 -psecret -mhe backup.7z ~/docs       # 7z, encrypted names
@@ -241,6 +259,7 @@ zx x -snest -snld20 firmware.pak -oout         # a whole root file system</pre>
       <div class="card"><h3>Parallel and safe</h3><p>Blocks coded by worker isolates, 3x faster on 4 threads with identical output, within a memory budget. A crash mid-update is simply ignored.</p></div>
       <div class="card"><h3>Find by content</h3><p>SHA-256 per file in a sorted table, and a TLSH digest to find similar files.</p></div>
       <div class="card"><h3>Volumes over disks</h3><p>Volume sizes per disk, destination folders with budgets, search folders when reading; old disks can stay offline.</p></div>
+      <div class="card"><h3>Archives that describe themselves</h3><p>A <code>README.md</code> inside is shown when the archive or one of its folders is opened, like a git repository. Its images come from the archive itself: links out are allowed, fetching is not (<code>zx readme -check</code>).</p></div>
     </div>
   </div>
 </section>
@@ -315,6 +334,45 @@ CREATE TIMESERIES logs (ts DATETIME,
   </div>
 </section>
 
+<section id="seals">
+  <div class="wrap">
+    <h2>Signed versions, with NOSTR keys</h2>
+    <p class="sub">Anyone who holds a file can change it. A sealed .zx archive makes every change visible. Its admin and maintainers are NOSTR identities: each version is signed with one of their keys, and the npubs that may sign are written in the archive for every reader to see.</p>
+    <div class="two">
+      <pre class="term" style="margin:0"><span class="p">$</span> zx a -msign=@admin.nsec book.zx chapters/     <span class="c"># sealed, this key is the admin</span>
+<span class="p">$</span> zx seal -sign=@admin.nsec -add=npub1l702... book.zx
+<span class="p">$</span> zx u -msign=@maint.nsec book.zx chapters/     <span class="c"># a maintainer's update</span>
+<span class="p">$</span> zx seal -full book.zx
+book.zx: sealed by npub1l702... (maintainer) at generation 3
+  Gen  State    Signer         Role
+    1  sealed   npub1l2nam...  admin, activation
+    2  sealed   npub1l2nam...  admin
+    3  sealed   npub1l702...   maintainer
+Admin: npub1l2nam...
+Maintainers (may sign):
+  npub1l702...</pre>
+      <div class="tablewrap"><table>
+        <tr><th>Measure</th><th class="num">time</th></tr>
+        <tr><td>Write, LZMA2, signed vs unsigned</td><td class="num win">+0.4%</td></tr>
+        <tr><td>Write, stored (no compression)</td><td class="num">+4.4%</td></tr>
+        <tr><td>Open and list a sealed archive</td><td class="num win">unchanged</td></tr>
+        <tr><td>Quick check: Indexes, signatures, roles</td><td class="num">10 ms</td></tr>
+        <tr><td>Full check, every byte, 41 MB</td><td class="num">0.33 s</td></tr>
+        <tr><td>Sign / verify one seal</td><td class="num">2.3 / 1.6 ms</td></tr>
+      </table></div>
+    </div>
+    <div class="grid" style="margin-top:20px">
+      <div class="card"><h3>Npubs you can see</h3><p>The admin, every maintainer and the signer of every version are listed as npubs by <code>zx seal</code>, by <code>zx l -slt</code> and in the app. They are stored in the clear, so even an encrypted archive tells you who maintains it.</p></div>
+      <div class="card"><h3>Changes show</h3><p>Each version's seal covers a SHA-256 of every byte it stored and of its index, chained to the version before, and is signed (BIP-340). A changed byte, a forged version, a stripped seal or a key that may not sign is reported.</p></div>
+      <div class="card"><h3>Roles that change</h3><p>The admin adds and removes maintainers, decides whether they may sign, and can hand the admin role to a new key, which accepts it with its own signature. Versions signed by a removed maintainer stay valid; its later ones do not.</p></div>
+      <div class="card"><h3>Optional, any time</h3><p>Switch sealing on for a new archive or one with years of history, and off again. An archive that is never sealed is written and read exactly as before. Updates without a key stay "not signed" until an allowed key signs a later version.</p></div>
+      <div class="card"><h3>Databases too</h3><p>Every database commit is a version: it can be signed at each commit or every few seconds, and the last commits are signed when the database is closed. A compaction is sealed again by the admin.</p></div>
+      <div class="card"><h3>What it can not prove</h3><p>A seal tells you which npub signed; recognizing that npub is up to you, as on NOSTR. And an older, validly sealed copy can not tell that newer versions exist: publish your latest version where your readers follow you.</p></div>
+    </div>
+    <p class="sub" style="margin-top:16px">Keys are given as an nsec, as <code>@file</code>, or in the <code>ZX_NSEC</code> variable, so they never appear on the command line. The format is in <a href="https://github.com/x1watt/zx/blob/main/docs/zx-format.md">the .zx specification</a>, section 17.</p>
+  </div>
+</section>
+
 <section id="app">
   <div class="wrap">
     <h2>The app: a file explorer that walks into archives</h2>
@@ -323,6 +381,7 @@ CREATE TIMESERIES logs (ts DATETIME,
       <div class="card"><h3>Explorer</h3><p>Places, drives and bookmarks, breadcrumbs that continue into archives, list and icon views, search, trash, conflict handling.</p></div>
       <div class="card"><h3>Archives as folders</h3><p>Copy out to extract, paste in to add. Compress to .zx, Extract here and Extract to folder in every context menu.</p></div>
       <div class="card"><h3>Versions and data</h3><p>.zx archives show their versions and a Data view: tables, key-value stores, time series, queries, metadata and "find similar".</p></div>
+      <div class="card"><h3>Seals at a glance</h3><p>A sealed archive shows Sealed, Not signed or Seal broken in the status bar; one click lists the npub that signed each version, the admin and the maintainers, and runs the full check.</p></div>
       <div class="card"><h3>Integrated</h3><p>File associations and "Extract to folder" in the file manager on Linux; storage access, SD and USB volumes, open-with and share on Android.</p></div>
     </div>
   </div>
@@ -331,7 +390,7 @@ CREATE TIMESERIES logs (ts DATETIME,
 <section id="credits">
   <div class="wrap">
     <h2>Credits</h2>
-    <p class="sub">zx stands on the work of Igor Pavlov (7-Zip, LZMA SDK), Matt Mahoney (zpaq, paq8), the paq8px authors, Byron Knoll (cmix), Dmitry Shkarin (PPMd), Jean-loup Gailly and Mark Adler (zlib), Julian Seward (bzip2), Tim Kientzle and the libarchive contributors, Nicholas Waples (rardecode), Simon Howard (lhasa), Franco Corbelli (zpaqfranz), the TLSH authors and many more, credited in every file. 7-Zip is a registered trademark of Igor Pavlov; zx is not affiliated with or endorsed by him.</p>
+    <p class="sub">zx stands on the work of Igor Pavlov (7-Zip, LZMA SDK), Matt Mahoney (zpaq, paq8), the paq8px authors, Byron Knoll (cmix), Dmitry Shkarin (PPMd), Jean-loup Gailly and Mark Adler (zlib), Julian Seward (bzip2), Tim Kientzle and the libarchive contributors, Nicholas Waples (rardecode), Simon Howard (lhasa), Franco Corbelli (zpaqfranz), the TLSH authors, Pieter Wuille, Jonas Nick and Tim Ruffing (BIP-340) and many more, credited in every file. 7-Zip is a registered trademark of Igor Pavlov; zx is not affiliated with or endorsed by him.</p>
   </div>
 </section>
 </main>
