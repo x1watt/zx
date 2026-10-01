@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zx archiver</title>
+<meta name="description" content="zx: one archiver for everything, in pure Dart. 7z, zip, rar, tar, zpaq and the .zx format, firmware and disk images, context mixing compression and a SQL database inside every archive.">
+<meta property="og:title" content="zx archiver">
+<meta property="og:description" content="One archiver for everything, in pure Dart: 7-Zip compatible, context mixing compression, a database in every archive.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f4f6fb;
+  --fg: #141821;
+  --fg-dim: #4c5568;
+  --line: #dde2ec;
+  --accent: #2f5bea;
+  --accent-soft: #e6ecff;
+  --good: #11865a;
+  --code-bg: #0f1420;
+  --code-fg: #d8e1f4;
+  --shadow: 0 1px 2px rgba(20, 24, 33, 0.06), 0 8px 24px rgba(20, 24, 33, 0.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1017;
+    --bg-soft: #141925;
+    --fg: #e8ecf5;
+    --fg-dim: #a3adc2;
+    --line: #262d3d;
+    --accent: #7b9cff;
+    --accent-soft: #1b2440;
+    --good: #4ccf98;
+    --code-bg: #080b11;
+    --code-fg: #d8e1f4;
+    --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1017; --bg-soft: #141925; --fg: #e8ecf5; --fg-dim: #a3adc2;
+  --line: #262d3d; --accent: #7b9cff; --accent-soft: #1b2440;
+  --good: #4ccf98; --code-bg: #080b11; --code-fg: #d8e1f4; --shadow: none;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre { font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+header.top {
+  position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+}
+header.top .wrap { display: flex; align-items: center; gap: 20px; height: 56px; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--fg); }
+.logo svg { width: 28px; height: 28px; }
+nav { display: flex; gap: 18px; margin-left: auto; flex-wrap: wrap; }
+nav a { color: var(--fg-dim); font-size: 14px; }
+nav a:hover { color: var(--fg); text-decoration: none; }
+.hero { padding-top: 72px; padding-bottom: 48px; text-align: center; }
+.hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.1; margin: 0 0 16px; letter-spacing: -0.02em; }
+.hero p.lead { font-size: clamp(17px, 2.2vw, 20px); color: var(--fg-dim); max-width: 760px; margin: 0 auto 28px; }
+.cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn { display: inline-block; padding: 10px 18px; border-radius: 10px; font-weight: 600; border: 1px solid var(--line); color: var(--fg); background: var(--bg-soft); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:hover { text-decoration: none; filter: brightness(1.05); }
+.term {
+  margin: 36px auto 0; max-width: 760px; text-align: left; background: var(--code-bg);
+  color: var(--code-fg); border-radius: 12px; padding: 18px 20px; overflow-x: auto;
+  font-size: 14px; line-height: 1.7; box-shadow: var(--shadow);
+}
+.term .c { color: #7f8aa3; }
+.term .p { color: #7b9cff; }
+section { padding: 56px 0; border-top: 1px solid var(--line); }
+section h2 { font-size: 30px; margin: 0 0 8px; letter-spacing: -0.01em; }
+section p.sub { color: var(--fg-dim); margin: 0 0 28px; max-width: 760px; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.card { border: 1px solid var(--line); border-radius: 14px; padding: 20px; background: var(--bg); box-shadow: var(--shadow); }
+.card h3 { margin: 0 0 6px; font-size: 17px; }
+.card p { margin: 0; color: var(--fg-dim); font-size: 15px; }
+.tag { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); margin-bottom: 10px; font-weight: 600; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--line); }
+td code { white-space: nowrap; }
+th { background: var(--bg-soft); font-weight: 600; }
+tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.bar { display: inline-block; height: 10px; border-radius: 5px; background: var(--accent); vertical-align: middle; margin-right: 8px; }
+.bar.alt { background: var(--fg-dim); opacity: 0.45; }
+.win { color: var(--good); font-weight: 600; }
+pre.code {
+  background: var(--code-bg); color: var(--code-fg); border-radius: 12px; padding: 16px 18px;
+  overflow-x: auto; font-size: 14px; line-height: 1.6; margin: 0;
+}
+.two { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); align-items: start; }
+.formats { display: flex; flex-wrap: wrap; gap: 8px; }
+.formats span { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font-size: 14px; background: var(--bg-soft); }
+.formats span.w { border-color: var(--accent); color: var(--accent); }
+footer { border-top: 1px solid var(--line); padding: 32px 0 48px; color: var(--fg-dim); font-size: 14px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; }
+.theme-btn { border: 1px solid var(--line); background: var(--bg-soft); color: var(--fg-dim); border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
+@media (max-width: 640px) {
+  nav { display: none; }
+  .hero { padding-top: 48px; padding-bottom: 32px; }
+  .theme-btn { margin-left: auto; }
+  section { padding: 40px 0; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="#">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="7" fill="#2f5bea"/><path d="M9 10h14L9 22h14" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      zx
+    </a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#cli">Command line</a>
+      <a href="#formats">Formats</a>
+      <a href="#zxformat">.zx</a>
+      <a href="#zcm">Compression</a>
+      <a href="#zxdb">Database</a>
+      <a href="#app">App</a>
+    </nav>
+    <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button>
+  </div>
+</header>
+
+<main>
+<div class="hero wrap">
+  <h1>One archiver for everything.</h1>
+  <p class="lead">zx reads and writes 7z, zip, rar, tar, zpaq and its own <code>.zx</code> format,
+  opens disc images, disk images and device firmware down to their files, compresses with
+  context mixing models that rival paq8px, and keeps a SQL database inside every archive.
+  Pure Dart: a library, a command line and a file explorer for desktop and Android.</p>
+  <div class="cta">
+    <a class="btn primary" href="#install">Install</a>
+    <a class="btn" href="https://github.com/x1watt/zx">Source on GitHub</a>
+    <a class="btn" href="https://github.com/x1watt/zx/blob/main/docs/zx-format.md">.zx specification</a>
+  </div>
+  <pre class="term"><span class="p">$</span> zx a backup.zx ~/docs                      <span class="c"># first version</span>
+<span class="p">$</span> zx a backup.zx ~/docs                      <span class="c"># next version: only what changed</span>
+<span class="p">$</span> zx x backup.zx -mversion=2026-09-01 -oold  <span class="c"># the archive as it was that day</span>
+<span class="p">$</span> zx l -snest firmware.pak                    <span class="c"># firmware down to its files</span>
+<span class="p">$</span> zx sql backup.zx "SELECT path FROM similar('report.pdf', 20)"</pre>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <h2>What it does</h2>
+    <p class="sub">Every common archive format, the images and firmware they hide in, and a format of its own that does not go stale.</p>
+    <div class="grid">
+      <div class="card"><span class="tag">7-Zip, ported</span><h3>Same bytes as 7-Zip</h3><p>The public domain LZMA SDK ported function by function: at the same settings the encoders write identical output, and the command line takes 7-Zip's commands and switches.</p></div>
+      <div class="card"><span class="tag">Formats</span><h3>Read and write the rest</h3><p>zip and jar with AES, RAR 1.5 to RAR 7 (writing RAR5 with volumes and recovery records), tar and compressed tars, zpaq with every version, ARJ, LHA, gzip, bzip2, xz.</p></div>
+      <div class="card"><span class="tag">Images</span><h3>Open firmware like folders</h3><p>ISO, UDF, MBR, GPT, FAT, ext4, SquashFS, JFFS2, UBI and UBIFS, U-Boot images, device trees: nested levels open as one tree.</p></div>
+      <div class="card"><span class="tag">.zx</span><h3>A format that adapts</h3><p>Any codec inside, explicit compatibility, versions with dates, deduplication, SHA-256 and similarity search per file, encryption, volumes across disks.</p></div>
+      <div class="card"><span class="tag">zcm</span><h3>Context mixing compression</h3><p>Nine levels from 1.2 MB/s to a cmix-class mode, smaller than xz and 7-Zip at every level, smaller than paq8px on text and code.</p></div>
+      <div class="card"><span class="tag">zxdb</span><h3>A database in every archive</h3><p>SQLite's SQL, key-value stores, time series, full-text search and time travel queries, 5 to 20 times smaller than SQLite.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="sub">No runtime, no native libraries. One binary or one Dart command.</p>
+    <div class="tablewrap"><table>
+      <tr><th>You have</th><th>Do</th></tr>
+      <tr><td>Linux, Windows or macOS</td><td>Download <code>zx-linux-x64</code>, <code>zx-windows-x64.exe</code> or <code>zx-macos-arm64</code> from the releases, rename it <code>zx</code>, put it on the PATH</td></tr>
+      <tr><td>The Dart SDK</td><td><code>dart pub global activate --source git https://github.com/x1watt/zx</code></td></tr>
+      <tr><td>Linux desktop app</td><td>The <code>.deb</code> package, or <code>tool/install_linux.sh</code> from the source</td></tr>
+      <tr><td>Android</td><td>The APK from the releases</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<section id="cli">
+  <div class="wrap">
+    <h2>The command line speaks 7-Zip</h2>
+    <p class="sub"><code>zx &lt;command&gt; [&lt;switches&gt;...] &lt;archive&gt; [&lt;files&gt;...]</code>. If you know <code>7z</code>, you know <code>zx</code>; the extensions are marked below.</p>
+    <div class="two">
+      <div class="tablewrap"><table>
+        <tr><th>Command</th><th>Does</th></tr>
+        <tr><td><code>a</code> / <code>u</code></td><td>add / update</td></tr>
+        <tr><td><code>x</code> / <code>e</code></td><td>extract with / without paths</td></tr>
+        <tr><td><code>l</code> / <code>t</code></td><td>list / test</td></tr>
+        <tr><td><code>d</code> / <code>rn</code></td><td>delete / rename inside</td></tr>
+        <tr><td><code>h</code> / <code>i</code> / <code>b</code></td><td>hashes / formats / benchmark</td></tr>
+        <tr><td><code>sql</code></td><td>SQL on a .zx database <em>(zx)</em></td></tr>
+      </table></div>
+      <div class="tablewrap"><table>
+        <tr><th>zx extension</th><th>Meaning</th></tr>
+        <tr><td><code>-snest</code></td><td>through nested archives and images</td></tr>
+        <tr><td><code>-mversion=2026-09-01</code></td><td>read the archive as of a date</td></tr>
+        <tr><td><code>-mtimeline=path</code></td><td>every version of one file</td></tr>
+        <tr><td><code>-mcompact[=N]</code></td><td>keep only the last N versions</td></tr>
+        <tr><td><code>-m0=zcm:auto -mtime=10m</code></td><td>strongest compression in 10 minutes</td></tr>
+        <tr><td><code>-mvdir=/mnt/b:full</code></td><td>spread volumes over disks</td></tr>
+      </table></div>
+    </div>
+    <pre class="code" style="margin-top:20px">zx a -mx9 -psecret -mhe backup.7z ~/docs       # 7z, encrypted names
+zx a src.tar.gz src/                           # tar straight into gzip
+zx x photos.rar                                # any RAR, 1.5 to 7
+zx a -v700m -mrr=5% big.rar data/              # RAR5 volumes + recovery
+zx a -m0=zcm:cmix -mmem=8g corpus.zx texts/    # cmix-class, smallest
+zx a -v4g -v25g -mvdir=/mnt/a:full -mvdir=/mnt/b:full huge.zx data/
+zx x -snest -snld20 firmware.pak -oout         # a whole root file system</pre>
+  </div>
+</section>
+
+<section id="formats">
+  <div class="wrap">
+    <h2>Formats</h2>
+    <p class="sub">Highlighted: read and write. The rest: read. Files are recognized by content, not by name.</p>
+    <div class="formats">
+      <span class="w">zx</span><span class="w">7z</span><span class="w">zip / jar</span><span class="w">rar (RAR5)</span><span class="w">tar</span><span class="w">tar.gz / tgz</span><span class="w">tar.bz2</span><span class="w">tar.xz</span><span class="w">gz</span><span class="w">bz2</span><span class="w">xz</span><span class="w">lzma</span><span class="w">zpaq</span><span class="w">arj</span><span class="w">lzh / lha</span>
+      <span>rar 1.5 to 7</span><span>ISO 9660</span><span>UDF</span><span>MBR</span><span>GPT</span><span>FAT</span><span>ext2/3/4</span><span>SquashFS</span><span>cramfs</span><span>JFFS2</span><span>UBI</span><span>UBIFS</span><span>cpio</span><span>uImage</span><span>device tree</span><span>Reolink pak</span><span>split volumes</span>
+    </div>
+  </div>
+</section>
+
+<section id="zxformat">
+  <div class="wrap">
+    <h2>The .zx format</h2>
+    <p class="sub">The extension only says "zx can read this". Every block names the codecs that made it, so new algorithms never need a new extension.</p>
+    <div class="grid">
+      <div class="card"><h3>Explicit compatibility</h3><p>Each file records the oldest zx that can decode it. An older zx refuses at once: "needs zx 0.7.0 or later".</p></div>
+      <div class="card"><h3>Versions with dates</h3><p>Updates append; old bytes are never rewritten. Read the archive as of any date, list one file's timeline, compact when you want the space back.</p></div>
+      <div class="card"><h3>Deduplication</h3><p>Content-defined chunks are stored once across files and versions: a second version of a source tree costs 0.3 MB instead of 4.8 MB.</p></div>
+      <div class="card"><h3>Parallel and safe</h3><p>Blocks coded by worker isolates, 3x faster on 4 threads with identical output, within a memory budget. A crash mid-update is simply ignored.</p></div>
+      <div class="card"><h3>Find by content</h3><p>SHA-256 per file in a sorted table, and a TLSH digest to find similar files.</p></div>
+      <div class="card"><h3>Volumes over disks</h3><p>Volume sizes per disk, destination folders with budgets, search folders when reading; old disks can stay offline.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="zcm">
+  <div class="wrap">
+    <h2>Compression: zcm</h2>
+    <p class="sub">zx's context mixing family, built on the models of zpaq, paq8px and cmix, with deterministic arithmetic so every machine decodes the same bytes. <code>-m0=zcm:auto</code> picks the strongest level that fits your time and memory.</p>
+    <div class="two">
+      <div class="tablewrap"><table>
+        <tr><th>Compressor</th><th class="num">Bytes (700,986 in)</th></tr>
+        <tr><td><span class="bar alt" style="width:100px"></span>7z PPMd</td><td class="num">384,433</td></tr>
+        <tr><td><span class="bar alt" style="width:99px"></span>xz -9e</td><td class="num">381,240</td></tr>
+        <tr><td><span class="bar alt" style="width:93px"></span>zpaq method 5</td><td class="num">357,160</td></tr>
+        <tr><td><span class="bar" style="width:91px"></span>zcm level 3</td><td class="num">350,935</td></tr>
+        <tr><td><span class="bar" style="width:89px"></span>zcm level 5</td><td class="num">341,206</td></tr>
+        <tr><td><span class="bar" style="width:86px"></span>zcm level 9</td><td class="num">331,324</td></tr>
+        <tr><td><span class="bar alt" style="width:86px"></span>paq8px -8 (2.4 GB RAM)</td><td class="num">330,801</td></tr>
+      </table></div>
+      <div class="tablewrap"><table>
+        <tr><th>Data</th><th class="num">zcm vs paq8px -8</th></tr>
+        <tr><td>English text</td><td class="num win">0.7 to 5% smaller</td></tr>
+        <tr><td>Source code</td><td class="num win">0.5 to 1% smaller</td></tr>
+        <tr><td>Grayscale image</td><td class="num">+0.05%</td></tr>
+        <tr><td>Color photo</td><td class="num">+0.45 to 3.45%</td></tr>
+        <tr><td>Music, 16-bit stereo</td><td class="num">+0.96%</td></tr>
+        <tr><td>x86 binary</td><td class="num">+2.6%</td></tr>
+      </table></div>
+    </div>
+    <div class="tablewrap" style="margin-top:20px"><table>
+      <tr><th>Level</th><th>Speed</th><th>Memory</th><th>Character</th></tr>
+      <tr><td>1</td><td>1.2 MB/s</td><td>~40 MiB</td><td>fast, already better than xz</td></tr>
+      <tr><td>3</td><td>200 KB/s</td><td>~30 MiB</td><td>beats zpaq's strongest method</td></tr>
+      <tr><td>5</td><td>85 KB/s</td><td>~35 MiB</td><td>data-type detection, paq8 models</td></tr>
+      <tr><td>7</td><td>10 KB/s</td><td>~170 MiB</td><td>paq8px text, image and audio models</td></tr>
+      <tr><td>9</td><td>4 to 6 KB/s</td><td>~400 MiB</td><td>everything, PPMd, gain gating</td></tr>
+      <tr><td>cmix</td><td>2 to 3 KB/s</td><td>as budget allows</td><td>cmix's LSTM byte mixer</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<section id="zxdb">
+  <div class="wrap">
+    <h2>zxdb: a database inside every archive</h2>
+    <p class="sub">SQLite's SQL, checked against sqlite3 with fuzzing, plus key-value stores, time series and search, all stored with zx's compression. Every commit is a version, so every table can be read as it was.</p>
+    <div class="two">
+      <pre class="code">-- built into every archive
+SELECT path, size FROM zx_files
+  WHERE sha256 = x'9f86d081...';
+SELECT path, distance
+  FROM similar('photos/IMG_0042.jpg', 20);
+SELECT * FROM zx_files AS OF '2026-09-01';
+
+-- your data
+CREATE TABLE notes (id INTEGER PRIMARY KEY,
+  body TEXT) WITH (compression = 'max');
+CREATE KV STORE settings WITH (ttl = '30d');
+CREATE TIMESERIES logs (ts DATETIME,
+  level TEXT, msg TEXT)
+  PARTITION BY DAY RETENTION '400d';</pre>
+      <div class="tablewrap"><table>
+        <tr><th>Measure</th><th class="num">zxdb</th><th class="num">sqlite3</th></tr>
+        <tr><td>Point select</td><td class="num win">4.8 us</td><td class="num">11.7 us</td></tr>
+        <tr><td>20k JSON records</td><td class="num win">158 KiB</td><td class="num">2,680 KiB</td></tr>
+        <tr><td>1M log lines</td><td class="num win">17.8 MiB</td><td class="num">153.9 MiB</td></tr>
+        <tr><td>KV get (hot)</td><td class="num">1.4 us</td><td class="num">-</td></tr>
+        <tr><td>Random puts, 1M keys</td><td class="num">161k/s</td><td class="num">-</td></tr>
+        <tr><td>SHA-256 lookup</td><td class="num">2 us</td><td class="num">-</td></tr>
+        <tr><td>20 most similar of 1M</td><td class="num">&lt; 15 ms</td><td class="num">-</td></tr>
+      </table></div>
+    </div>
+  </div>
+</section>
+
+<section id="app">
+  <div class="wrap">
+    <h2>The app: a file explorer that walks into archives</h2>
+    <p class="sub">Desktop and Android. Browse your drives, and step into archives, nested archives, disk images and firmware as if they were folders.</p>
+    <div class="grid">
+      <div class="card"><h3>Explorer</h3><p>Places, drives and bookmarks, breadcrumbs that continue into archives, list and icon views, search, trash, conflict handling.</p></div>
+      <div class="card"><h3>Archives as folders</h3><p>Copy out to extract, paste in to add. Compress to .zx, Extract here and Extract to folder in every context menu.</p></div>
+      <div class="card"><h3>Versions and data</h3><p>.zx archives show their versions and a Data view: tables, key-value stores, time series, queries, metadata and "find similar".</p></div>
+      <div class="card"><h3>Integrated</h3><p>File associations and "Extract to folder" in the file manager on Linux; storage access, SD and USB volumes, open-with and share on Android.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="credits">
+  <div class="wrap">
+    <h2>Credits</h2>
+    <p class="sub">zx stands on the work of Igor Pavlov (7-Zip, LZMA SDK), Matt Mahoney (zpaq, paq8), the paq8px authors, Byron Knoll (cmix), Dmitry Shkarin (PPMd), Jean-loup Gailly and Mark Adler (zlib), Julian Seward (bzip2), Tim Kientzle and the libarchive contributors, Nicholas Waples (rardecode), Simon Howard (lhasa), Franco Corbelli (zpaqfranz), the TLSH authors and many more, credited in every file. 7-Zip is a registered trademark of Igor Pavlov; zx is not affiliated with or endorsed by him.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>zx, BSD 3-clause, Copyright (c) 2026 Max Brito</span>
+    <span><a href="https://github.com/x1watt/zx">GitHub</a> &middot; <a href="https://github.com/x1watt/zx/blob/main/docs/performance.md">Benchmarks</a> &middot; <a href="https://github.com/x1watt/zx/blob/main/docs/zxdb-sql.md">SQL reference</a></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var btn = document.getElementById('themeBtn');
+  var root = document.documentElement;
+  try {
+    var saved = localStorage.getItem('zx-theme');
+    if (saved) root.setAttribute('data-theme', saved);
+  } catch (e) {}
+  btn.addEventListener('click', function () {
+    var dark = root.getAttribute('data-theme') === 'dark' ||
+      (!root.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    var next = dark ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('zx-theme', next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
