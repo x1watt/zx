@@ -3,6 +3,8 @@
 // listing itself lives in ZxArchive (read in a background isolate); this
 // class only derives the rows of one folder from it.
 
+import 'dart:collection';
+
 import 'package:flutter/foundation.dart';
 import 'package:zx/zx.dart';
 
@@ -40,11 +42,16 @@ class ArchiveModel extends ChangeNotifier {
   final List<String> _back = [];
   final List<String> _forward = [];
   final Set<String> _selection = {};
+  late final Set<String> _selectionView = UnmodifiableSetView(_selection);
   String? _anchor;
   SortColumn _sortColumn = SortColumn.name;
   bool _ascending = true;
   String _filter = '';
   List<ZxItem>? _rows;
+  Map<String, int> _rowIndex = const {};
+  final Map<String, int> _selectedSizes = {};
+  int? _rowsSize;
+  int _selectedSize = 0;
   Map<String, ZxItem>? _itemByPath;
   Map<String, List<ZxItem>>? _foldersByPath;
   Map<String, FolderStats>? _folderStats;
@@ -132,23 +139,83 @@ class ArchiveModel extends ChangeNotifier {
   SortColumn get sortColumn => _sortColumn;
   bool get ascending => _ascending;
   String get filter => _filter;
-  Set<String> get selection => Set.unmodifiable(_selection);
+  Set<String> get selection => _selectionView;
+
+  /// Total size of the current rows, cached until rows are invalidated.
+  int get rowsSize =>
+      _rowsSize ??= rows.fold<int>(0, (sum, item) => sum + sizeOf(item));
+
+  int get selectedSize => _selectedSize;
+
+  void _select(String path) {
+    if (!_selection.add(path)) return;
+    final index = _rowIndex[path];
+    if (index == null) return;
+    final size = _selectedSizes[path] ?? sizeOf(_rows![index]);
+    _selectedSizes[path] = size;
+    _selectedSize += size;
+  }
+
+  void _deselect(String path) {
+    if (!_selection.remove(path)) return;
+    _selectedSize -= _selectedSizes.remove(path) ?? 0;
+  }
+
+  void _clearSelection() {
+    _selection.clear();
+    _selectedSizes.clear();
+    _selectedSize = 0;
+  }
+
+  void _recountSelection(List<ZxItem> currentRows) {
+    _selectedSizes.clear();
+    _selectedSize = 0;
+    for (final path in _selection) {
+      final index = _rowIndex[path];
+      if (index == null) continue;
+      final size = sizeOf(currentRows[index]);
+      _selectedSizes[path] = size;
+      _selectedSize += size;
+    }
+  }
+
+  void _selectAll(Iterable<ZxItem> items) {
+    _clearSelection();
+    for (final item in items) {
+      _selection.add(item.path);
+      final size = sizeOf(item);
+      _selectedSizes[item.path] = size;
+      _selectedSize += size;
+    }
+  }
   bool get canBack => _back.isNotEmpty;
   bool get canForward => _forward.isNotEmpty;
   bool get canUp => _dir.isNotEmpty;
 
   /// The rows of the current folder: folders first, then sorted, then
   /// filtered.
-  List<ZxItem> get rows => _rows ??= _computeRows();
+  List<ZxItem> get rows {
+    final cached = _rows;
+    if (cached != null) return cached;
+    final computed = _computeRows();
+    _rows = computed;
+    _recountSelection(computed);
+    return computed;
+  }
 
   /// Looks up an archive entry by path without scanning visible rows.
   ZxItem? item(String path) =>
       (_itemByPath ??= {for (final i in _archive.items) i.path: i})[path];
 
-  List<ZxItem> get selectedItems => [
-    for (final r in rows)
-      if (_selection.contains(r.path)) r,
-  ];
+  List<ZxItem> get selectedItems {
+    final currentRows = rows;
+    final selected = [
+      for (final path in _selection)
+        if (_rowIndex[path] case final index?) (index, currentRows[index]),
+    ];
+    selected.sort((a, b) => a.$1.compareTo(b.$1));
+    return [for (final (_, item) in selected) item];
+  }
 
   /// The single selected item, or null.
   ZxItem? get focusedItem {
@@ -210,9 +277,8 @@ class ArchiveModel extends ChangeNotifier {
     final k = _dir.lastIndexOf('/');
     navigate(k < 0 ? '' : _dir.substring(0, k));
     // keep the folder we came from selected, as file managers do
-    _selection
-      ..clear()
-      ..add(from);
+    _clearSelection();
+    _select(from);
     _anchor = from;
     notifyListeners();
   }
@@ -232,9 +298,11 @@ class ArchiveModel extends ChangeNotifier {
   void _setDir(String d) {
     _dir = d;
     _filter = '';
-    _selection.clear();
+    _clearSelection();
     _anchor = null;
     _rows = null;
+    _rowIndex = const {};
+    _rowsSize = null;
     notifyListeners();
   }
 
@@ -248,6 +316,8 @@ class ArchiveModel extends ChangeNotifier {
       _ascending = true;
     }
     _rows = null;
+    _rowIndex = const {};
+    _rowsSize = null;
     notifyListeners();
   }
 
@@ -255,7 +325,12 @@ class ArchiveModel extends ChangeNotifier {
     if (f == _filter) return;
     _filter = f;
     _rows = null;
-    _selection.removeWhere((s) => !rows.any((r) => r.path == s));
+    _rowIndex = const {};
+    _rowsSize = null;
+    rows;
+    final currentRows = rows;
+    _selection.removeWhere((s) => !_rowIndex.containsKey(s));
+    _recountSelection(currentRows);
     notifyListeners();
   }
 
@@ -265,23 +340,26 @@ class ArchiveModel extends ChangeNotifier {
   void click(ZxItem item, {bool ctrl = false, bool shift = false}) {
     if (shift && _anchor != null) {
       final r = rows;
-      final a = r.indexWhere((x) => x.path == _anchor);
-      final b = r.indexWhere((x) => x.path == item.path);
+      final a = _rowIndex[_anchor] ?? -1;
+      final b = _rowIndex[item.path] ?? -1;
       if (a >= 0 && b >= 0) {
-        if (!ctrl) _selection.clear();
+        if (!ctrl) _clearSelection();
         for (var k = a < b ? a : b; k <= (a < b ? b : a); k++) {
-          _selection.add(r[k].path);
+          _select(r[k].path);
         }
         notifyListeners();
         return;
       }
     }
     if (ctrl) {
-      if (!_selection.remove(item.path)) _selection.add(item.path);
+      if (_selection.contains(item.path)) {
+        _deselect(item.path);
+      } else {
+        _select(item.path);
+      }
     } else {
-      _selection
-        ..clear()
-        ..add(item.path);
+      _clearSelection();
+      _select(item.path);
     }
     _anchor = item.path;
     notifyListeners();
@@ -294,23 +372,22 @@ class ArchiveModel extends ChangeNotifier {
   }
 
   void selectAll() {
-    _selection
-      ..clear()
-      ..addAll(rows.map((r) => r.path));
+    _selectAll(rows);
     notifyListeners();
   }
 
   void clearSelection() {
     if (_selection.isEmpty) return;
-    _selection.clear();
+    _clearSelection();
     _anchor = null;
     notifyListeners();
   }
 
   void selectPaths(Iterable<String> paths) {
-    _selection
-      ..clear()
-      ..addAll(paths);
+    _clearSelection();
+    for (final path in paths) {
+      _select(path);
+    }
     _anchor = _selection.isEmpty ? null : _selection.first;
     notifyListeners();
   }
@@ -323,16 +400,15 @@ class ArchiveModel extends ChangeNotifier {
     final next = cur < 0 ? 0 : (cur + delta).clamp(0, r.length - 1);
     if (shift) {
       _anchor ??= r[cur < 0 ? 0 : cur].path;
-      final a = r.indexWhere((x) => x.path == _anchor);
-      _selection.clear();
+      final a = _rowIndex[_anchor] ?? 0;
+      _clearSelection();
       for (var k = a < next ? a : next; k <= (a < next ? next : a); k++) {
-        _selection.add(r[k].path);
+        _select(r[k].path);
       }
       _cursor = r[next].path;
     } else {
-      _selection
-        ..clear()
-        ..add(r[next].path);
+      _clearSelection();
+      _select(r[next].path);
       _anchor = r[next].path;
       _cursor = r[next].path;
     }
@@ -345,12 +421,12 @@ class ArchiveModel extends ChangeNotifier {
   int get cursorIndex => _lastIndex();
 
   int _lastIndex() {
-    final r = rows;
+    rows;
     final c = _cursor != null && _selection.contains(_cursor)
         ? _cursor
         : _anchor;
     if (c == null) return -1;
-    return r.indexWhere((x) => x.path == c);
+    return _rowIndex[c] ?? -1;
   }
 
   // ---- after changes ----
@@ -363,6 +439,10 @@ class ArchiveModel extends ChangeNotifier {
     if (!isOldVersion) allVersions = _archive.versions;
     generation++;
     _rows = null;
+    _rowIndex = const {};
+    _rowsSize = null;
+    _selectedSizes.clear();
+    _selectedSize = 0;
     _itemByPath = null;
     _foldersByPath = null;
     _folderStats = null;
@@ -378,6 +458,10 @@ class ArchiveModel extends ChangeNotifier {
         ..addAll(select);
     }
     _selection.removeWhere((s) => _archive[s] == null);
+    _selectedSizes.clear();
+    _selectedSize = 0;
+    final currentRows = rows;
+    _recountSelection(currentRows);
     notifyListeners();
   }
 
@@ -419,6 +503,8 @@ class ArchiveModel extends ChangeNotifier {
       if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
       return cmp(a, b);
     });
+    _rowIndex = {for (var i = 0; i < l.length; i++) l[i].path: i};
+    _rowsSize = l.fold<int>(0, (sum, item) => sum + sizeOf(item));
     return l;
   }
 

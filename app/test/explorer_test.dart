@@ -7,6 +7,7 @@
 
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,6 +17,8 @@ import 'package:zx_app/src/app.dart';
 import 'package:zx_app/src/db_session.dart' show nsDateText;
 import 'package:zx_app/src/fs/fs_model.dart';
 import 'package:zx_app/src/fs/fs_ops.dart';
+import 'package:zx_app/src/ui/thumbnail_cache.dart';
+import 'package:zx_app/src/ui/views.dart';
 import 'package:zx_app/src/services.dart';
 import 'package:zx_app/src/ui/browser_page.dart';
 
@@ -40,6 +43,7 @@ void main() {
     f('docs/b.txt', 'beta\n');
     f('sub/deep/needle.txt', 'found me\n');
     f('.hidden', 'secret\n');
+    f('.hidden-folder/inside.txt', 'hidden folder contents\n');
   });
   tearDown(() => tmp.deleteSync(recursive: true));
 
@@ -98,6 +102,28 @@ void main() {
     await tester.pump();
   }
 
+  /// A press and a release with the mouse, the way a person clicks: a
+  /// press, a frame or two, a hand that moves [drift] pixels and a
+  /// release. Touch taps are not the same code path: a mouse drag starts
+  /// after one pixel, a touch one waits for the slop.
+  Future<void> mouseClick(
+    WidgetTester tester,
+    Finder f, {
+    Offset drift = Offset.zero,
+  }) async {
+    final g = await tester.startGesture(
+      tester.getCenter(f),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump(const Duration(milliseconds: 30));
+    if (drift != Offset.zero) {
+      await g.moveBy(drift);
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+    await g.up();
+    await tester.pump(const Duration(milliseconds: 30));
+  }
+
   Future<void> key(
     WidgetTester tester,
     LogicalKeyboardKey k, {
@@ -137,6 +163,167 @@ void main() {
       () => find.textContaining('250 GB free').evaluate().isNotEmpty,
     );
     expect(find.textContaining('4 items'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('a click moves nothing: the actions are in the context menu', (
+    tester,
+  ) async {
+    final s = testServices(root);
+    final st = await pumpApp(tester, s);
+    final row = find.byKey(ValueKey('fsrow:$root/docs'));
+    final before = tester.getTopLeft(row);
+    // no action bar: one that pops in under the pointer pushes the rows
+    // down, so the file under the cursor stops being the file clicked
+    expect(find.byKey(const Key('selection-actions')), findsNothing);
+    expect(find.byKey(const Key('clip-clear')), findsNothing);
+    await tester.tap(row);
+    await tester.pump();
+    expect(st.fs.selection, {p.join(root, 'docs')});
+    expect(find.byKey(const Key('selection-actions')), findsNothing);
+    expect(
+      tester.getTopLeft(row),
+      before,
+      reason: 'the rows must not move when a file is clicked',
+    );
+
+    // everything the bar had is in the right-click menu
+    await tester.tapAt(
+      tester.getCenter(row) + const Offset(2, 0),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+    for (final id in [
+      'cut',
+      'copy',
+      'paste',
+      'compress',
+      'rename',
+      'delete',
+      'properties',
+    ]) {
+      expect(find.byKey(Key('menu-$id')), findsOneWidget, reason: id);
+    }
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('a click with a shaky hand does not move a folder', (
+    tester,
+  ) async {
+    final s = testServices(root);
+    final st = await pumpApp(tester, s);
+    final row = find.byKey(ValueKey('fsrow:$root/docs'));
+    // a real click is never pixel perfect: a mouse drag starts after one
+    // pixel, so the click must not be taken for a drop of the folder
+    final g = await tester.startGesture(
+      tester.getCenter(row),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    await g.moveBy(const Offset(2, 1));
+    await tester.pump();
+    await g.up();
+    await tester.pumpAndSettle();
+    expect(Directory(p.join(root, 'docs')).existsSync(), isTrue);
+    expect(File(p.join(root, 'docs/a.txt')).existsSync(), isTrue);
+    expect(fsRows(st), contains('docs'));
+    expect(st.fs.dir, root, reason: 'the click must not open the folder');
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('a click near the edge of a row drops nothing', (tester) async {
+    final s = testServices(root);
+    final st = await pumpApp(tester, s);
+    // 'docs' has the folder 'src' under it. A press three pixels above
+    // the bottom edge of the row, a hand that drifts four pixels down:
+    // the release lands on 'src', and a mouse drag that starts after one
+    // pixel would take 'docs' into it.
+    final r = tester.getRect(find.byKey(ValueKey('fsrow:$root/docs')));
+    final g = await tester.startGesture(
+      Offset(r.left + 40, r.bottom - 3),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump(const Duration(milliseconds: 30));
+    await g.moveBy(const Offset(0, 4));
+    await tester.pump(const Duration(milliseconds: 30));
+    await g.up();
+    await tester.pumpAndSettle();
+    expect(Directory(p.join(root, 'docs')).existsSync(), isTrue);
+    expect(Directory(p.join(root, 'src', 'docs')).existsSync(), isFalse);
+    expect(st.fs.dir, root, reason: 'the click must not open the folder');
+    expect(fsRows(st), containsAll(['docs', 'src']));
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('a click on a selected row drops nothing', (tester) async {
+    final s = testServices(root);
+    final st = await pumpApp(tester, s);
+    // The click that selects the row is a drag too, and the transfer of
+    // it is built, so only the travelled distance keeps the click of a
+    // shaky hand from taking the item where the release lands.
+    await mouseClick(tester, find.byKey(ValueKey('fsrow:$root/docs')));
+    expect(st.fs.selection, ['$root/docs'], reason: 'the click selected it');
+    final r = tester.getRect(find.byKey(ValueKey('fsrow:$root/docs')));
+    final g = await tester.startGesture(
+      Offset(r.left + 40, r.bottom - 3),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump(const Duration(milliseconds: 30));
+    await g.moveBy(const Offset(0, 4));
+    await tester.pump(const Duration(milliseconds: 30));
+    await g.up();
+    await tester.pumpAndSettle();
+    expect(Directory(p.join(root, 'docs')).existsSync(), isTrue);
+    expect(Directory(p.join(root, 'src', 'docs')).existsSync(), isFalse);
+    expect(fsRows(st), containsAll(['docs', 'src']));
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('a real drag of a row into the folder below still moves it', (
+    tester,
+  ) async {
+    final s = testServices(root);
+    final st = await pumpApp(tester, s);
+    final from = tester.getCenter(find.byKey(ValueKey('fsrow:$root/docs')));
+    final to = tester.getCenter(find.byKey(ValueKey('fsrow:$root/src')));
+    final g = await tester.startGesture(from, kind: PointerDeviceKind.mouse);
+    await tester.pump(const Duration(milliseconds: 30));
+    for (var i = 1; i <= 12; i++) {
+      await g.moveTo(Offset.lerp(from, to, i / 12)!);
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await g.up();
+    // The move runs in a worker and the tree follows, so both the moved
+    // folder and its file, and the listing, are waited for.
+    await waitFor(
+      tester,
+      () =>
+          Directory(p.join(root, 'src', 'docs/a.txt')).existsSync() &&
+          !Directory(p.join(root, 'docs')).existsSync() &&
+          !fsRows(st).contains('docs'),
+    );
+    expect(Directory(p.join(root, 'docs')).existsSync(), isFalse);
+    expect(Directory(p.join(root, 'src', 'docs/a.txt')).existsSync(), isTrue);
+    expect(fsRows(st), containsAll(['src', 'sub']));
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('the mouse opens a folder on the second click, not a move', (
+    tester,
+  ) async {
+    final s = testServices(root);
+    final st = await pumpApp(tester, s);
+    final row = find.byKey(ValueKey('fsrow:$root/docs'));
+    await mouseClick(tester, row);
+    await mouseClick(tester, row, drift: const Offset(1, 1));
+    await settle(tester, st);
+    expect(st.fs.dir, p.join(root, 'docs'));
+    expect(fsRows(st), ['a.txt', 'b.txt']);
+    // nothing was dropped into a neighbour on the way
+    expect(Directory(p.join(root, 'src', 'docs')).existsSync(), isFalse);
+    expect(fsRows(st), isNot(contains('docs')));
     await tester.pump(const Duration(seconds: 5));
   });
 
@@ -180,9 +367,15 @@ void main() {
     await tester.tap(find.byKey(Key('fscrumb:$root')));
     await settle(tester, st);
     expect(fsRows(st), isNot(contains('.hidden')));
+    expect(fsRows(st), isNot(contains('.hidden-folder')));
     await key(tester, LogicalKeyboardKey.keyH, ctrl: true);
     expect(fsRows(st), contains('.hidden'));
+    expect(fsRows(st), contains('.hidden-folder'));
     expect(s.settings.showHidden, isTrue);
+    await key(tester, LogicalKeyboardKey.keyH, ctrl: true);
+    expect(fsRows(st), isNot(contains('.hidden')));
+    expect(fsRows(st), isNot(contains('.hidden-folder')));
+    expect(s.settings.showHidden, isFalse);
 
     // sort by size: the folders keep their name order, the files follow
     // by their own size
@@ -425,6 +618,165 @@ void main() {
       () => File(p.join(root, 'sub', 'docs', 'a.txt')).existsSync(),
     );
     await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('filesystem tree only shows folders and honors hidden setting', (
+    tester,
+  ) async {
+    final s = testServices(root);
+    await pumpApp(tester, s);
+    await waitFor(
+      tester,
+      () => find.byKey(Key('fs-tree:$root/docs')).evaluate().isNotEmpty,
+    );
+    expect(
+      find.byKey(Key('fs-tree:${p.join(root, 'docs', 'a.txt')}')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(Key('fs-tree:${p.join(root, 'docs', 'b.txt')}')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(Key('fs-tree:${p.join(root, '.hidden-folder')}')),
+      findsNothing,
+    );
+
+    await key(tester, LogicalKeyboardKey.keyH, ctrl: true);
+    await waitFor(
+      tester,
+      () => find
+          .byKey(Key('fs-tree:${p.join(root, '.hidden-folder')}'))
+          .evaluate()
+          .isNotEmpty,
+    );
+    expect(
+      find.byKey(Key('fs-tree:${p.join(root, '.hidden-folder')}')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(
+        Key('fs-tree:${p.join(root, '.hidden-folder', 'inside.txt')}'),
+      ),
+      findsNothing,
+    );
+  });
+
+  testWidgets('filesystem tree context menu can rename its folder target', (
+    tester,
+  ) async {
+    final s = testServices(root);
+    final st = await pumpApp(tester, s);
+    final folder = find.byKey(Key('fs-tree:${p.join(root, 'docs')}'));
+    await waitFor(tester, () => folder.evaluate().isNotEmpty);
+
+    await tester.tapAt(
+      tester.getCenter(folder),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+    for (final id in ['cut', 'copy', 'rename', 'delete']) {
+      expect(find.byKey(Key('menu-$id')), findsOneWidget, reason: id);
+    }
+
+    await tester.tap(find.byKey(const Key('menu-rename')));
+    await waitFor(
+      tester,
+      () => find.byKey(const Key('text-input')).evaluate().isNotEmpty,
+    );
+    await tester.enterText(find.byKey(const Key('text-input')), 'renamed-docs');
+    await tester.tap(find.byKey(const Key('text-input-ok')));
+    await tester.pumpAndSettle();
+    await waitFor(
+      tester,
+      () => Directory(p.join(root, 'renamed-docs')).existsSync(),
+    );
+    final renamed = find.byKey(Key('fs-tree:${p.join(root, 'renamed-docs')}'));
+    await waitFor(tester, () => renamed.evaluate().isNotEmpty);
+
+    await tester.tapAt(
+      tester.getCenter(renamed),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('menu-cut')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(st.clipboard?.cut, isTrue);
+
+    final destination = find.byKey(Key('fs-tree:${p.join(root, 'sub')}'));
+    await tester.tapAt(
+      tester.getCenter(destination),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    final pasteMenu = tester.widget<PopupMenuItem<String>>(
+      find.byKey(const Key('menu-paste')).last,
+    );
+    expect(pasteMenu.enabled, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(st.fs.dir, root);
+  });
+
+  test(
+    'filesystem selection and lookup stay constant-time after rows build',
+    () async {
+      final entries = [
+        for (var i = 0; i < 10000; i++)
+          FsEntry(path: '/files/file$i', name: 'file$i', isDir: false, size: i),
+      ];
+      final model = FsModel('/files', lister: (_) async => entries);
+      await model.reload();
+      final rows = model.rows;
+      expect(rows, hasLength(entries.length));
+      for (var i = 0; i < 1000; i++) {
+        final entry = entries[i * 9];
+        expect(model.entry(entry.path), same(entry));
+        model.click(entry);
+        expect(model.cursorIndex, i * 9);
+        expect(model.selectedBytes, entry.size);
+      }
+    },
+  );
+
+  testWidgets('grid/tile item handlers use their row data directly', (
+    tester,
+  ) async {
+    final opened = <String>[];
+    final clicked = <String>[];
+    final item = ViewItem(
+      id: 'item',
+      name: 'item',
+      isDir: false,
+      icon: Icons.insert_drive_file,
+      color: Colors.blue,
+      source: 'source-value',
+    );
+    final handlers = ViewHandlers(
+      onClick: (row, {ctrl = false, shift = false}) => clicked.add(row.id),
+      onOpen: (row) => opened.add(row.id),
+      onContextMenu: (_, _) {},
+    );
+    final widget = MaterialApp(
+      home: Scaffold(
+        body: TileList(
+          items: [item],
+          selection: const {},
+          handlers: handlers,
+          thumbnailCache: ThumbnailCache(
+            archivePath: p.join(root, 'thumbs.zx'),
+            tempDir: root,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpWidget(widget);
+    await tester.tap(find.byKey(const ValueKey('row:item')));
+    await tester.pump();
+    expect(clicked, ['item']);
+    await tester.tap(find.byKey(const ValueKey('row:item')));
+    await tester.pump();
+    expect(opened, ['item']);
   });
 
   test('file operations: copy with conflicts, delete', () async {

@@ -3,6 +3,7 @@
 // files, the quick filter, the recursive search and the selection.
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io' show FileSystemException;
 
 import 'package:flutter/foundation.dart';
@@ -32,8 +33,13 @@ class FsModel extends ChangeNotifier {
   bool _showHidden = false;
   String _filter = '';
   List<FsEntry>? _rows;
+  Map<String, int> _rowIndex = const {};
+  int? _rowsBytes;
 
   final Set<String> _selection = {};
+  late final Set<String> _selectionView = UnmodifiableSetView(_selection);
+  final Map<String, int> _selectedSizes = {};
+  int _selectedBytes = 0;
   String? _anchor;
   String? _cursor;
 
@@ -70,12 +76,47 @@ class FsModel extends ChangeNotifier {
       entry.isDir ? folderSizeResolver?.call(entry.path) ?? 0 : entry.size;
 
   /// Redraws size columns and totals when the background index changes.
-  void refreshIndexedSizes() => notifyListeners();
+  void refreshIndexedSizes() {
+    _rowsBytes = null;
+    _recountSelection(rows);
+    notifyListeners();
+  }
 
   bool get searching => _searching;
   String get query => _query;
 
-  Set<String> get selection => Set.unmodifiable(_selection);
+  Set<String> get selection => _selectionView;
+
+  /// Total size of the visible rows, cached until the listing/filter changes.
+  int get rowsBytes {
+    rows;
+    return _rowsBytes ??= _rows!.fold<int>(0, (sum, e) => sum + sizeOf(e));
+  }
+
+  int get selectedBytes {
+    rows;
+    return _selectedBytes;
+  }
+
+  void _select(String path) {
+    if (!_selection.add(path)) return;
+    final entry = _entryByPath[path];
+    if (entry == null) return;
+    final size = sizeOf(entry);
+    _selectedSizes[path] = size;
+    _selectedBytes += size;
+  }
+
+  void _deselect(String path) {
+    if (!_selection.remove(path)) return;
+    _selectedBytes -= _selectedSizes.remove(path) ?? 0;
+  }
+
+  void _clearSelection() {
+    _selection.clear();
+    _selectedSizes.clear();
+    _selectedBytes = 0;
+  }
 
   // ---- navigation ----
 
@@ -115,10 +156,12 @@ class FsModel extends ChangeNotifier {
     _dir = d;
     if (changed) {
       _filter = '';
-      _selection.clear();
+      _clearSelection();
       _anchor = _cursor = null;
       _entries = const [];
       _entryByPath.clear();
+      _rowIndex = const {};
+      _rowsBytes = null;
     }
     return reload();
   }
@@ -148,13 +191,19 @@ class FsModel extends ChangeNotifier {
       _error = err;
       _loading = false;
       _rows = null;
+      _rowIndex = const {};
+      _rowsBytes = null;
       if (select != null) {
-        _selection
-          ..clear()
-          ..addAll(select);
+        _clearSelection();
+        for (final path in select) {
+          _select(path);
+        }
       }
       final have = {for (final e in l) e.path};
       _selection.removeWhere((s) => !have.contains(s));
+      _selectedSizes.clear();
+      _selectedBytes = 0;
+      _recountSelection(rows);
       notifyListeners();
     }();
     _idle = f;
@@ -171,6 +220,8 @@ class FsModel extends ChangeNotifier {
       _ascending = true;
     }
     _rows = null;
+    _rowIndex = const {};
+    _rowsBytes = null;
     notifyListeners();
   }
 
@@ -178,7 +229,12 @@ class FsModel extends ChangeNotifier {
     if (v == _showHidden) return;
     _showHidden = v;
     _rows = null;
-    _selection.removeWhere((s) => !rows.any((r) => r.path == s));
+    _rowIndex = const {};
+    _rowsBytes = null;
+    rows;
+    final currentRows = rows;
+    _selection.removeWhere((s) => !_rowIndex.containsKey(s));
+    _recountSelection(currentRows);
     notifyListeners();
   }
 
@@ -186,13 +242,25 @@ class FsModel extends ChangeNotifier {
     if (f == _filter) return;
     _filter = f;
     _rows = null;
-    _selection.removeWhere((s) => !rows.any((r) => r.path == s));
+    _rowIndex = const {};
+    _rowsBytes = null;
+    rows;
+    final currentRows = rows;
+    _selection.removeWhere((s) => !_rowIndex.containsKey(s));
+    _recountSelection(currentRows);
     notifyListeners();
   }
 
   /// The rows shown: folders first, sorted, filtered (or the search
   /// results).
-  List<FsEntry> get rows => _rows ??= _compute();
+  List<FsEntry> get rows {
+    final cached = _rows;
+    if (cached != null) return cached;
+    final computed = _compute();
+    _rows = computed;
+    _recountSelection(computed);
+    return computed;
+  }
 
   List<FsEntry> _compute() {
     var l = (_results ?? _entries).where((e) => _showHidden || !e.hidden);
@@ -227,6 +295,8 @@ class FsModel extends ChangeNotifier {
       if (a.isDir) return compareNames(a.name, b.name);
       return cmp(a, b);
     });
+    _rowIndex = {for (var i = 0; i < out.length; i++) out[i].path: i};
+    _rowsBytes = out.fold<int>(0, (sum, e) => sum + sizeOf(e));
     return out;
   }
 
@@ -255,6 +325,10 @@ class FsModel extends ChangeNotifier {
         _results!.addAll(batch);
         _entryByPath.addEntries(batch.map((e) => MapEntry(e.path, e)));
         _rows = null;
+        _rowIndex = const {};
+        _rowsBytes = null;
+        _selectedSizes.clear();
+        _selectedBytes = 0;
         notifyListeners();
       },
       onDone: () {
@@ -283,33 +357,43 @@ class FsModel extends ChangeNotifier {
         ..addEntries(_entries.map((e) => MapEntry(e.path, e)));
     }
     _rows = null;
+    _rowIndex = const {};
+    _rowsBytes = null;
+    _selectedSizes.clear();
+    _selectedBytes = 0;
     if (notify) notifyListeners();
   }
 
   // ---- selection ----
 
-  List<FsEntry> get selectedEntries => [
-    for (final r in rows)
-      if (_selection.contains(r.path)) r,
-  ];
+  List<FsEntry> get selectedEntries {
+    rows;
+    final selected = [
+      for (final path in _selection)
+        if (_rowIndex[path] case final index?) (index, _entryByPath[path]!),
+    ];
+    selected.sort((a, b) => a.$1.compareTo(b.$1));
+    return [for (final (_, entry) in selected) entry];
+  }
 
   int get cursorIndex {
     final c = _cursor != null && _selection.contains(_cursor)
         ? _cursor
         : _anchor;
     if (c == null) return -1;
-    return rows.indexWhere((x) => x.path == c);
+    rows;
+    return _rowIndex[c] ?? -1;
   }
 
   void click(FsEntry e, {bool ctrl = false, bool shift = false}) {
     final r = rows;
     if (shift && _anchor != null) {
-      final a = r.indexWhere((x) => x.path == _anchor);
-      final b = r.indexWhere((x) => x.path == e.path);
+      final a = _rowIndex[_anchor] ?? -1;
+      final b = _rowIndex[e.path] ?? -1;
       if (a >= 0 && b >= 0) {
-        if (!ctrl) _selection.clear();
+        if (!ctrl) _clearSelection();
         for (var k = a < b ? a : b; k <= (a < b ? b : a); k++) {
-          _selection.add(r[k].path);
+          _select(r[k].path);
         }
         _cursor = e.path;
         notifyListeners();
@@ -317,11 +401,14 @@ class FsModel extends ChangeNotifier {
       }
     }
     if (ctrl) {
-      if (!_selection.remove(e.path)) _selection.add(e.path);
+      if (_selection.contains(e.path)) {
+        _deselect(e.path);
+      } else {
+        _select(e.path);
+      }
     } else {
-      _selection
-        ..clear()
-        ..add(e.path);
+      _clearSelection();
+      _select(e.path);
     }
     _anchor = _cursor = e.path;
     notifyListeners();
@@ -336,23 +423,25 @@ class FsModel extends ChangeNotifier {
   }
 
   void selectAll() {
-    _selection
-      ..clear()
-      ..addAll(rows.map((r) => r.path));
+    _clearSelection();
+    for (final entry in rows) {
+      _select(entry.path);
+    }
     notifyListeners();
   }
 
   void clearSelection() {
     if (_selection.isEmpty) return;
-    _selection.clear();
+    _clearSelection();
     _anchor = _cursor = null;
     notifyListeners();
   }
 
   void selectPaths(Iterable<String> paths) {
-    _selection
-      ..clear()
-      ..addAll(paths);
+    _clearSelection();
+    for (final path in paths) {
+      _select(path);
+    }
     _anchor = _cursor = _selection.isEmpty ? null : _selection.first;
     notifyListeners();
   }
@@ -364,19 +453,31 @@ class FsModel extends ChangeNotifier {
     final next = cur < 0 ? 0 : (cur + delta).clamp(0, r.length - 1);
     if (shift) {
       _anchor ??= r[cur < 0 ? 0 : cur].path;
-      final a = r.indexWhere((x) => x.path == _anchor);
-      _selection.clear();
+      final a = _rowIndex[_anchor] ?? 0;
+      _clearSelection();
       for (var k = a < next ? a : next; k <= (a < next ? next : a); k++) {
-        _selection.add(r[k].path);
+        _select(r[k].path);
       }
     } else {
-      _selection
-        ..clear()
-        ..add(r[next].path);
+      _clearSelection();
+      _select(r[next].path);
       _anchor = r[next].path;
     }
     _cursor = r[next].path;
     notifyListeners();
+  }
+
+  void _recountSelection([List<FsEntry>? rows]) {
+    final currentRows = rows ?? this.rows;
+    _selectedSizes.clear();
+    _selectedBytes = 0;
+    for (final path in _selection) {
+      final index = _rowIndex[path];
+      if (index == null) continue;
+      final size = sizeOf(currentRows[index]);
+      _selectedSizes[path] = size;
+      _selectedBytes += size;
+    }
   }
 
   @override

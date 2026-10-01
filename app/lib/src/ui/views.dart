@@ -24,6 +24,10 @@ class ViewItem {
   final IconData icon;
   final Color color;
 
+  /// The filesystem/archive entry represented by this row. Pointer handlers
+  /// use the already-built row rather than doing a whole-list lookup.
+  final Object? source;
+
   /// Persistent cache lookup for a supported raster image.
   final ThumbnailRequest? thumbnail;
 
@@ -35,18 +39,19 @@ class ViewItem {
     required this.isDir,
     required this.icon,
     required this.color,
+    this.source,
     this.thumbnail,
     this.subtitle = '',
   });
 }
 
 class ViewHandlers {
-  final void Function(String id, {bool ctrl, bool shift}) onClick;
-  final void Function(String id) onOpen;
-  final void Function(String? id, Offset globalPosition) onContextMenu;
+  final void Function(ViewItem item, {bool ctrl, bool shift}) onClick;
+  final void Function(ViewItem item) onOpen;
+  final void Function(ViewItem? item, Offset globalPosition) onContextMenu;
 
   /// Long press (touch): starts or extends the selection.
-  final void Function(String id)? onLongPress;
+  final void Function(ViewItem item)? onLongPress;
 
   /// A tap adds to or removes from the selection (touch selection mode).
   final bool selectionMode;
@@ -102,13 +107,61 @@ int _lastClickMs = -100000;
 class _ItemGesturesState extends State<_ItemGestures> {
   bool _hovered = false;
 
+  /// The item a second click wants to open, waiting for the pointer to
+  /// be released: a press that turns into a drag is not a click.
+  String? _open;
+  Offset? _openDown;
+  int? _openPointer;
+
+  @override
+  void initState() {
+    super.initState();
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_route);
+  }
+
+  @override
+  void didUpdateWidget(_ItemGestures oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.item.id != widget.item.id) _cancelOpen();
+  }
+
+  @override
+  void dispose() {
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(_route);
+    super.dispose();
+  }
+
+  void _cancelOpen() {
+    _open = null;
+    _openDown = null;
+    _openPointer = null;
+  }
+
+  void _route(PointerEvent e) {
+    if (_open == null) return;
+    if (e.pointer != _openPointer) return;
+    if (e is PointerMoveEvent) {
+      if (_openDown == null ||
+          (e.position - _openDown!).distance <= kDragStartDistance) {
+        return;
+      }
+      _cancelOpen();
+      return;
+    }
+    if (e is! PointerUpEvent && e is! PointerCancelEvent) return;
+    final id = _open;
+    _cancelOpen();
+    final item = widget.item;
+    if (id != null && e is PointerUpEvent) widget.h.onOpen(item);
+  }
+
   void _down(PointerDownEvent e) {
     widget.onRowHit();
     final h = widget.h;
     if (e.kind == PointerDeviceKind.touch && h.touchOpens) return;
     final id = widget.item.id;
     if (e.buttons == kSecondaryMouseButton) {
-      h.onContextMenu(id, e.position);
+      h.onContextMenu(widget.item, e.position);
       return;
     }
     if (e.buttons != kPrimaryMouseButton) return;
@@ -122,11 +175,15 @@ class _ItemGesturesState extends State<_ItemGestures> {
     _lastClickId = id;
     _lastClickMs = isDouble ? -100000 : now;
     if (isDouble) {
-      h.onOpen(id);
+      // the item opens when the button comes back up, so a press that
+      // wanders off into a drag opens nothing
+      _open = id;
+      _openDown = e.position;
+      _openPointer = e.pointer;
       return;
     }
     h.onClick(
-      id,
+      widget.item,
       ctrl: kb.isControlPressed || kb.isMetaPressed,
       shift: kb.isShiftPressed,
     );
@@ -159,13 +216,13 @@ class _ItemGesturesState extends State<_ItemGestures> {
             onTap: !h.touchOpens
                 ? null
                 : () => h.selectionMode
-                      ? h.onClick(id, ctrl: true)
-                      : h.onOpen(id),
+                      ? h.onClick(widget.item, ctrl: true)
+                      : h.onOpen(widget.item),
             onLongPressStart: (d) {
               if (h.onLongPress != null) {
-                h.onLongPress!(id);
+                h.onLongPress!(widget.item);
               } else {
-                h.onContextMenu(id, d.globalPosition);
+                h.onContextMenu(widget.item, d.globalPosition);
               }
             },
             child: widget.child,
@@ -252,16 +309,20 @@ class DragSourceItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return _LazyDraggable(
-      data: () => data(id),
-      feedback: (t) => Material(
+    final transfer = data(id);
+    if (transfer == null) return child;
+    return _ItemDraggable(
+      data: transfer,
+      maxSimultaneousDrags: 1,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      feedback: Material(
         color: cs.primary,
         borderRadius: BorderRadius.circular(16),
         elevation: 4,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           child: Text(
-            t.label,
+            transfer.label,
             style: TextStyle(color: cs.onPrimary, fontSize: 13),
           ),
         ),
@@ -271,43 +332,62 @@ class DragSourceItem extends StatelessWidget {
   }
 }
 
-/// A Draggable whose data is computed when the drag starts.
-class _LazyDraggable extends StatefulWidget {
-  final Transfer? Function() data;
-  final Widget Function(Transfer t) feedback;
-  final Widget child;
-  const _LazyDraggable({
-    required this.data,
-    required this.feedback,
-    required this.child,
+/// How far a precise pointer (mouse, trackpad) has to travel before a
+/// press turns into a drag. A mouse drag starts after one pixel and a
+/// click is never pixel perfect, so without this a click on a selected
+/// item drags it, and letting go over a folder moves it there.
+const double kDragStartDistance = 10;
+
+/// A draggable with an immutable payload captured after the last selection
+/// update, before any pointer gesture can start.
+class _ItemDraggable extends Draggable<Transfer> {
+  const _ItemDraggable({
+    required super.data,
+    required super.maxSimultaneousDrags,
+    required super.dragAnchorStrategy,
+    required super.feedback,
+    required super.child,
   });
 
   @override
-  State<_LazyDraggable> createState() => _LazyDraggableState();
+  MultiDragGestureRecognizer createRecognizer(
+    GestureMultiDragStartCallback onStart,
+  ) => _TravelRecognizer()..onStart = onStart;
 }
 
-class _LazyDraggableState extends State<_LazyDraggable> {
-  Transfer? _t;
+class _TravelRecognizer extends ImmediateMultiDragGestureRecognizer {
+  @override
+  MultiDragPointerState createNewPointerState(PointerDownEvent event) =>
+      _TravelPointerState(event.position, event.kind, gestureSettings);
+}
+
+class _TravelPointerState extends MultiDragPointerState {
+  _TravelPointerState(super.initialPosition, super.kind, super.gestureSettings);
+
+  GestureMultiDragStartCallback? _starter;
 
   @override
-  Widget build(BuildContext context) {
-    return Listener(
-      onPointerDown: (e) {
-        if (e.kind != PointerDeviceKind.touch) _t = widget.data();
-      },
-      child: Draggable<Transfer>(
-        data: _t,
-        maxSimultaneousDrags: 1,
-        dragAnchorStrategy: pointerDragAnchorStrategy,
-        feedback: Builder(
-          builder: (_) {
-            final t = _t ?? widget.data();
-            return t == null ? const SizedBox() : widget.feedback(t);
-          },
-        ),
-        child: widget.child,
-      ),
-    );
+  void accepted(GestureMultiDragStartCallback starter) => _starter = starter;
+
+  @override
+  void checkForResolutionAfterMove() {
+    final start = _starter;
+    if (start == null || pendingDelta == null || pendingDelta!.distance <= _slop) {
+      return;
+    }
+    _starter = null;
+    start(initialPosition);
+  }
+
+  void checkForResolutionAfterUp() {
+    if (_starter == null) return;
+    _starter = null;
+    resolve(GestureDisposition.rejected);
+  }
+
+  double get _slop {
+    final device = computeHitSlop(kind, gestureSettings);
+    return device > kDragStartDistance ? device : kDragStartDistance;
   }
 }
 

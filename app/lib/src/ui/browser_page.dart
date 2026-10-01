@@ -241,7 +241,6 @@ class BrowserPageState extends State<BrowserPage> {
 
   /// The search field of a phone is open.
   bool _narrowSearch = false;
-  late final Listenable _pageListenable;
   StreamSubscription<IncomingIntent>? _androidIntentSubscription;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _menu = MenuController();
@@ -286,7 +285,6 @@ class BrowserPageState extends State<BrowserPage> {
     unawaited(_indexer.start());
     _fs.showHidden = _s.settings.showHidden;
     _fs.addListener(_onFsChanged);
-    _pageListenable = Listenable.merge([_fs, _s.settings]);
     _pathEdit = PathEdit(
       text: () => _pathText(),
       onSubmit: goToPath,
@@ -1723,21 +1721,16 @@ class BrowserPageState extends State<BrowserPage> {
 
   // ---- layout ----
 
-  /// The actions that apply now, in a slim bar under the header: the
-  /// selection (and the clipboard) in a folder; the archive and its
-  /// selection inside an archive. Null when nothing applies, so the
-  /// header stays one row.
+  /// The actions of the open archive, in a slim bar under the header.
+  /// Null in a folder: nothing here appears or disappears with the
+  /// selection, because a bar that pops in under the pointer moves the
+  /// rows below it and the file under the cursor is no longer the file
+  /// that was clicked. The actions of a folder are in its context menu.
   Widget? _actionBar(ColorScheme cs) {
     final m = _model;
+    if (m == null) return null;
     final clip = _clip;
     final label = TextStyle(fontSize: 13, color: cs.onSurfaceVariant);
-    Widget closeButton(String key, String tip, VoidCallback f) => IconButton(
-      key: Key(key),
-      tooltip: tip,
-      visualDensity: VisualDensity.compact,
-      onPressed: f,
-      icon: const Icon(Icons.close_rounded, size: 18),
-    );
     final pasteAction = clip == null
         ? null
         : ToolAction(
@@ -1747,97 +1740,6 @@ class BrowserPageState extends State<BrowserPage> {
             'Paste ${clip.label} here (Ctrl+V)',
             paste,
           );
-    if (m == null) {
-      final sel = _fs.selectedEntries;
-      if (sel.isEmpty) {
-        if (pasteAction == null) return null;
-        return ActionBar(
-          leading: Padding(
-            padding: const EdgeInsets.only(left: 8, right: 8),
-            child: Text('Clipboard: ${clip!.label}', style: label),
-          ),
-          actions: [pasteAction],
-          trailing: closeButton(
-            'clip-clear',
-            'Empty the clipboard',
-            () => _update(() => _clip = null),
-          ),
-        );
-      }
-      final archives = sel.any(
-        (e) =>
-            !e.isDir && (looksLikeArchive(e.name) || isDiskImageName(e.name)),
-      );
-      return ActionBar(
-        key: const Key('selection-actions'),
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 8, right: 8),
-          child: Text('${sel.length} selected', style: label),
-        ),
-        actions: [
-          ToolAction(
-            'cut',
-            Icons.content_cut_rounded,
-            'Cut',
-            'Cut the selection (Ctrl+X)',
-            () => copySelection(cut: true),
-          ),
-          ToolAction(
-            'copy',
-            Icons.content_copy_rounded,
-            'Copy',
-            'Copy the selection (Ctrl+C)',
-            copySelection,
-          ),
-          ?pasteAction,
-          if (sel.length == 1)
-            ToolAction(
-              'rename',
-              Icons.drive_file_rename_outline_rounded,
-              'Rename',
-              'Rename the selected item (F2)',
-              renameFs,
-            ),
-          ToolAction(
-            'delete',
-            Icons.delete_outline_rounded,
-            'Delete',
-            _trashAvailable
-                ? 'Move the selection to the trash (Del)'
-                : 'Delete the selection (Del)',
-            deleteFs,
-          ),
-          null,
-          ToolAction(
-            'compress',
-            Icons.archive_outlined,
-            'Compress',
-            'Compress the selection to a .zx archive',
-            compressFs,
-          ),
-          if (archives)
-            ToolAction(
-              'extract',
-              Icons.unarchive_outlined,
-              'Extract',
-              'Extract the selected archives, each into its own folder',
-              extractFsArchives,
-            ),
-          ToolAction(
-            'properties',
-            Icons.info_outline_rounded,
-            'Properties',
-            'Size, dates, permissions and SHA-256 (Alt+Enter)',
-            propertiesFs,
-          ),
-        ],
-        trailing: closeButton(
-          'selection-clear',
-          'Clear the selection (Esc)',
-          _fs.clearSelection,
-        ),
-      );
-    }
     final readOnly = _whyNot('add');
     final selected = m.selection.isNotEmpty;
     return ActionBar(
@@ -2140,7 +2042,7 @@ class BrowserPageState extends State<BrowserPage> {
               LogicalKeyboardKey.keyH,
               control: true,
             ),
-            child: const Text('Show hidden files'),
+            child: const Text('Show hidden folders and files'),
           ),
           if (_model == null)
             SubmenuButton(
@@ -2505,7 +2407,7 @@ class BrowserPageState extends State<BrowserPage> {
       focusNode: _listFocus,
       onOpen: openItem,
       onContextMenu: _contextMenu,
-      dragData: (i) => _archiveDrag(m, i.path),
+      dragData: (i) => _archiveDrag(m, i.path, m.selection),
       onDrop: (folder, t) =>
           _dropTo(PasteDest.archive(m, folder?.path ?? m.dir), t),
     );
@@ -2630,7 +2532,10 @@ class BrowserPageState extends State<BrowserPage> {
           model: _fs,
           root: _fsTreeRoot,
           volumes: _volumes,
+          showHidden: _s.settings.showHidden,
           onNavigate: (path) => unawaited(_fs.navigate(path)),
+          onContextMenu: (entry, position) =>
+              _fsContextMenu(entry, position, treeEntry: entry),
         ),
       };
       return Column(
@@ -2697,25 +2602,26 @@ class BrowserPageState extends State<BrowserPage> {
   /// The status bar texts of the file system view.
   (String, String) _fsStatus() {
     final rows = _fs.rows;
-    final sel = _fs.selectedEntries;
-    int sum(Iterable<FsEntry> l) => l.fold(0, (a, e) => a + _fs.sizeOf(e));
-    final indexedSize = _indexer.folderSize(_fs.dir);
+    final selection = _fs.selection;
     final left = _fs.searching
         ? 'Searching... ${rows.length} found'
-        : sel.isEmpty
+        : selection.isEmpty
         ? '${rows.length} item${rows.length == 1 ? '' : 's'}'
-              '${_fs.inSearch ? ' found' : ''}, ${formatBytes(sum(rows))}'
-              '${indexedSize == null ? '' : ' · folder ${formatBytes(indexedSize)}'}'
-        : '${sel.length} of ${rows.length} selected, ${formatBytes(sum(sel))}';
+              '${_fs.inSearch ? ' found' : ''}, ${formatBytes(_fs.rowsBytes)}'
+        : '${selection.length} of ${rows.length} selected, '
+              '${formatBytes(_fs.selectedBytes)}';
+    // What the folder and the clipboard are, in the bar that never
+    // moves: the actions of a folder live in its context menu.
+    final folder = _indexer.folderSize(_fs.dir);
+    final bits = <String>[
+      if (folder != null) 'folder ${formatBytes(folder)}',
+      if (_clip != null) 'clipboard ${_clip!.label}',
+    ];
     final sp = _space;
     final right = sp == null
         ? ''
         : '${formatBytes(sp.free)} free of ${formatBytes(sp.total)}';
-    final currentIndexedSize = _indexer.folderSize(_fs.dir);
-    final indexedSummary = currentIndexedSize == null
-        ? ''
-        : ' · folder ${formatBytes(currentIndexedSize)}';
-    return ('$left$indexedSummary', right);
+    return (bits.isEmpty ? left : '$left · ${bits.join(' · ')}', right);
   }
 
   @override
@@ -2727,7 +2633,7 @@ class BrowserPageState extends State<BrowserPage> {
           final narrow = box.maxWidth < 600;
           final page = narrow
               ? ListenableBuilder(
-                  listenable: _pageListenable,
+                  listenable: Listenable.merge([_fs, _s.settings]),
                   builder: (context, _) {
                     final model = _model;
                     return _NarrowPageModelListener(
@@ -2768,7 +2674,7 @@ class BrowserPageState extends State<BrowserPage> {
     builder: (context, _) {
       final actions = _actionBar(cs);
       return actions == null
-          ? const SizedBox(height: 4)
+          ? const SizedBox.shrink()
           : ColoredBox(color: cs.surfaceContainerLow, child: actions);
     },
   );
@@ -2815,7 +2721,7 @@ class BrowserPageState extends State<BrowserPage> {
                         child: ColoredBox(
                           color: cs.surfaceContainerLowest,
                           child: ListenableBuilder(
-                            listenable: _pageListenable,
+                            listenable: _s.settings,
                             builder: (context, _) => _sidebarPane(),
                           ),
                         ),
@@ -3125,7 +3031,7 @@ class BrowserPageState extends State<BrowserPage> {
         CheckedPopupMenuItem(
           value: 'hidden',
           checked: st.showHidden,
-          child: const Text('Show hidden files'),
+          child: const Text('Show hidden folders and files'),
         ),
         if (m == null) ...[
           const PopupMenuDivider(),

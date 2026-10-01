@@ -4,6 +4,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
@@ -84,7 +85,6 @@ class _FolderTreeState extends State<FolderTree> {
           itemBuilder: (context, i) {
             final (path, name, depth) = nodes[i];
             final current = path == m.dir;
-            final hasChildren = m.folders(path).isNotEmpty;
             final open = _expanded.contains(path);
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -100,7 +100,7 @@ class _FolderTreeState extends State<FolderTree> {
                       SizedBox(width: depth * 14.0),
                       SizedBox(
                         width: 22,
-                        child: hasChildren
+                        child: m.folders(path).isNotEmpty
                             ? InkResponse(
                                 radius: 12,
                                 onTap: () => setState(() {
@@ -173,13 +173,18 @@ class FsFolderTree extends StatefulWidget {
   final FsModel model;
   final String root;
   final List<Place> volumes;
+  final bool showHidden;
   final void Function(String path) onNavigate;
+  final Future<void> Function(FsEntry item, Offset globalPosition)
+  onContextMenu;
   const FsFolderTree({
     super.key,
     required this.model,
     required this.root,
     required this.volumes,
+    required this.showHidden,
     required this.onNavigate,
+    required this.onContextMenu,
   });
   @override
   State<FsFolderTree> createState() => _FsFolderTreeState();
@@ -264,15 +269,15 @@ class _FsFolderTreeState extends State<FsFolderTree> {
     }
   }
 
-  Future<void> _load(String path) async {
-    if (_loading.contains(path)) return;
+  Future<void> _load(String path, {bool refresh = false}) async {
+    if (_loading.contains(path) || (!refresh && _children.containsKey(path))) {
+      return;
+    }
     _loading.add(path);
     try {
       final entries = await listDirectory(path);
-      entries.sort((a, b) {
-        if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
-        return compareNames(a.name, b.name);
-      });
+      entries.removeWhere((entry) => !entry.isDir);
+      entries.sort((a, b) => compareNames(a.name, b.name));
       if (mounted) setState(() => _children[path] = entries);
     } on FileSystemException {
       if (mounted) setState(() => _children[path] = const []);
@@ -281,19 +286,29 @@ class _FsFolderTreeState extends State<FsFolderTree> {
     }
   }
 
-  List<(String, String, int, bool, bool)> _nodes() {
-    final nodes = <(String, String, int, bool, bool)>[];
+  Future<void> _showContextMenu(FsEntry entry, Offset position) async {
+    await widget.onContextMenu(entry, position);
+    if (mounted) {
+      await _load(p.dirname(entry.path), refresh: true);
+      await _load(entry.path, refresh: true);
+    }
+  }
+
+  List<(String, String, int, bool, bool, FsEntry?)> _nodes() {
+    final nodes = <(String, String, int, bool, bool, FsEntry?)>[];
     void visit(
       String path,
       String name,
-      int depth, {
+      int depth,
+      FsEntry? entry, {
       bool root = false,
       bool removable = false,
     }) {
-      nodes.add((path, name, depth, root, removable));
+      nodes.add((path, name, depth, root, removable, entry));
       if (!_expanded.contains(path)) return;
       for (final child in _children[path] ?? const <FsEntry>[]) {
-        visit(child.path, child.name, depth + 1);
+        if (!widget.showHidden && child.hidden) continue;
+        visit(child.path, child.name, depth + 1, child);
       }
     }
 
@@ -301,10 +316,11 @@ class _FsFolderTreeState extends State<FsFolderTree> {
       widget.root,
       p.basename(widget.root).isEmpty ? widget.root : p.basename(widget.root),
       0,
+      null,
       root: true,
     );
     for (final volume in widget.volumes.where((v) => v.removable)) {
-      visit(volume.path, volume.label, 0, root: true, removable: true);
+      visit(volume.path, volume.label, 0, null, root: true, removable: true);
     }
     return nodes;
   }
@@ -322,7 +338,7 @@ class _FsFolderTreeState extends State<FsFolderTree> {
         itemExtent: 28,
         itemCount: nodes.length,
         itemBuilder: (context, i) {
-          final (path, name, depth, root, removable) = nodes[i];
+          final (path, name, depth, root, removable, entry) = nodes[i];
           final active = p.equals(path, widget.model.dir);
           final children = _children[path] ?? const <FsEntry>[];
           final expandable = _loading.contains(path) || children.isNotEmpty;
@@ -332,73 +348,82 @@ class _FsFolderTreeState extends State<FsFolderTree> {
             child: Material(
               color: active ? cs.secondaryContainer : Colors.transparent,
               borderRadius: BorderRadius.circular(6),
-              child: InkWell(
-                key: Key('fs-tree:$path'),
-                borderRadius: BorderRadius.circular(6),
-                onTap: () => widget.onNavigate(path),
-                child: Row(
-                  children: [
-                    SizedBox(width: depth * 12.0),
-                    SizedBox(
-                      width: 22,
-                      child: expandable
-                          ? InkResponse(
-                              radius: 12,
-                              onTap: () {
-                                setState(() {
-                                  if (open && !root) {
-                                    _expanded.remove(path);
-                                  } else {
-                                    _expanded.add(path);
-                                  }
-                                });
-                                if (!open || root) unawaited(_load(path));
-                              },
-                              child: _loading.contains(path)
-                                  ? const SizedBox(
-                                      width: 10,
-                                      height: 10,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 1.5,
+              child: Listener(
+                onPointerDown: (event) {
+                  if (event.buttons == kSecondaryMouseButton && entry != null) {
+                    unawaited(_showContextMenu(entry, event.position));
+                  }
+                },
+                child: InkWell(
+                  key: Key('fs-tree:$path'),
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () => widget.onNavigate(path),
+                  child: Row(
+                    children: [
+                      SizedBox(width: depth * 12.0),
+                      SizedBox(
+                        width: 22,
+                        child: expandable
+                            ? InkResponse(
+                                radius: 12,
+                                onTap: () {
+                                  setState(() {
+                                    if (open && !root) {
+                                      _expanded.remove(path);
+                                    } else {
+                                      _expanded.add(path);
+                                    }
+                                  });
+                                  if (!open || root) unawaited(_load(path));
+                                },
+                                child: _loading.contains(path)
+                                    ? const SizedBox(
+                                        width: 10,
+                                        height: 10,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 1.5,
+                                        ),
+                                      )
+                                    : Icon(
+                                        open
+                                            ? Icons.expand_more_rounded
+                                            : Icons.chevron_right_rounded,
+                                        size: 18,
+                                        color: cs.onSurfaceVariant,
                                       ),
-                                    )
-                                  : Icon(
-                                      open
-                                          ? Icons.expand_more_rounded
-                                          : Icons.chevron_right_rounded,
-                                      size: 18,
-                                      color: cs.onSurfaceVariant,
-                                    ),
-                            )
-                          : null,
-                    ),
-                    Icon(
-                      root
-                          ? (removable ? Icons.usb_rounded : Icons.home_rounded)
-                          : (active || open
-                                ? Icons.folder_open_rounded
-                                : Icons.folder_rounded),
-                      size: 17,
-                      color: root ? cs.primary : const Color(0xFFE0A526),
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: active
-                              ? FontWeight.w600
-                              : FontWeight.normal,
-                          color: active
-                              ? cs.onSecondaryContainer
-                              : cs.onSurface,
+                              )
+                            : null,
+                      ),
+                      Icon(
+                        root
+                            ? (removable
+                                  ? Icons.usb_rounded
+                                  : Icons.home_rounded)
+                            : (active || open
+                                  ? Icons.folder_open_rounded
+                                  : Icons.folder_rounded),
+                        size: 17,
+                        color: root ? cs.primary : const Color(0xFFE0A526),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: active
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                            color: active
+                                ? cs.onSecondaryContainer
+                                : cs.onSurface,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -691,13 +716,13 @@ class StatusBar extends StatelessWidget {
         listenable: m,
         builder: (context, _) {
           final rows = m.rows;
-          final sel = m.selectedItems;
-          final selSize = sel.fold<int>(0, (sum, i) => sum + m.sizeOf(i));
-          final total = rows.fold<int>(0, (sum, i) => sum + m.sizeOf(i));
+          final sel = m.selection;
+          final total = m.rowsSize;
+          final selectedSize = m.selectedSize;
           final a = m.archive;
           final left = sel.isEmpty
               ? '${rows.length} item${rows.length == 1 ? '' : 's'}, ${formatBytes(total)}'
-              : '${sel.length} of ${rows.length} selected, ${formatBytes(selSize)}';
+              : '${sel.length} of ${rows.length} selected, ${formatBytes(selectedSize)}';
           final info = [
             if (m.parent != null)
               m.formats.join(' > ')

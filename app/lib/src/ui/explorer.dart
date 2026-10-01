@@ -74,6 +74,7 @@ extension ExplorerActions on BrowserPageState {
       isDir: e.isDir,
       icon: icon,
       color: color,
+      source: e,
       thumbnail: showThumb
           ? ThumbnailRequest(
               thumbnailKey(identity),
@@ -90,37 +91,41 @@ extension ExplorerActions on BrowserPageState {
     );
   }
 
-  FsEntry? _fsEntry(String id) => _fs.entry(id);
-
   ViewHandlers _fsHandlers({required bool narrow}) {
-    final selecting = narrow && _fs.selection.isNotEmpty;
+    final selection = _fs.selection;
+    final selecting = narrow && selection.isNotEmpty;
     return ViewHandlers(
       selectionMode: selecting,
       touchOpens: narrow,
-      onClick: (id, {ctrl = false, shift = false}) {
+      onClick: (item, {ctrl = false, shift = false}) {
         _listFocus.requestFocus();
-        final e = _fsEntry(id);
-        if (e != null) _fs.click(e, ctrl: ctrl, shift: shift);
+        final e = item.source;
+        if (e is FsEntry) _fs.click(e, ctrl: ctrl, shift: shift);
       },
-      onOpen: (id) {
-        final e = _fsEntry(id);
-        if (e != null) openFsEntry(e);
+      onOpen: (item) {
+        final e = item.source;
+        if (e is FsEntry) openFsEntry(e);
       },
-      onContextMenu: (id, pos) {
-        final e = id == null ? null : _fsEntry(id);
-        if (e != null) _fs.ensureSelected(e);
-        _fsContextMenu(e, pos);
+      onContextMenu: (item, pos) {
+        final e = item?.source;
+        final entry = e is FsEntry ? e : null;
+        if (entry != null) _fs.ensureSelected(entry);
+        unawaited(_fsContextMenu(entry, pos));
       },
       onLongPress: narrow
-          ? (id) {
-              final e = _fsEntry(id);
-              if (e != null) _fs.toggle(e);
+          ? (item) {
+              final e = item.source;
+              if (e is FsEntry) _fs.toggle(e);
             }
           : null,
       dragData: narrow
           ? null
-          : (id) => Transfer.files(
-              _fs.selection.contains(id) ? _fs.selection.toList() : [id],
+          : (id) => Transfer.deferred(
+              fromArchive: false,
+              count: () => selection.contains(id) ? selection.length : 1,
+              resolve: () => Transfer.files(
+                selection.contains(id) ? selection.toList() : [id],
+              ),
             ),
       onDrop: (id, t) => _dropTo(PasteDest.fs(id ?? _fs.dir), t),
       onBackgroundTap: () {
@@ -131,30 +136,32 @@ extension ExplorerActions on BrowserPageState {
   }
 
   ViewHandlers _archiveHandlers(ArchiveModel m, {required bool narrow}) {
+    final selection = m.selection;
     return ViewHandlers(
-      selectionMode: narrow && m.selection.isNotEmpty,
+      selectionMode: narrow && selection.isNotEmpty,
       touchOpens: narrow,
-      onClick: (id, {ctrl = false, shift = false}) {
+      onClick: (item, {ctrl = false, shift = false}) {
         _listFocus.requestFocus();
-        final i = m.item(id);
-        if (i != null) m.click(i, ctrl: ctrl, shift: shift);
+        final i = item.source;
+        if (i is ZxItem) m.click(i, ctrl: ctrl, shift: shift);
       },
-      onOpen: (id) {
-        final i = m.item(id);
-        if (i != null) openItem(i);
+      onOpen: (item) {
+        final i = item.source;
+        if (i is ZxItem) openItem(i);
       },
-      onContextMenu: (id, pos) {
-        final i = id == null ? null : m.item(id);
+      onContextMenu: (item, pos) {
+        final source = item?.source;
+        final i = source is ZxItem ? source : null;
         if (i != null) m.ensureSelected(i);
         _contextMenu(i, pos);
       },
       onLongPress: narrow
-          ? (id) {
-              final i = m.item(id);
-              if (i != null) m.click(i, ctrl: true);
+          ? (item) {
+              final i = item.source;
+              if (i is ZxItem) m.click(i, ctrl: true);
             }
           : null,
-      dragData: narrow ? null : (id) => _archiveDrag(m, id),
+      dragData: narrow ? null : (id) => _archiveDrag(m, id, selection),
       onDrop: (id, t) => _dropTo(PasteDest.archive(m, id ?? m.dir), t),
       onBackgroundTap: () {
         _listFocus.requestFocus();
@@ -163,11 +170,16 @@ extension ExplorerActions on BrowserPageState {
     );
   }
 
-  Transfer _archiveDrag(ArchiveModel m, String id) => Transfer.archive(
-    m,
-    m.selection.contains(id) ? m.selection.toList() : [id],
-    m.dir,
-  );
+  Transfer _archiveDrag(ArchiveModel m, String id, Set<String> selection) =>
+      Transfer.deferred(
+        fromArchive: true,
+        count: () => selection.contains(id) ? selection.length : 1,
+        resolve: () => Transfer.archive(
+          m,
+          selection.contains(id) ? selection.toList() : [id],
+          m.dir,
+        ),
+      );
 
   ViewItem _archiveItem(ArchiveModel m, ZxItem i, ColorScheme cs) {
     final (icon, color) = iconFor(i, cs, inContainer: m.inContainer(i));
@@ -186,6 +198,7 @@ extension ExplorerActions on BrowserPageState {
       isDir: i.isDir,
       icon: icon,
       color: color,
+      source: i,
       thumbnail: showThumb
           ? ThumbnailRequest(
               thumbnailKey(identity),
@@ -369,12 +382,13 @@ extension ExplorerActions on BrowserPageState {
   }
 
   /// Copy (or cut) the selection of the view shown.
-  void copySelection({bool cut = false}) {
+  void copySelection({bool cut = false, Iterable<String>? paths}) {
     final m = _model;
     Transfer t;
     if (m == null) {
-      if (_fs.selection.isEmpty) return;
-      t = Transfer.files(_fs.selection.toList(), cut: cut);
+      final selectedPaths = paths ?? _fs.selection;
+      if (selectedPaths.isEmpty) return;
+      t = Transfer.files(selectedPaths.toList(), cut: cut);
     } else {
       if (m.selection.isEmpty) return;
       if (cut && _whyNot('delete') != null) {
@@ -402,11 +416,20 @@ extension ExplorerActions on BrowserPageState {
   /// A drop from the app's own views: a move between folders of the file
   /// system (a copy with Ctrl held), a copy otherwise.
   Future<void> _dropTo(PasteDest d, Transfer t) async {
+    // ignore: avoid_print
+    print('DROP dest=${d.fsDir} paths=${t.fsPaths}');
     final ctrl = HardwareKeyboard.instance.isControlPressed;
     final move = !t.fromArchive && d.fsDir != null && !ctrl;
     if (d.fsDir != null && !t.fromArchive) {
       // a drop on the folder the files are in does nothing
       if (t.fsPaths.every((s) => p.equals(p.dirname(s), d.fsDir!)) && move) {
+        return;
+      }
+      // a folder can not go into itself or into what it holds: dropping
+      // it on its own row (or on the folder it is open in) would copy
+      // it into itself, over and over
+      final dest = d.fsDir!;
+      if (t.fsPaths.any((s) => p.isWithin(dest, s) || p.equals(dest, s))) {
         return;
       }
     }
@@ -653,8 +676,8 @@ extension ExplorerActions on BrowserPageState {
   // ---- file operations ----
 
   /// Moves the selection to the trash ([permanent]: deletes it).
-  Future<void> deleteFs({bool permanent = false}) async {
-    final sel = _fs.selectedEntries;
+  Future<void> deleteFs({bool permanent = false, FsEntry? entry}) async {
+    final sel = entry == null ? _fs.selectedEntries : [entry];
     if (sel.isEmpty) return;
     final what = sel.length == 1
         ? '"${sel.first.name}"'
@@ -708,11 +731,14 @@ extension ExplorerActions on BrowserPageState {
     if (r != null) await _showFsErrors('Delete', r);
   }
 
-  Future<void> renameFs() async {
-    final sel = _fs.selectedEntries;
+  Future<void> renameFs({FsEntry? entry}) async {
+    final sel = entry == null ? _fs.selectedEntries : [entry];
     if (sel.length != 1) return;
     final e = sel.first;
-    final siblings = {for (final r in _fs.rows) r.name};
+    final siblings = entry == null
+        ? {for (final r in _fs.rows) r.name}
+        : {for (final r in await listDirectory(p.dirname(e.path))) r.name};
+    if (!mounted) return;
     final n = await showTextInputDialog(
       context,
       title: 'Rename',
@@ -760,8 +786,9 @@ extension ExplorerActions on BrowserPageState {
     await _fs.reload(select: [path]);
   }
 
-  Future<void> propertiesFs() async {
+  Future<void> propertiesFs({FsEntry? treeEntry}) async {
     var sel = _fs.selectedEntries;
+    if (treeEntry != null) sel = [treeEntry];
     if (sel.isEmpty) {
       final e = await statEntry(_fs.dir);
       if (e == null) return;
@@ -854,8 +881,12 @@ extension ExplorerActions on BrowserPageState {
 
   // ---- context menu ----
 
-  Future<void> _fsContextMenu(FsEntry? e, Offset pos) async {
-    final sel = _fs.selectedEntries;
+  Future<void> _fsContextMenu(
+    FsEntry? e,
+    Offset pos, {
+    FsEntry? treeEntry,
+  }) async {
+    final sel = treeEntry == null ? _fs.selectedEntries : [treeEntry];
     final hasSel = e != null && sel.isNotEmpty;
     final archives = [
       for (final s in sel)
@@ -896,7 +927,7 @@ extension ExplorerActions on BrowserPageState {
         ),
         _menuEntry('extract-to', Icons.folder_copy_outlined, 'Extract to...'),
       ],
-      if (hasSel) ...[
+      if (hasSel && treeEntry == null) ...[
         const PopupMenuDivider(),
         _menuEntry('compress', Icons.archive_outlined, 'Compress to .zx...'),
         _menuEntry(
@@ -904,7 +935,9 @@ extension ExplorerActions on BrowserPageState {
           Icons.inventory_2_outlined,
           'Compress to other format...',
         ),
-        const PopupMenuDivider(),
+      ],
+      if (hasSel) ...[
+        if (treeEntry == null) const PopupMenuDivider(),
         _menuEntry('cut', Icons.content_cut_rounded, 'Cut', shortcut: 'Ctrl+X'),
         _menuEntry(
           'copy',
@@ -920,6 +953,12 @@ extension ExplorerActions on BrowserPageState {
         why: clip == null ? 'Nothing to paste' : null,
         shortcut: 'Ctrl+V',
       ),
+      if (clip != null)
+        _menuEntry(
+          'clip-clear',
+          Icons.backspace_outlined,
+          'Clear the clipboard',
+        ),
       if (hasSel) ...[
         _menuEntry('copy-path', Icons.link_rounded, 'Copy path'),
         if (sel.length == 1 && e.isDir)
@@ -955,7 +994,7 @@ extension ExplorerActions on BrowserPageState {
       const PopupMenuDivider(),
       _menuEntry('properties', Icons.description_outlined, 'Properties'),
     ];
-    final v = await _showMenuAt(pos, items);
+    final v = await _showMenuAt(pos, items, fromTree: treeEntry != null);
     switch (v) {
       case 'open':
         if (e != null) await openFsEntry(e);
@@ -978,9 +1017,12 @@ extension ExplorerActions on BrowserPageState {
               : _sv.settings.defaultFormat,
         );
       case 'cut':
-        copySelection(cut: true);
+        copySelection(
+          cut: true,
+          paths: treeEntry == null ? null : [treeEntry.path],
+        );
       case 'copy':
-        copySelection();
+        copySelection(paths: treeEntry == null ? null : [treeEntry.path]);
       case 'paste':
         await paste(
           into: e != null && e.isDir && sel.length == 1
@@ -996,11 +1038,13 @@ extension ExplorerActions on BrowserPageState {
       case 'share':
         await _sv.places.share([for (final x in sel) x.path]);
       case 'rename':
-        await renameFs();
+        await renameFs(entry: treeEntry);
       case 'delete':
-        await deleteFs();
+        await deleteFs(entry: treeEntry);
       case 'delete-permanent':
-        await deleteFs(permanent: true);
+        await deleteFs(permanent: true, entry: treeEntry);
+      case 'clip-clear':
+        _update(() => _clip = null);
       case 'folder':
         await newFolderFs();
       case 'select-all':
@@ -1008,7 +1052,7 @@ extension ExplorerActions on BrowserPageState {
       case 'refresh':
         await _fs.reload();
       case 'properties':
-        await propertiesFs();
+        await propertiesFs(treeEntry: treeEntry);
     }
   }
 
@@ -1046,12 +1090,24 @@ extension ExplorerActions on BrowserPageState {
     );
   }
 
-  Future<String?> _showMenuAt(Offset pos, List<PopupMenuEntry<String>> items) {
+  Future<String?> _showMenuAt(
+    Offset pos,
+    List<PopupMenuEntry<String>> items, {
+    bool fromTree = false,
+  }) {
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    // A menu opened from the left tree would otherwise be centered on the
+    // pointer and clipped by the window edge.
+    final x = fromTree
+        ? (overlay.size.width <= 288
+              ? overlay.size.width / 2
+              : pos.dx.clamp(280.0, overlay.size.width - 8.0).toDouble())
+        : pos.dx;
+    final safePosition = Offset(x, pos.dy);
     return showMenu<String>(
       context: context,
       position: RelativeRect.fromRect(
-        pos & const Size(1, 1),
+        safePosition & const Size(1, 1),
         Offset.zero & overlay.size,
       ),
       items: items,
