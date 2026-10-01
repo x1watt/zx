@@ -1,49 +1,88 @@
 # zx
 
-**One archiver for everything, in pure Dart.** zx reads and writes 7z,
-zip, rar, tar, gz, bz2, xz, zpaq, arj, lzh and its own `.zx` format, opens
-disc images, disk images and device firmware down to their files, ships a
-SQL database inside every archive, and compresses with context mixing
-models that land within a few percent of paq8px, from a command line that
-speaks 7-Zip's language.
+**Every archive is a database. Every backup remembers its past. Every
+file can be found in microseconds. And when you have the time, zx
+compresses like nothing else.**
 
-No native code, no FFI, no plugins: it runs wherever Dart runs (Linux,
-Windows, macOS, Android, iOS), as a library, a command line tool (`zx`)
-and a file explorer app.
+zx is an archiver built around ideas no other archiver combines:
+
+### 1. Ultra-compression, cmix class, on any machine
+
+zcm, zx's context mixing engine, brings the models of **cmix** and
+**paq8px** (the record holders of lossless compression) into a normal
+archiver: text, source code, executables, images and audio each get
+their own models (the cmix preset adds cmix's LSTM byte mixer), and the
+result is **smaller than paq8px on English text and source code** and
+within 0.05 to 3.5% of it on images, audio and binaries. You choose the trade-off:
+
+```sh
+zx a -m0=zcm:auto -mtime=10m corpus.zx texts/   # strongest that fits 10 minutes
+zx a -m0=zcm:cmix -mmem=8g  corpus.zx texts/   # all models, a few KB/s
+```
+
+`auto` measures the machine (free memory, cores, speed) and picks the
+strongest level that fits your time and memory budget, from 1.2 MB/s up
+to the cmix preset. Every archive decodes bit for bit on any other
+machine.
+
+### 2. Backups that remember everything (zpaq, built in)
+
+Every update **appends a version** with its date and never rewrites old
+data, like **zpaq**: unchanged files cost nothing, identical chunks are
+stored once across files and versions (a new version of a source tree
+costs 0.3 MB instead of 4.8 MB), and an interrupted backup is simply
+ignored. Go back in time whenever you need:
+
+```sh
+zx a backup.zx ~/docs                          # run it every day
+zx x backup.zx -mversion=2026-09-01 -oold      # everything as it was that day
+zx l backup.zx -mtimeline=docs/plan.txt        # every version of one file
+```
+
+zx also reads and writes real **zpaq** archives (every version,
+compatible with zpaq 7.15 and zpaqfranz).
+
+### 3. Every archive is a database (like SQLite, inside the archive)
+
+A `.zx` archive holds a **SQL database** next to its files: SQLite's
+dialect, key-value stores, time series for logs, full-text search, and
+time travel (`AS OF '2026-09-01'`), all stored with zx's compression,
+5 to 20 times smaller than SQLite. Metadata travels with the files:
+descriptions, tags, subtitles, transcripts and screenshots.
+
+```sh
+zx sql photos.zx "SELECT path, size FROM zx_files ORDER BY size DESC LIMIT 10"
+zx sql notes.zx                                # interactive shell, like sqlite3
+```
+
+### 4. Find any file instantly, by content or by similarity
+
+Every file is indexed by its **SHA-256** (looked up in 2 microseconds)
+and by a **TLSH** similarity digest: ask for "the 20 files most like
+this one" among a million and get the answer in under 15 ms. Duplicates,
+near-duplicates, other versions of a document: one query.
+
+```sql
+SELECT path FROM zx_files WHERE sha256 = x'9f86d081...';
+SELECT path, distance FROM similar('report-final.pdf', 20);
+```
+
+### 5. And everything else an archiver should do
+
+- **7-Zip compatible**: the LZMA SDK ported function by function, same
+  bytes as 7-Zip, same commands and switches (`zx a`, `zx x -o`, `-mx9`).
+- **Every common format**: 7z, zip/jar (AES), RAR 1.5 to 7 (writing
+  RAR5), tar.gz/bz2/xz, gzip, bzip2, xz, zpaq, ARJ, LHA.
+- **Firmware and disk images opened like folders**: ISO, UDF, GPT, FAT,
+  ext4, SquashFS, UBI/UBIFS, JFFS2, U-Boot images, device trees,
+  through every nesting level.
+- **A format that never goes stale**: `.zx` names its codecs per block
+  and states the oldest zx that can read it.
+- **Volumes across several disks**, encryption, parallel blocks.
+- **A file explorer** for desktop and Android that walks into archives.
+- **Pure Dart**: no native code, runs wherever Dart runs.
 
 Version 0.5.0. BSD 3-clause, Copyright (c) 2026 Max Brito.
-
----
-
-## Highlights
-
-- **7-Zip, ported.** The public domain LZMA SDK (7z, xz, lzma, LZMA,
-  LZMA2, PPMd, BCJ2, AES-256) is ported function by function: at the same
-  settings the encoders write **the same bytes as 7-Zip**, and the command
-  line takes 7-Zip's commands and switches.
-- **Every common format.** zip/jar (Deflate, Deflate64, BZip2, LZMA,
-  PPMd, ZipCrypto, WinZip AES, Zip64), RAR 1.5 to RAR 7 (reading, with
-  every RAR cipher) and RAR5 (writing, with volumes and recovery records),
-  tar and compressed tars, gzip, bzip2, xz, zpaq (journaling, all
-  versions), ARJ, LHA.
-- **Images and firmware.** ISO 9660 (Joliet, Rock Ridge, El Torito), UDF,
-  MBR, GPT, FAT, ext2/3/4, SquashFS, cramfs, JFFS2, UBI, UBIFS, cpio,
-  U-Boot images, device trees and Reolink firmware, opened through every
-  nesting level (`firmware.pak > rootfs > etc`).
-- **`.zx`, a format that never goes stale.** Any codec inside one
-  container, explicit "needs zx X" compatibility, parallel blocks,
-  deduplication, append-only versions with dates and per-file timelines,
-  SHA-256 and TLSH per file, encryption, volumes spread over several disks.
-- **zcm, context mixing in nine levels.** From 1.2 MB/s to a cmix-class
-  mode, built on the models of zpaq, paq8px and cmix: smaller than xz and
-  7-Zip at every level, smaller than paq8px on English text and source
-  code.
-- **zxdb, a database in every archive.** SQLite's SQL (checked against
-  sqlite3), key-value stores, time series for logs, full-text search,
-  `AS OF` time travel, and built-in tables that find any file by SHA-256
-  or by similarity, 5 to 20 times smaller than SQLite.
-- **A file explorer.** Browse the file system and walk into archives like
-  folders, on the desktop and on Android.
 
 ---
 
