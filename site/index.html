@@ -87,7 +87,7 @@ section p.sub { color: var(--fg-dim); margin: 0 0 28px; max-width: 760px; }
 .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
 table { border-collapse: collapse; width: 100%; font-size: 15px; }
 th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--line); }
-td code { white-space: nowrap; }
+td code, .card code { white-space: nowrap; }
 th { background: var(--bg-soft); font-weight: 600; }
 tr:last-child td { border-bottom: none; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -135,34 +135,38 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 
 <main>
 <div class="hero wrap">
-  <h1>One archiver for everything.</h1>
-  <p class="lead">zx reads and writes 7z, zip, rar, tar, zpaq and its own <code>.zx</code> format,
-  opens disc images, disk images and device firmware down to their files, compresses with
-  context mixing models that rival paq8px, and keeps a SQL database inside every archive.
-  Pure Dart: a library, a command line and a file explorer for desktop and Android.</p>
+  <h1>Every archive is a database.</h1>
+  <p class="lead">Backups that remember every version. Files found in microseconds by SHA-256 or by
+  similarity. Compression with the models of cmix and paq8px when you have the time.
+  And it still opens every 7z, zip, rar and tar you have. Pure Dart: a library, a command line
+  and a file explorer for desktop and Android.</p>
   <div class="cta">
     <a class="btn primary" href="#install">Install</a>
     <a class="btn" href="https://github.com/x1watt/zx">Source on GitHub</a>
     <a class="btn" href="https://github.com/x1watt/zx/blob/main/docs/zx-format.md">.zx specification</a>
   </div>
-  <pre class="term"><span class="p">$</span> zx a backup.zx ~/docs                      <span class="c"># first version</span>
-<span class="p">$</span> zx a backup.zx ~/docs                      <span class="c"># next version: only what changed</span>
-<span class="p">$</span> zx x backup.zx -mversion=2026-09-01 -oold  <span class="c"># the archive as it was that day</span>
-<span class="p">$</span> zx l -snest firmware.pak                    <span class="c"># firmware down to its files</span>
-<span class="p">$</span> zx sql backup.zx "SELECT path FROM similar('report.pdf', 20)"</pre>
+  <pre class="term"><span class="p">$</span> zx a backup.zx ~/docs                         <span class="c"># daily: only what changed is stored</span>
+<span class="p">$</span> zx x backup.zx -mversion=2026-09-01 -oold     <span class="c"># everything as it was that day</span>
+<span class="p">$</span> zx sql backup.zx "SELECT path FROM similar('report.pdf', 20)"
+<span class="p">$</span> zx a -m0=zcm:cmix -mmem=8g corpus.zx texts/   <span class="c"># cmix-class ultra compression</span></pre>
 </div>
 
 <section id="features">
   <div class="wrap">
-    <h2>What it does</h2>
-    <p class="sub">Every common archive format, the images and firmware they hide in, and a format of its own that does not go stale.</p>
+    <h2>Four ideas no other archiver combines</h2>
+    <p class="sub">zx reads and writes the formats you already use, then goes further.</p>
     <div class="grid">
-      <div class="card"><span class="tag">7-Zip, ported</span><h3>Same bytes as 7-Zip</h3><p>The public domain LZMA SDK ported function by function: at the same settings the encoders write identical output, and the command line takes 7-Zip's commands and switches.</p></div>
-      <div class="card"><span class="tag">Formats</span><h3>Read and write the rest</h3><p>zip and jar with AES, RAR 1.5 to RAR 7 (writing RAR5 with volumes and recovery records), tar and compressed tars, zpaq with every version, ARJ, LHA, gzip, bzip2, xz.</p></div>
-      <div class="card"><span class="tag">Images</span><h3>Open firmware like folders</h3><p>ISO, UDF, MBR, GPT, FAT, ext4, SquashFS, JFFS2, UBI and UBIFS, U-Boot images, device trees: nested levels open as one tree.</p></div>
-      <div class="card"><span class="tag">.zx</span><h3>A format that adapts</h3><p>Any codec inside, explicit compatibility, versions with dates, deduplication, SHA-256 and similarity search per file, encryption, volumes across disks.</p></div>
-      <div class="card"><span class="tag">zcm</span><h3>Context mixing compression</h3><p>Nine levels from 1.2 MB/s to a cmix-class mode, smaller than xz and 7-Zip at every level, smaller than paq8px on text and code.</p></div>
-      <div class="card"><span class="tag">zxdb</span><h3>A database in every archive</h3><p>SQLite's SQL, key-value stores, time series, full-text search and time travel queries, 5 to 20 times smaller than SQLite.</p></div>
+      <div class="card"><span class="tag">zcm</span><h3>Ultra-compression, cmix class</h3><p>The models of cmix and paq8px in a normal archiver: smaller than paq8px on English text and source code, within 0.05 to 3.5% on images, audio and binaries. <code>-m0=zcm:auto -mtime=10m</code> picks the strongest level your machine can do in the time you give it.</p></div>
+      <div class="card"><span class="tag">backup</span><h3>Backups that remember (zpaq style)</h3><p>Every update appends a dated version and never rewrites old data. Identical chunks are stored once across files and versions; restore the archive as it was on any day, or list one file's timeline. Real zpaq archives too.</p></div>
+      <div class="card"><span class="tag">zxdb</span><h3>Every archive is a database</h3><p>SQL in SQLite's dialect, key-value stores, time series, full-text search and time travel, inside the archive and 5 to 20 times smaller than SQLite. Descriptions, tags, subtitles and screenshots travel with the files.</p></div>
+      <div class="card"><span class="tag">search</span><h3>Find files instantly</h3><p>SHA-256 lookup in 2 microseconds; the 20 files most similar to any file, among a million, in under 15 ms (TLSH). Duplicates and near-duplicates in one query.</p></div>
+    </div>
+    <h2 style="margin-top:40px">And everything an archiver should do</h2>
+    <div class="grid" style="margin-top:16px">
+      <div class="card"><span class="tag">7-Zip, ported</span><h3>Same bytes as 7-Zip</h3><p>The LZMA SDK ported function by function: identical output at the same settings, and 7-Zip's commands and switches.</p></div>
+      <div class="card"><span class="tag">Formats</span><h3>Read and write the rest</h3><p>zip and jar with AES, RAR 1.5 to 7 (writing RAR5), tar and compressed tars, zpaq, ARJ, LHA, gzip, bzip2, xz.</p></div>
+      <div class="card"><span class="tag">Images</span><h3>Firmware opened like folders</h3><p>ISO, UDF, GPT, FAT, ext4, SquashFS, UBI/UBIFS, JFFS2, U-Boot images and device trees, through every nesting level.</p></div>
+      <div class="card"><span class="tag">.zx</span><h3>A format that never goes stale</h3><p>Codecs named per block, the oldest zx that can read it stated up front, encryption, volumes across disks, parallel blocks.</p></div>
     </div>
   </div>
 </section>
