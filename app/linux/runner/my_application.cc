@@ -66,7 +66,7 @@ static void my_application_activate(GApplication* application) {
     }
   }
 #endif
-  // "zx_app --extract-to-folder ..." shows only a small progress window.
+  // "zx-gui --extract-to-folder ..." shows only a small progress window.
   gboolean small = FALSE;
   for (char** a = self->dart_entrypoint_arguments; a != nullptr && *a != nullptr;
        a++) {

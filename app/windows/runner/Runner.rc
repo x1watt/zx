@@ -92,9 +92,9 @@ BEGIN
             VALUE "CompanyName", "io.github.maxbrito" "\0"
             VALUE "FileDescription", "zx archive manager" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "zx_app" "\0"
+            VALUE "InternalName", "zx-gui" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 io.github.maxbrito. All rights reserved." "\0"
-            VALUE "OriginalFilename", "zx_app.exe" "\0"
+            VALUE "OriginalFilename", "zx-gui.exe" "\0"
             VALUE "ProductName", "zx" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END

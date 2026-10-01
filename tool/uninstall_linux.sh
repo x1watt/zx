@@ -17,9 +17,9 @@ for a in "$@"; do
   esac
 done
 
-if [ -x "$DEST/zx_app" ]; then
+if [ -x "$DEST/zx-gui" ]; then
   echo "Removing the desktop integration"
-  "$DEST/zx_app" --remove-integration || true
+  "$DEST/zx-gui" --remove-integration || true
 else
   echo "No installed app at $DEST: removing the known files directly"
   rm -f "$DATA/applications/zx.desktop" \

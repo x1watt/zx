@@ -2,7 +2,7 @@
 # Builds the Debian package of zx: dist/zx_<version>_amd64.deb, the version
 # taken from pubspec.yaml. No root is needed (dpkg-deb --root-owner-group).
 #
-#   /opt/zx/                         the Flutter release bundle (zx_app)
+#   /opt/zx/                         the Flutter release bundle (zx-gui)
 #   /usr/bin/zx                      the command line tool (AOT, bin/zx.dart)
 #   /usr/bin/zx-gui                  the launcher of the app
 #   /usr/share/applications/zx.desktop
@@ -61,7 +61,7 @@ if [ "$BUILD" = 1 ]; then
   tool/fetch_nautilus_headers.sh
   make -C native/nautilus clean all test
 fi
-for f in "$BUNDLE/zx_app" "$CLI" "$EXT"; do
+for f in "$BUNDLE/zx-gui" "$CLI" "$EXT"; do
   [ -e "$f" ] || { echo "missing $f (drop --no-build)" >&2; exit 1; }
 done
 
@@ -77,7 +77,7 @@ install -m 755 "$CLI" "$STAGE/usr/bin/zx"
 cat > "$STAGE/usr/bin/zx-gui" <<'EOF'
 #!/bin/sh
 # zx archive manager
-exec /opt/zx/zx_app "$@"
+exec /opt/zx/zx-gui "$@"
 EOF
 chmod 755 "$STAGE/usr/bin/zx-gui"
 (cd app && dart tool/desktop_entry.dart /usr/bin/zx-gui) \

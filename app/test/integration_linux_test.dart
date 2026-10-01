@@ -40,7 +40,7 @@ void main() {
     File(p.join(icons.path, 'zx-48.png')).writeAsBytesSync([1, 2, 3]);
     li = LinuxIntegration(
       testPaths(tmp.path),
-      '/opt/zx app/zx_app',
+      '/opt/zx app/zx-gui',
       runner: (exe, args) async {
         commands.add('$exe ${args.join(' ')}');
         return ProcessResult(0, 0, '', '');
@@ -54,7 +54,7 @@ void main() {
   /// The integration of the app installed by the package.
   LinuxIntegration packaged() => LinuxIntegration(
     testPaths(tmp.path),
-    '/opt/zx/zx_app',
+    '/opt/zx/zx-gui',
     runner: (exe, args) async {
       commands.add('$exe ${args.join(' ')}');
       return ProcessResult(0, 0, '', '');
@@ -74,7 +74,7 @@ void main() {
   test('register writes the desktop entry and the icons', () async {
     await li.register();
     final d = File(li.desktopFile).readAsStringSync();
-    expect(d, contains('Exec="/opt/zx app/zx_app" %F'));
+    expect(d, contains('Exec="/opt/zx app/zx-gui" %F'));
     expect(d, contains('MimeType=application/x-7z-compressed;'));
     for (final t in kPrimaryMimeTypes) {
       expect(d, contains('$t;'));
@@ -151,7 +151,7 @@ text/plain=org.gnome.TextEditor.desktop
       expect(script.existsSync(), isTrue);
       expect(
         script.readAsStringSync(),
-        contains("exec '/opt/zx app/zx_app' --extract-to-folder \"\$@\""),
+        contains("exec '/opt/zx app/zx-gui' --extract-to-folder \"\$@\""),
       );
       expect(script.statSync().mode & 0x40, isNonZero, reason: 'executable');
       expect(File(li.contextMenuDisabledFile).existsSync(), isFalse);
@@ -165,7 +165,7 @@ text/plain=org.gnome.TextEditor.desktop
       expect(
         uca,
         contains(
-          "<command>'/opt/zx app/zx_app' --extract-to-folder %F</command>",
+          "<command>'/opt/zx app/zx-gui' --extract-to-folder %F</command>",
         ),
       );
       var st = await li.status();
@@ -259,7 +259,7 @@ text/plain=org.gnome.TextEditor.desktop
     expect(File(pk.nautilusScript).existsSync(), isFalse, reason: 'no script');
     expect(
       File(pk.thunarActions).readAsStringSync(),
-      contains("<command>/opt/zx/zx_app --extract-to-folder %F</command>"),
+      contains("<command>/opt/zx/zx-gui --extract-to-folder %F</command>"),
     );
     st = await pk.status();
     expect(st.contextMenu, isTrue);

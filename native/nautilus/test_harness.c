@@ -8,7 +8,7 @@
  *
  * Runs in a temporary HOME (set before GLib reads it), so the real
  * settings and installs of the user are not looked at, except the system
- * ones (/usr/bin/zx-gui, /opt/zx/zx_app): when one of them exists the
+ * ones (/usr/bin/zx-gui, /opt/zx/zx-gui): when one of them exists the
  * checks that need "no launcher" and the activation are skipped.
  *
  * Usage: zx-nautilus-test path/to/libzx-nautilus.so
@@ -266,7 +266,7 @@ main (int argc, char **argv)
     launcher = g_build_filename (home, ".local", "bin", "zx-gui", NULL);
     flag = g_build_filename (home, ".config", "zx", "context-menu-disabled", NULL);
     system_launcher = g_file_test ("/usr/bin/zx-gui", G_FILE_TEST_EXISTS) ||
-                      g_file_test ("/opt/zx/zx_app", G_FILE_TEST_EXISTS);
+                      g_file_test ("/opt/zx/zx-gui", G_FILE_TEST_EXISTS);
 
     so = g_module_open (argv[1], G_MODULE_BIND_LOCAL);
     if (so == NULL)

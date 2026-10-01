@@ -48,7 +48,7 @@ nautilus -q                              # once, so Nautilus loads the extension
 
 | What | Where |
 |---|---|
-| The release bundle | `/opt/zx` (`zx_app`) |
+| The release bundle | `/opt/zx` (`zx-gui`) |
 | Launcher, command line tool | `/usr/bin/zx-gui`, `/usr/bin/zx` |
 | Desktop entry with the archive MIME types | `/usr/share/applications/zx.desktop` |
 | Icon (SVG and PNG sizes) | `/usr/share/icons/hicolor/*/apps/zx.*` |
@@ -76,7 +76,7 @@ tool/uninstall_linux.sh [--purge]
 
 | What | Where |
 |---|---|
-| The release bundle | `~/.local/share/zx/app` (`zx_app`) |
+| The release bundle | `~/.local/share/zx/app` (`zx-gui`) |
 | Launcher | `~/.local/bin/zx-gui` |
 | Desktop entry with the archive MIME types | `~/.local/share/applications/zx.desktop` |
 | Icon (SVG and PNG sizes) | `~/.local/share/icons/hicolor/*/apps/zx.*` |
@@ -94,9 +94,9 @@ folder" in the file manager) install and remove the per user files: the
 Thunar action and, for a per user install, the Nautilus script; with the
 package the menu switch turns its Nautilus extension on and off. The
 switches and the script call the same code, also reachable as
-`zx_app --install-integration [--associations] [--context-menu]`,
-`zx_app --remove-integration [...]` and `zx_app --integration-status`.
-`zx_app --extract-to-folder a.zip b.tar.gz` extracts each archive into a
+`zx-gui --install-integration [--associations] [--context-menu]`,
+`zx-gui --remove-integration [...]` and `zx-gui --integration-status`.
+`zx-gui --extract-to-folder a.zip b.tar.gz` extracts each archive into a
 new folder named after it next to it (`b.tar.gz` gives `b/`, an existing
 name gives `b (2)/`), in a small progress window that asks for a password
 when needed and closes itself; this is what the menu entries run.

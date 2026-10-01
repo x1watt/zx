@@ -1,5 +1,17 @@
 ## Unreleased
 
+- **Two programs**: `zx`, the command line, and `zx-gui`, the app (the
+  app's executable was `zx_app`); on Android the app is `zx.apk`
+  (tool/build_apk.sh), and on Termux `zx` installs with
+  `dart pub global activate --source git https://github.com/x1watt/zx`.
+- **New logo**: a database marked ZX squeezed in a clamp (logo/), in the
+  app, the web page and the Windows executables (icon and version
+  information, tool/windows_exe_icon.sh).
+- **Signed generations** (docs/zx-format.md section 17): .zx versions
+  signed with NOSTR keys by an admin and maintainers, checked by anyone
+  without the password (`zx seal`, `-msign`); the Footer is 40 bytes.
+- **Archive READMEs** (docs/readme.md): a README.md in an archive describes
+  it; `zx readme`, and the app shows it below the items.
 - **The app is a file explorer** (app/README.md "Using it",
   docs/architecture.md section 11): a sidebar with the places, drives and
   volumes, pinned folders and recent archives; breadcrumbs with an

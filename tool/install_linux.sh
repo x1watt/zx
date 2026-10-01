@@ -6,7 +6,7 @@
 #   ~/.local/share/applications/zx.desktop and the icons (hicolor)
 # and, unless switched off, the file associations and the "Extract to
 # folder" entry of Nautilus and Thunar. Everything except the copy of the
-# bundle is done by the app itself (zx_app --install-integration), the same
+# bundle is done by the app itself (zx-gui --install-integration), the same
 # code as the switches in its settings.
 #
 # Usage: tool/install_linux.sh [--no-build] [--no-associations]
@@ -44,7 +44,7 @@ if [ "$BUILD" = 1 ]; then
   fi
   cd - >/dev/null
 fi
-if [ ! -x "$BUNDLE/zx_app" ]; then
+if [ ! -x "$BUNDLE/zx-gui" ]; then
   echo "No bundle at $BUNDLE (build it, or drop --no-build)" >&2
   exit 1
 fi
@@ -61,7 +61,7 @@ mkdir -p "$BINDIR"
 cat > "$BINDIR/zx-gui" <<LAUNCHER
 #!/bin/sh
 # zx archive manager (installed by tool/install_linux.sh)
-exec "$DEST/zx_app" "\$@"
+exec "$DEST/zx-gui" "\$@"
 LAUNCHER
 chmod 755 "$BINDIR/zx-gui"
 
@@ -70,7 +70,7 @@ ARGS=(--install-integration)
 [ "$MENU" = 1 ] && ARGS+=(--context-menu)
 [ "$ASSOC" = 0 ] && [ "$MENU" = 0 ] && ARGS+=(--register)
 echo "Desktop integration: ${ARGS[*]}"
-"$DEST/zx_app" "${ARGS[@]}"
+"$DEST/zx-gui" "${ARGS[@]}"
 
 case ":$PATH:" in
   *":$BINDIR:"*) ;;

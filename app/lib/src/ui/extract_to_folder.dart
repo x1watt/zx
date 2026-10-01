@@ -1,4 +1,4 @@
-// The "Extract to folder" mode (zx_app --extract-to-folder a.zip b.7z):
+// The "Extract to folder" mode (zx-gui --extract-to-folder a.zip b.7z):
 // a small window that extracts each archive into a new folder named after
 // it, next to it, asks for passwords when needed, and closes itself when
 // everything went well.

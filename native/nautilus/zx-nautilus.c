@@ -10,7 +10,7 @@
  *
  * without a shell. The program is the first one that exists of
  * /usr/bin/zx-gui (the package), ~/.local/bin/zx-gui (tool/install_linux.sh),
- * /opt/zx/zx_app and $XDG_DATA_HOME/zx/app/zx_app. Without one the item
+ * /opt/zx/zx-gui and $XDG_DATA_HOME/zx/app/zx-gui. Without one the item
  * does not show.
  *
  * The app's setting "Add Extract to folder to the file manager right-click
@@ -217,8 +217,8 @@ zx_find_launcher (void)
 
     candidates[0] = g_strdup ("/usr/bin/zx-gui");
     candidates[1] = g_build_filename (g_get_home_dir (), ".local", "bin", "zx-gui", NULL);
-    candidates[2] = g_strdup ("/opt/zx/zx_app");
-    candidates[3] = g_build_filename (g_get_user_data_dir (), "zx", "app", "zx_app", NULL);
+    candidates[2] = g_strdup ("/opt/zx/zx-gui");
+    candidates[3] = g_build_filename (g_get_user_data_dir (), "zx", "app", "zx-gui", NULL);
     for (i = 0; i < 4; i++)
     {
         if (found == NULL && g_file_test (candidates[i], G_FILE_TEST_IS_EXECUTABLE) &&

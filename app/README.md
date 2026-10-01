@@ -65,7 +65,7 @@ archive it reads are browsed the same way, and an archive is a folder.
   bottom (Copy, Cut, Delete, Rename, Share, More), and a pending copy
   shows "Paste here" at the bottom. The back button leaves the
   selection, the search, then goes back and up.
-- **Open**: `zx_app archive.7z`, File > Open (Ctrl+O), or a recent
+- **Open**: `zx-gui archive.7z`, File > Open (Ctrl+O), or a recent
   archive of the sidebar. Inside an archive the folder tree of the
   archive is under the places, and the preview pane on the right.
 - **Browse**: the file list of an archive has the columns of the
@@ -154,11 +154,11 @@ archive it reads are browsed the same way, and an archive is a folder.
 ## Command line
 
 ```
-zx_app [archive]
-zx_app --extract-to-folder <archive>...
-zx_app --install-integration [--register | --associations] [--context-menu]
-zx_app --remove-integration [--associations] [--context-menu]
-zx_app --integration-status
+zx-gui [archive]
+zx-gui --extract-to-folder <archive>...
+zx-gui --install-integration [--register | --associations] [--context-menu]
+zx-gui --remove-integration [--associations] [--context-menu]
+zx-gui --integration-status
 ```
 
 `--extract-to-folder` extracts each archive into a new folder named after
@@ -180,7 +180,7 @@ entry and the icons too.
 `tool/install_linux.sh` (at the root of the repository) builds the
 release bundle (through `~/bin/android-build-locked` when it exists),
 copies it to `~/.local/share/zx/app`, writes the launcher
-`~/.local/bin/zx-gui` and runs `zx_app --install-integration`. Nothing
+`~/.local/bin/zx-gui` and runs `zx-gui --install-integration`. Nothing
 needs root. `tool/uninstall_linux.sh` removes it all again.
 
 The two switches of Settings run the same code (`lib/src/integration.dart`):
@@ -214,9 +214,9 @@ The two switches of Settings run the same code (`lib/src/integration.dart`):
 The same switches write under `HKCU\Software\Classes` with `reg.exe`:
 
 - ProgID `zx.archive` with `DefaultIcon`, `shell\open\command`
-  (`"zx_app.exe" "%1"`) and the verb `shell\zx.extract` ("Extract to folder
-  (zx)", `"zx_app.exe" --extract-to-folder "%1"`);
-  `Applications\zx_app.exe\SupportedTypes`, and `.ext\OpenWithProgids`
+  (`"zx-gui.exe" "%1"`) and the verb `shell\zx.extract` ("Extract to folder
+  (zx)", `"zx-gui.exe" --extract-to-folder "%1"`);
+  `Applications\zx-gui.exe\SupportedTypes`, and `.ext\OpenWithProgids`
   for each archive extension so zx is offered in "Open with".
 - Associations on: the default value of `HKCU\Software\Classes\.7z`,
   `.zip`, `.rar`... becomes `zx.archive`. Windows 10 and 11 keep a choice
@@ -306,7 +306,11 @@ On the development machine every build goes through the lock:
     --target-platform android-arm,android-arm64,android-x64
 ```
 
-The APKs are in `build/app/outputs/flutter-apk/`:
+For a release, `tool/build_apk.sh` makes `dist/zx.apk` (every ABI in one
+APK), or with `--split` `dist/zx-arm64-v8a.apk`, `dist/zx-armeabi-v7a.apk`
+and `dist/zx-x86_64.apk`.
+
+The APKs of the commands above are in `build/app/outputs/flutter-apk/`:
 `app-arm64-v8a-release.apk` (almost every phone of the last years),
 `app-armeabi-v7a-release.apk` (older 32 bit phones),
 `app-x86_64-release.apk` (emulators, Chromebooks). Install with

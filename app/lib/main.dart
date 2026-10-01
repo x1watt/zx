@@ -1,10 +1,10 @@
 // zx, an archive manager. Command line:
-//   zx_app [archive]                     opens the archive
-//   zx_app --extract-to-folder <a>...    extracts each archive into a folder
+//   zx-gui [archive]                     opens the archive
+//   zx-gui --extract-to-folder <a>...    extracts each archive into a folder
 //                                        named after it, then exits
-//   zx_app --install-integration [--register | --associations] [--context-menu]
-//   zx_app --remove-integration [--associations] [--context-menu]
-//   zx_app --integration-status
+//   zx-gui --install-integration [--register | --associations] [--context-menu]
+//   zx-gui --remove-integration [--associations] [--context-menu]
+//   zx-gui --integration-status
 
 import 'dart:async';
 import 'dart:io';
@@ -18,11 +18,11 @@ import 'src/services.dart';
 import 'src/settings.dart';
 
 const _usage = '''
-Usage: zx_app [archive]
-       zx_app --extract-to-folder <archive>...
-       zx_app --install-integration [--register | --associations] [--context-menu]
-       zx_app --remove-integration [--associations] [--context-menu]
-       zx_app --integration-status
+Usage: zx-gui [archive]
+       zx-gui --extract-to-folder <archive>...
+       zx-gui --install-integration [--register | --associations] [--context-menu]
+       zx-gui --remove-integration [--associations] [--context-menu]
+       zx-gui --integration-status
 
 --install-integration registers zx with the desktop (desktop entry and
 icons on Linux) and switches on the named parts, both when none is named

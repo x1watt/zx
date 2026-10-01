@@ -46,7 +46,7 @@ void main() {
       picker: picker,
       integration: LinuxIntegration(
         paths,
-        '/opt/zx/zx_app',
+        '/opt/zx/zx-gui',
         runner: (e, a) async => ProcessResult(0, 0, '', ''),
         systemConfigDirs: const [],
         packaged: false,
@@ -577,7 +577,7 @@ void main() {
     expect(mime, contains('application/x-7z-compressed=zx.desktop'));
     expect(
       File(integ.desktopFile).readAsStringSync(),
-      contains('Exec=/opt/zx/zx_app %F'),
+      contains('Exec=/opt/zx/zx-gui %F'),
     );
 
     await tester.tap(find.byKey(const Key('set-menu')));

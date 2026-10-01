@@ -22,7 +22,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
 
-  // "zx_app --extract-to-folder ..." shows only a small progress window.
+  // "zx-gui --extract-to-folder ..." shows only a small progress window.
   bool small = false;
   for (const auto& a : command_line_arguments) {
     if (a == "--extract-to-folder") small = true;
