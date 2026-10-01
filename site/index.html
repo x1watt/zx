@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>zx archiver</title>
-<meta name="description" content="zx is an archiver and an archive format written in pure Dart: a port of the LZMA SDK that reads and writes 7z, zip, RAR5, tar and zpaq, with an appendable .zx format, context mixing compression, an embedded SQL database and optional signed generations.">
+<meta name="description" content="zx: versioned, searchable and verifiable archives with an embedded SQL database, content lookup by SHA-256 and TLSH, signed generations with NOSTR keys and context mixing compression; also a pure Dart port of the LZMA SDK that reads and writes 7z, zip, RAR5, tar and zpaq.">
 <meta property="og:title" content="zx archiver">
-<meta property="og:description" content="An archiver and archive format in pure Dart: a port of the LZMA SDK, an appendable .zx format, context mixing compression and an embedded database.">
+<meta property="og:description" content="Versioned, searchable and verifiable archives with an embedded database, in pure Dart.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -68,6 +68,7 @@ header nav a:hover { color: var(--fg); }
 .intro img { width: 96px; height: 96px; flex: none; }
 .intro h1 { font-size: 30px; margin: 0; letter-spacing: -0.01em; }
 .intro .tagline { margin: 2px 0 0; color: var(--fg-dim); }
+.intro .lead { margin: 20px 0 0; font-size: 17px; }
 .meta { font-size: 14px; color: var(--fg-dim); margin: 18px 0 0; }
 .meta a { margin-right: 14px; }
 section { padding: 28px 0 8px; }
@@ -122,24 +123,36 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
   <div class="head">
     <img src="logo-512.png" width="96" height="96" alt="The zx logo: a database marked ZX held in a clamp">
     <div>
-      <h1>zx</h1>
-      <p class="tagline">An archiver and an archive format, written in pure Dart.</p>
+      <h1>Every archive is a database.</h1>
+      <p class="tagline">zx: versioned, searchable and verifiable archives, in pure Dart.</p>
     </div>
   </div>
+  <p class="lead">zx keeps every version of your files: updates are appended, earlier
+  states stay readable by date, and identical data is stored once. Any file is found
+  in microseconds by SHA-256 or by similarity, and a SQL database lives inside the
+  archive next to the files. Versions can be signed with NOSTR keys, so anyone can
+  verify who wrote them and that nothing changed since, and a README inside the
+  archive describes its contents. Compression goes well beyond 7-Zip when there is
+  time for it: built on the context mixing models of paq8px and cmix, zcm level 9
+  makes a 6.8 MB mixed corpus 33% smaller than xz -9e and 7z PPMd (1.71 MB against
+  2.57 and 2.55 MB), with 39 to 40% saved on source code and executables and 43 to
+  46% on photographs and audio, at a few KB/s; level 1 runs at 1.1 MB/s. And it still
+  reads and writes every 7z, zip, rar and tar you have. Pure Dart: a library, a
+  command line and a file explorer for desktop and Android.</p>
   <p class="meta">Version 0.5.0 &middot; BSD 3-clause &middot; Linux, Windows, macOS, Android<br>
   <a href="https://github.com/x1watt/zx">Source</a><a href="https://github.com/x1watt/zx/releases">Releases</a><a href="https://github.com/x1watt/zx/blob/main/docs/zx-format.md">.zx specification</a><a href="https://github.com/x1watt/zx/blob/main/docs/performance.md">Measurements</a></p>
 </div>
 
 <section id="overview">
   <h2>Overview</h2>
-  <p>zx is a function-by-function port of the public domain LZMA SDK (the 7-Zip
-  command line, <code>7zr</code>), extended with readers and writers for the other
-  common archive formats and with a format of its own, <code>.zx</code>. At equal
-  settings it writes the same bytes as 7-Zip, and it accepts 7-Zip's commands and
-  switches. The library is pure Dart, with no FFI and no native libraries, so the
-  same code runs as the command line program, as a library in Dart and Flutter
-  applications, and in the desktop and Android app.</p>
-  <p>The <code>.zx</code> format adds what the established formats lack:</p>
+  <p>zx also reads and writes the established formats. Its core is a
+  function-by-function port of the public domain LZMA SDK (the 7-Zip command line,
+  <code>7zr</code>): at equal settings it writes the same bytes as 7-Zip and accepts
+  its commands and switches, and it reads RAR, zpaq, disk images and firmware. The
+  library is pure Dart, with no FFI and no native libraries, so the same code runs as
+  the command line program, as a library in Dart and Flutter applications, and in the
+  desktop and Android app.</p>
+  <p>The <code>.zx</code> format in detail:</p>
   <ul>
     <li><strong>Generations.</strong> Updates are appended and earlier bytes are never
     rewritten, as in zpaq. Any earlier state can be read back by number or by date;
@@ -283,6 +296,24 @@ zx sql backup.zx "SELECT path, size FROM zx_files ORDER BY size DESC LIMIT 10"</
   </table></div>
   <p class="note">Input: a 700,986 byte corpus of text, source code, an x86 binary and
   a firmware slice. Method and further corpora:
+  <a href="https://github.com/x1watt/zx/blob/main/docs/performance.md">docs/performance.md</a>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>File (6,758,876 byte corpus)</th><th class="num">xz -9e</th><th class="num">7z PPMd -mx9</th><th class="num">zcm level 9</th><th class="num">Smaller than xz</th></tr>
+    <tr><td>Book, English text</td><td class="num">223,640</td><td class="num">180,645</td><td class="num">148,830</td><td class="num">33%</td></tr>
+    <tr><td>C++ source</td><td class="num">146,500</td><td class="num">141,442</td><td class="num">88,714</td><td class="num">39%</td></tr>
+    <tr><td>x86-64 executable</td><td class="num">478,896</td><td class="num">410,356</td><td class="num">289,481</td><td class="num">40%</td></tr>
+    <tr><td>Firmware</td><td class="num">558,976</td><td class="num">609,164</td><td class="num">527,057</td><td class="num">6%</td></tr>
+    <tr><td>Photograph, PPM</td><td class="num">176,456</td><td class="num">193,652</td><td class="num">95,018</td><td class="num">46%</td></tr>
+    <tr><td>Photograph, BMP</td><td class="num">241,872</td><td class="num">264,029</td><td class="num">136,644</td><td class="num">44%</td></tr>
+    <tr><td>Grayscale image</td><td class="num">56,364</td><td class="num">55,477</td><td class="num">30,701</td><td class="num">46%</td></tr>
+    <tr><td>Music, 16-bit stereo WAV</td><td class="num">668,704</td><td class="num">679,210</td><td class="num">379,683</td><td class="num">43%</td></tr>
+    <tr><td>Voice, 8-bit WAV</td><td class="num">22,480</td><td class="num">17,484</td><td class="num">15,424</td><td class="num">31%</td></tr>
+    <tr><td><strong>Total</strong></td><td class="num">2,573,888</td><td class="num">2,551,459</td><td class="num">1,711,552</td><td class="num">33%</td></tr>
+  </table></div>
+  <p class="note">Measured with zcm stream version 2 at 9 KB/s; the current version 3 was
+  equal or smaller on the small corpus and has not been measured on this one yet. The
+  corpus (a Project Gutenberg book, the paq8px sources, photographs, synthesized audio, a
+  firmware slice) is described in
   <a href="https://github.com/x1watt/zx/blob/main/docs/performance.md">docs/performance.md</a>.</p>
   <div class="tablewrap"><table>
     <tr><th>Data type</th><th class="num">zcm level 9 relative to paq8px -8</th></tr>
