@@ -22,8 +22,18 @@ background isolates: the window never freezes).
 - Passwords are asked when needed (show / hide, wrong password retry);
   long operations show percent, current file, speed and Cancel. Actions a
   format does not allow are disabled with a tooltip saying why.
+- The README of the current folder of an archive (docs/readme.md) is
+  shown below its items, rendered; markdown files are rendered in the
+  preview. Its images come from the archive only, a link into the
+  archive opens the folder or selects the file, a link to another place
+  asks before it opens the browser.
+- A sealed .zx archive (signed generations) shows its state in the
+  status bar (Sealed, Not signed, Seal broken); a click lists who signed
+  each version and runs the full check. The version list marks each
+  version, and the README panel names the admin.
 - Settings: theme (system, light, dark), default format and level,
-  confirmations, and the desktop integration switches below.
+  confirmations, the README panel, and the desktop integration switches
+  below.
 
 ### Installing on Linux
 

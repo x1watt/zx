@@ -100,6 +100,32 @@ codecs (`LzmaCompressor`, `Lzma2Compressor`, `PpmdCompressor`, their
 decoder streams, `createFilterEncoder`, `Crc32`, `Crc64`, `Sha256`). They
 block while they work: do not call them on the UI isolate.
 
+### The README of an archive
+
+`ZxArchive.readmeIn(dir)` is the README of a folder (README.md,
+README.markdown, README.txt or README, any case), `readme(dir:)` reads and
+parses it in background isolates: a `ZxReadme` with the document
+(`MdDocument`: `MdHeading`, `MdParagraph`, `MdList`, `MdTable`... with
+`MdText`, `MdLink`, `MdImage`... inlines) and the links and images that
+can not work. `classifyReadmeUrl` says where a link or image points (an
+entry, a heading, another place, or blocked): an image is shown only from
+the archive. See docs/readme.md.
+
+### Signed generations
+
+`ZxOptions(signKey: 'nsec1...')` signs the new generation (a new archive
+is sealed with the key as its admin). `ZxArchive.seals({full})` checks the
+seals in a background isolate, without the password, and returns a
+`ZxGenerationSeal` per generation (state sealed, pending, broken or
+plain, signer, role, policy); `zxSealSummary` makes one line of them.
+`ZxArchive.sign(key, ...)` appends a signed generation with the same
+files: it activates sealing, changes the roles (maintainers, rule, a new
+admin with its acceptance) or signs the history. `generateSecretKey`,
+`publicKeyOf`, `npubEncode`, `nsecEncode`, `parsePublicKey`,
+`schnorrSign` and `schnorrVerify` are exported. For a database,
+`ZxDbStoreOptions(signer: key, sealEveryMicros: ...)`. See
+docs/zx-format.md section 17.
+
 ### In a Flutter app
 
 Call the API from anywhere; each operation runs in its own isolate.

@@ -13,6 +13,7 @@ import '../../util/xxhash.dart';
 import 'zx_codecs.dart';
 import 'zx_crypto.dart';
 import 'zx_format.dart';
+import 'zx_seal.dart' show zxPayloadCoreDigest;
 
 /// The check of type [type] over b[off, end).
 Uint8List zxComputeCheck(int type, Uint8List b, [int off = 0, int? end]) {
@@ -55,8 +56,12 @@ class ZxEncodeArg {
   /// The AES and MAC keys when the block is encrypted.
   final Uint8List? aesKey;
   final Uint8List? macKey;
+
+  /// Also compute the payload's core digest (a sealed archive: the
+  /// workers hash the payloads in parallel, see zx_seal.dart).
+  final bool digest;
   const ZxEncodeArg(this.data, this.coders, this.checkType,
-      [this.aesKey, this.macKey]);
+      [this.aesKey, this.macKey, this.digest = false]);
 }
 
 /// An encoded block, before its header: the chain's coders with their
@@ -68,8 +73,13 @@ class ZxEncodedBlock {
   final int unpackedSize;
   final int checkType;
   final Uint8List check;
+
+  /// The SHA-256 of the payload but its last 32 bytes, when asked
+  /// ([ZxEncodeArg.digest]).
+  final Uint8List? coreDigest;
   const ZxEncodedBlock(
-      this.coders, this.payload, this.unpackedSize, this.checkType, this.check);
+      this.coders, this.payload, this.unpackedSize, this.checkType, this.check,
+      [this.coreDigest]);
 
   SyncJobResult toResult() {
     final w = ZxBytes(64);
@@ -82,6 +92,9 @@ class ZxEncodedBlock {
       w.vint(c.props.length);
       w.bytes(c.props);
     }
+    final d = coreDigest;
+    w.u8(d == null ? 0 : 1);
+    if (d != null) w.bytes(d);
     return SyncJobResult(payload, w.toBytes());
   }
 
@@ -97,7 +110,8 @@ class ZxEncodedBlock {
       final ps = m.vint();
       coders.add(ZxCoder(id, Uint8List.fromList(m.bytes(ps))));
     }
-    return ZxEncodedBlock(coders, r.data, unpacked, ct, check);
+    final d = m.u8() == 1 ? Uint8List.fromList(m.bytes(32)) : null;
+    return ZxEncodedBlock(coders, r.data, unpacked, ct, check, d);
   }
 }
 
@@ -132,7 +146,8 @@ ZxEncodedBlock zxEncodeBlock(ZxEncodeArg a) {
     // copy: the store chain gives the input itself
     payload = ZxKeys(ak, mk).seal(Uint8List.fromList(payload));
   }
-  return ZxEncodedBlock(coders, payload, data.length, checkType, check);
+  return ZxEncodedBlock(coders, payload, data.length, checkType, check,
+      a.digest ? zxPayloadCoreDigest(payload) : null);
 }
 
 /// [zxEncodeBlock] as a [SyncJobFn].

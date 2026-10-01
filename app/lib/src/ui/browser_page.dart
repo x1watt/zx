@@ -36,6 +36,8 @@ import 'file_list.dart';
 import 'format_utils.dart';
 import 'panels.dart';
 import 'preview_pane.dart';
+import 'readme_view.dart';
+import 'seal_badge.dart';
 import 'data_view.dart';
 import 'settings_page.dart';
 import 'sidebar.dart';
@@ -1854,6 +1856,14 @@ class BrowserPageState extends State<BrowserPage> {
       '${v.number == latest ? '   (latest)' : ''}';
 
   /// The version selector of a zpaq archive in the status bar.
+  // a version's line in the picker, with its seal when the archive has
+  // seals
+  String _withSeal(String label, ZxArchive a, int number) {
+    final g = SealCache.generation(a, number);
+    if (g == null || g.state == ZxSealState.plain) return label;
+    return '$label  [${sealStateText(g)}]';
+  }
+
   Widget? _versionPicker(ArchiveModel m) {
     final root = m.root;
     final a = root.archive;
@@ -1880,7 +1890,7 @@ class BrowserPageState extends State<BrowserPage> {
             checked: v.number == cur,
             height: 34,
             child: Text(
-              versionLabel(v, a.numVersions),
+              _withSeal(versionLabel(v, a.numVersions), a, v.number),
               style: const TextStyle(fontSize: 13),
             ),
           ),
@@ -2090,6 +2100,12 @@ class BrowserPageState extends State<BrowserPage> {
             value: st.showPreview,
             onChanged: (v) => st.showPreview = v ?? true,
             child: const Text('Preview pane'),
+          ),
+          CheckboxMenuButton(
+            key: const Key('menu-show-readme'),
+            value: st.showReadme,
+            onChanged: (v) => st.showReadme = v ?? true,
+            child: const Text('README of the folder'),
           ),
           CheckboxMenuButton(
             key: const Key('menu-show-inner'),
@@ -2307,7 +2323,158 @@ class BrowserPageState extends State<BrowserPage> {
 
   /// The view of the folder shown: the file system or the archive, as
   /// details, icons or (a phone) large rows; the Data view of a .zx.
+  /// Whether the README panel under the items is open (docs/readme.md).
+  bool _readmeOpen = true;
+
+  /// The items of the current folder, with its README below them (the
+  /// archive's own description, docs/readme.md).
   Widget _mainView(bool narrow, ColorScheme cs) {
+    final view = _mainListView(narrow, cs);
+    final m = _model;
+    if (m == null ||
+        (_dataTab && _whyNotDb() == null) ||
+        !_s.settings.showReadme ||
+        m.filter.isNotEmpty) {
+      return view;
+    }
+    final readme = m.archive.readmeIn(m.dir);
+    if (readme == null) return view;
+    final header = Material(
+      color: cs.surfaceContainerLow,
+      child: InkWell(
+        key: const Key('readme-toggle'),
+        onTap: () => _update(() => _readmeOpen = !_readmeOpen),
+        child: SizedBox(
+          height: 30,
+          child: Row(
+            children: [
+              const SizedBox(width: 8),
+              Icon(
+                _readmeOpen
+                    ? Icons.expand_more_rounded
+                    : Icons.chevron_right_rounded,
+                size: 18,
+                color: cs.onSurfaceVariant,
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                Icons.menu_book_outlined,
+                size: 16,
+                color: cs.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  readme.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium!.copyWith(
+                    color: cs.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              // the admin of a sealed archive (its seals are checked)
+              FutureBuilder<List<ZxGenerationSeal>>(
+                future: SealCache.of(m.root.archive),
+                builder: (context, _) {
+                  final admin = SealCache.admin(m.root.archive);
+                  if (admin == null) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Tooltip(
+                      message: 'The admin of this sealed archive\n$admin',
+                      child: Text(
+                        'maintained by ${shortNpub(admin)}',
+                        key: const Key('readme-admin'),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(flex: 3, child: view),
+        Divider(height: 1, color: cs.outlineVariant),
+        header,
+        if (_readmeOpen) ...[
+          Divider(height: 1, color: cs.outlineVariant),
+          Expanded(
+            flex: 4,
+            child: ReadmeView(
+              key: ValueKey(('readme', m.archive, readme.path)),
+              archive: m.archive,
+              item: readme,
+              onInternal: (t) => _readmeInternal(m, t),
+              onExternal: _readmeExternal,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// A README link to an entry of the archive: a folder is opened, a file
+  /// is selected (and so previewed).
+  void _readmeInternal(ArchiveModel m, ReadmeInternal t) {
+    final item = t.path.isEmpty ? null : m.archive[t.path];
+    if (t.path.isEmpty || (item != null && item.isDir)) {
+      m.navigate(t.path);
+      return;
+    }
+    if (item == null) {
+      _snack('${t.url}: not in the archive');
+      return;
+    }
+    if (m.dir != item.parent) m.navigate(item.parent);
+    m.selectPaths([item.path]);
+  }
+
+  /// A README link to another place: opened only after the reader agrees.
+  Future<void> _readmeExternal(String url) async {
+    final r = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.open_in_new_rounded),
+        title: const Text('Open this link?'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: SelectableText(url, key: const Key('readme-link-url')),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'copy'),
+            child: const Text('Copy'),
+          ),
+          FilledButton(
+            key: const Key('readme-link-open'),
+            onPressed: () => Navigator.pop(context, 'open'),
+            child: const Text('Open'),
+          ),
+        ],
+      ),
+    );
+    if (r == null || !mounted) return;
+    if (r == 'open' && await _s.launcher.openUrl(url)) return;
+    await Clipboard.setData(ClipboardData(text: url));
+    if (mounted) _snack('Link copied');
+  }
+
+  Widget _mainListView(bool narrow, ColorScheme cs) {
     final m = _model;
     final grid = _s.settings.gridView;
     Widget withHint(Widget view, bool empty, String hint) => !empty
@@ -2749,6 +2916,8 @@ class BrowserPageState extends State<BrowserPage> {
                           child: PreviewPane(
                             model: m,
                             db: m.parent == null ? _db : null,
+                            onInternalLink: (t) => _readmeInternal(m, t),
+                            onExternalLink: _readmeExternal,
                           ),
                         ),
                       ],
@@ -2772,7 +2941,13 @@ class BrowserPageState extends State<BrowserPage> {
                   StatusBar(
                     model: m,
                     message: _busy ? 'Working...' : null,
-                    trailing: _versionPicker(m),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SealBadge(archive: m.root.archive),
+                        ?_versionPicker(m),
+                      ],
+                    ),
                   ),
               ],
             ),

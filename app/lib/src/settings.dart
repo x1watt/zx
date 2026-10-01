@@ -183,6 +183,7 @@ class Settings extends ChangeNotifier {
   int _defaultLevel = 5;
   bool _confirmDelete = true;
   bool _showPreview = true;
+  bool _showReadme = true;
   bool _openFolderAfterExtract = false;
   bool _showInnerFilesystems = false;
   ZxPrefs _zx = const ZxPrefs();
@@ -222,6 +223,9 @@ class Settings extends ChangeNotifier {
   int get defaultLevel => _defaultLevel;
   bool get confirmDelete => _confirmDelete;
   bool get showPreview => _showPreview;
+
+  /// The README of the folder (docs/readme.md) is shown below its items.
+  bool get showReadme => _showReadme;
   bool get openFolderAfterExtract => _openFolderAfterExtract;
 
   /// Archives open with their nested file systems as folders (a firmware
@@ -238,6 +242,7 @@ class Settings extends ChangeNotifier {
   set defaultLevel(int v) => _change(() => _defaultLevel = v.clamp(0, 9));
   set confirmDelete(bool v) => _change(() => _confirmDelete = v);
   set showPreview(bool v) => _change(() => _showPreview = v);
+  set showReadme(bool v) => _change(() => _showReadme = v);
   set openFolderAfterExtract(bool v) =>
       _change(() => _openFolderAfterExtract = v);
   set showInnerFilesystems(bool v) => _change(() => _showInnerFilesystems = v);
@@ -298,6 +303,7 @@ class Settings extends ChangeNotifier {
     'defaultLevel': _defaultLevel,
     'confirmDelete': _confirmDelete,
     'showPreview': _showPreview,
+    'showReadme': _showReadme,
     'openFolderAfterExtract': _openFolderAfterExtract,
     'showInnerFilesystems': _showInnerFilesystems,
     'zxCompression': _zx.toJson(),
@@ -323,6 +329,8 @@ class Settings extends ChangeNotifier {
     if (c is bool) _confirmDelete = c;
     final s = j['showPreview'];
     if (s is bool) _showPreview = s;
+    final rm = j['showReadme'];
+    if (rm is bool) _showReadme = rm;
     final o = j['openFolderAfterExtract'];
     if (o is bool) _openFolderAfterExtract = o;
     final n = j['showInnerFilesystems'];

@@ -57,7 +57,37 @@ export 'src/zx_api.dart'
         ZxItemError,
         ZxVersion,
         ZxFileVersion,
-        ZxUpdateResult;
+        ZxUpdateResult,
+        ZxReadme,
+        readmeMaxBytes;
+// Signed generations of .zx archives (docs/zx-format.md, "Seals") and
+// the NOSTR keys that sign them.
+export 'src/format/zx/zx_seal.dart'
+    show
+        ZxGenerationSeal,
+        ZxSealState,
+        ZxSeal,
+        ZxPolicy,
+        ZxWriteRule,
+        zxCheckSealsOfFile,
+        zxSealSummary,
+        zxAcceptSignature;
+export 'src/crypto/schnorr.dart'
+    show
+        generateSecretKey,
+        publicKeyOf,
+        isValidSecretKey,
+        isValidPublicKey,
+        schnorrSign,
+        schnorrVerify,
+        SchnorrException;
+export 'src/crypto/nip19.dart'
+    show npubEncode, nsecEncode, parsePublicKey, parseSecretKey;
+
+// The README of an archive (docs/readme.md).
+export 'src/readme/markdown.dart';
+export 'src/readme/readme.dart';
+export 'src/readme/readme_links.dart';
 export 'src/zx_estimate.dart' show ZxCompression, ZxEstimate;
 export 'src/cli/zx_zcm_auto.dart' show ZxAutoSpeed;
 export 'src/codec/zcm/zcm.dart'

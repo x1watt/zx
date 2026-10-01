@@ -18,6 +18,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../../common/method_props.dart';
+import '../../crypto/nip19.dart';
+import '../../crypto/schnorr.dart';
 import '../../crypto/sha256.dart';
 import '../../io/streams.dart';
 import '../../pool.dart' show defaultThreads;
@@ -32,6 +34,7 @@ import 'zx_dedup.dart' show zxMinChunkLog2, zxMaxChunkLog2;
 import 'zx_format.dart';
 import 'zx_lock.dart';
 import 'zx_reader.dart';
+import 'zx_seal.dart';
 import 'zx_writer.dart';
 
 /// POSIX file type bits.
@@ -122,7 +125,7 @@ ZxWriteLock? zxLockForUpdate(String path, ZxArchiveReader r) {
 }
 
 /// Whether the file at [path] holds a generation after [validEnd] (or was
-/// replaced by a shorter one): its last 32 bytes are a valid Footer past
+/// replaced by a shorter one): its last bytes are a valid Footer past
 /// [validEnd]. Bytes after [validEnd] without a Footer are an interrupted
 /// update.
 bool zxChangedSince(String path, int validEnd) {
@@ -190,6 +193,57 @@ class ZxHandlerOptions {
   bool methodSet = false;
   final List<String> _filters = [];
   final Map<int, String> _methods = {};
+
+  /// -mverify=strict: a sealed archive is shown as of its last generation
+  /// whose seal checks (a later one is broken or never signed).
+  bool verifyStrict = false;
+
+  /// The seal settings of the update (-msign and the role switches).
+  ZxSealOptions get seal => write.seal ??= ZxSealOptions();
+}
+
+/// A secret key of a switch value: an nsec or 64 hex digits, "@file" (the
+/// first line of the file), or empty for the environment variable ZX_NSEC
+/// (so that the key is not on the command line).
+Uint8List zxSecretKeyArg(String v, {String what = 'key'}) {
+  var s = v.trim();
+  if (s.isEmpty) {
+    s = Platform.environment['ZX_NSEC'] ?? '';
+    if (s.isEmpty) {
+      throw InvalidArgExceptionZx(
+          'zx: no $what (give nsec..., @file, or set ZX_NSEC)');
+    }
+  } else if (s.startsWith('@')) {
+    try {
+      s = File(s.substring(1)).readAsLinesSync().first;
+    } on Object {
+      throw InvalidArgExceptionZx('zx: can not read the $what file');
+    }
+  }
+  try {
+    final k = parseSecretKey(s);
+    if (!isValidSecretKey(k)) throw const FormatException('out of range');
+    return k;
+  } on FormatException catch (e) {
+    throw InvalidArgExceptionZx('zx: bad $what: ${e.message}');
+  }
+}
+
+/// Public keys of a switch value: npubs or hex keys, separated by commas.
+List<Uint8List> zxPublicKeysArg(String v) {
+  final out = <Uint8List>[];
+  for (final p in v.split(',')) {
+    if (p.trim().isEmpty) continue;
+    try {
+      final k = parsePublicKey(p);
+      if (!isValidPublicKey(k)) throw const FormatException('not on the curve');
+      out.add(k);
+    } on FormatException catch (e) {
+      throw InvalidArgExceptionZx('zx: bad public key $p: ${e.message}');
+    }
+  }
+  if (out.isEmpty) throw const InvalidArgExceptionZx('zx: no public key');
+  return out;
 }
 
 class _Cache {
@@ -265,6 +319,7 @@ class ZxHandler {
     }
     if (r == null) return false;
     _r = r;
+    if (options.verifyStrict && options.generation == null) _strict(r);
     // the file opened (a volume of a set counts alone, as ArchiveLink
     // compares it with the file)
     _phySize = stream.length;
@@ -464,6 +519,7 @@ class ZxHandler {
     ZxKpid.version,
     ZxKpid.wasted,
     ZxKpid.minReader,
+    ZxKpid.seal,
   ];
 
   // ---- properties
@@ -672,6 +728,9 @@ class ZxHandler {
       case ZxKpid.minReader:
         final v = r?.index.minReaderVersion ?? h?.minReaderVersion;
         return v == null ? null : zxVersionText(v);
+      case ZxKpid.seal:
+        if (r == null || r.header.multiVolume) return null;
+        return zxSealSummary(sealChecks());
       case Kpid.warning:
         final w = [
           ...?r?.warnings,
@@ -1187,6 +1246,66 @@ class ZxHandler {
         o.generation = ZxGenerationSelector.parse(str());
         continue;
       }
+      // signed generations (zx_seal.dart)
+      if (name == 'sign') {
+        o.seal.signer = zxSecretKeyArg(str());
+        continue;
+      }
+      if (name == 'seal') {
+        if (flag()) {
+          o.seal.activate = true;
+        } else {
+          o.seal.deactivate = true;
+        }
+        continue;
+      }
+      if (name == 'admin') {
+        o.seal.newAdmin = zxPublicKeysArg(str()).single;
+        continue;
+      }
+      if (name == 'adminkey') {
+        final k = zxSecretKeyArg(str(), what: 'new admin key');
+        o.seal.newAdminSecret = k;
+        o.seal.newAdmin ??= publicKeyOf(k);
+        continue;
+      }
+      if (name == 'adminaccept') {
+        final a = zxUnhex(str());
+        if (a == null || a.length != 64) {
+          invalidArg('zx: -madminaccept needs the 128 hex digits of the '
+              'acceptance signature');
+        }
+        o.seal.acceptance = a;
+        continue;
+      }
+      if (name == 'addmaintainer' || name == 'maintainer') {
+        o.seal.addMaintainers.addAll(zxPublicKeysArg(str()));
+        continue;
+      }
+      if (name == 'delmaintainer' || name == 'removemaintainer') {
+        o.seal.removeMaintainers.addAll(zxPublicKeysArg(str()));
+        continue;
+      }
+      if (name == 'writerule') {
+        final s = str().toLowerCase();
+        o.seal.rule = switch (s) {
+          'admin' => ZxWriteRule.admin,
+          'maintainers' || 'maintainer' => ZxWriteRule.maintainers,
+          _ => invalidArg('zx: -mwriterule=admin or maintainers'),
+        };
+        continue;
+      }
+      if (name == 'verify') {
+        final s = str().toLowerCase();
+        if (s == '' || s == 'strict' || s == 'on') {
+          o.verifyStrict = true;
+        } else if (s == 'off' || s == '-') {
+          o.verifyStrict = false;
+        } else {
+          invalidArg('zx: -mverify or -mverify=strict');
+        }
+        continue;
+      }
       if (name == 'timeline') {
         final t = str();
         if (t.isEmpty) invalidArg('zx: -mtimeline needs a path');
@@ -1411,6 +1530,91 @@ class ZxHandler {
       l++;
     }
     return l;
+  }
+
+  // ---- seals (zx_seal.dart)
+
+  List<ZxGenerationSeal>? _seals;
+
+  /// The seals from the last generation back to the activation (the
+  /// quick check: the Index hashes, signatures, chain and roles).
+  List<ZxGenerationSeal> sealChecks() {
+    final r = _r;
+    if (r == null) throw StateError('not open');
+    if (r.header.multiVolume) return const [];
+    return _seals ??= r.checkSeals();
+  }
+
+  /// The full check: also every byte of every sealed generation.
+  List<ZxGenerationSeal> verifySeals() {
+    final r = _r;
+    if (r == null) throw StateError('not open');
+    if (r.header.multiVolume) return const [];
+    return _seals = r.checkSeals(full: true);
+  }
+
+  // -mverify=strict: the last generation whose seal checks
+  void _strict(ZxArchiveReader r) {
+    if (r.header.multiVolume) return;
+    final gens = sealChecks();
+    if (gens.every((g) => g.state == ZxSealState.plain)) return;
+    final last = gens.last;
+    if (last.state == ZxSealState.sealed) return;
+    ZxGenerationSeal? ok;
+    for (final g in gens.reversed) {
+      if (g.state == ZxSealState.sealed) {
+        ok = g;
+        break;
+      }
+    }
+    if (ok == null) {
+      throw SevenZipException(
+          'zx: no generation of this archive has a valid seal '
+          '(${zxSealSummary(gens)})',
+          SevenZipError.headers);
+    }
+    r.warnings.add('zx: shown as of generation ${ok.generation}, the last '
+        'one with a valid seal (${zxSealSummary(gens)})');
+    r.selectGeneration(ZxGenerationSelector(number: ok.generation));
+  }
+
+  /// Appends to the archive at [path] a generation with the same files
+  /// and a Seal (-msign and the role switches of [options]): activates
+  /// sealing, changes the roles, or signs the history so far.
+  ZxWriteResult sealFile(String path, {String? password}) {
+    final r = _r;
+    if (r == null) throw StateError('not open');
+    _checkLatest(r);
+    if (r.header.multiVolume) {
+      throw const SevenZipException(
+          'zx: signed generations are not supported in volume sets',
+          SevenZipError.unsupported);
+    }
+    final o = _withPassword(options.write,
+        password ?? (r.header.kdf != null ? _password?.call() : null));
+    if (o.generationComment.isEmpty) o.generationComment = 'seal';
+    final lock = zxLockForUpdate(path, r);
+    try {
+      final f = _openAppend(path, r.validEnd);
+      try {
+        final wr = ZxWriter.append(r, o, ZxStreamSink(f, r.validEnd));
+        try {
+          for (final e in r.lastIndex.entries) {
+            wr.addKept(e);
+          }
+          final res = wr.finish();
+          f.flush();
+          return res;
+        } catch (_) {
+          wr.abort();
+          rethrow;
+        }
+      } finally {
+        f.close();
+      }
+    } finally {
+      lock?.release();
+    }
   }
 
   // ---- update
@@ -1888,6 +2092,24 @@ class ZxHandler {
     final pw = password ?? _password?.call();
     final before = r.header.multiVolume ? _totalSize : _phySize;
     if (!r.header.multiVolume) {
+      // a compaction rewrites the history: a sealed archive is sealed
+      // again by its admin (a new activation, with the same roles)
+      final ls = r.lastSeal?.seal;
+      ZxSealOptions? reseal;
+      if (ls != null && ls.policy.active) {
+        final key = options.write.seal?.signer;
+        if (key == null || zxHex(publicKeyOf(key)) != zxHex(ls.policy.admin)) {
+          throw const SevenZipException(
+              'zx: compacting a sealed archive rewrites its history: it '
+              'needs the admin key (-msign) to seal it again',
+              SevenZipError.unsupported);
+        }
+        reseal = ZxSealOptions()
+          ..signer = key
+          ..activate = true
+          ..rule = ls.policy.rule;
+        reseal.addMaintainers.addAll(ls.policy.maintainers);
+      }
       final tmp = '$path.zx-compact';
       onFile?.call(tmp);
       final f = FileOutStream.create(tmp);
@@ -1895,6 +2117,8 @@ class ZxHandler {
         zxCompact(r, keep, (h) => ZxStreamSink(f),
             password: pw, options: _compactOptions());
         f.flush();
+        f.close();
+        if (reseal != null) zxResealFile(tmp, reseal, pw);
       } catch (_) {
         f.close();
         try {
@@ -2267,10 +2491,10 @@ class ZxSeqReader {
         }
       } else if (getUint32LE(b4, 0) != zxBlockMarker && !resynced) {
         // a Footer?
-        final f = Uint8List(32);
+        final f = Uint8List(zxFooterSize);
         f.setRange(0, 4, b4);
-        final k = _read(f, 4, 28);
-        if (k == 28 && ZxFooter.tryParse(f, 0) != null) {
+        final k = _read(f, 4, zxFooterSize - 4);
+        if (k == zxFooterSize - 4 && ZxFooter.tryParse(f, 0) != null) {
           return (null, Uint8List(0));
         }
         for (var i = 4; i < 4 + k; i++) {
@@ -2571,5 +2795,32 @@ class ZxSeqReader {
   void skipData(int i) {
     if (i != _cur) _start(i);
     _drain();
+  }
+}
+
+/// Appends to the archive file [path] a generation with the same files and
+/// a Seal made with [so] (after a compaction, which rewrites the history).
+void zxResealFile(String path, ZxSealOptions so, String? pw) {
+  final raf = File(path).openSync();
+  try {
+    final r = ZxArchiveReader.open(
+        FileInStream(raf), ZxOpenParams(path: path, password: () => pw))!;
+    final o = ZxWriteOptions()
+      ..seal = so
+      ..password = pw
+      ..generationComment = 'seal';
+    final f = ZxHandler._openAppend(path, r.validEnd);
+    try {
+      final wr = ZxWriter.append(r, o, ZxStreamSink(f, r.validEnd));
+      for (final e in r.lastIndex.entries) {
+        wr.addKept(e);
+      }
+      wr.finish();
+      f.flush();
+    } finally {
+      f.close();
+    }
+  } finally {
+    raf.closeSync();
   }
 }

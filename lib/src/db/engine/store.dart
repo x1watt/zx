@@ -18,13 +18,16 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../../codec/lzma/lzma2_dec.dart' show lzma2DictSizeFromProp;
+import '../../crypto/schnorr.dart' show publicKeyOf;
 import '../../crypto/sha256.dart';
 import '../../format/zx/zx_blocks.dart';
 import '../../format/zx/zx_codecs.dart';
 import '../../format/zx/zx_crypto.dart';
 import '../../format/zx/zx_format.dart';
 import '../../format/zx/zx_lock.dart';
+import '../../format/zx/zx_handler.dart' show zxResealFile;
 import '../../format/zx/zx_reader.dart';
+import '../../format/zx/zx_seal.dart';
 import '../../format/zx/zx_writer.dart';
 import '../../io/streams.dart';
 import '../../pool.dart' show defaultThreads;
@@ -115,6 +118,17 @@ class ZxDbStoreOptions {
   /// a full Index.
   int indexCheckpointCommits;
 
+  /// The secret key that signs the commits of a sealed archive
+  /// (docs/zx-format.md, signed generations): its admin or a maintainer.
+  /// Without it a commit to a sealed archive is pending (unsigned) until
+  /// a later generation is signed.
+  Uint8List? signer;
+
+  /// Sign at most every this many microseconds (0: every commit). The
+  /// commits in between are pending; closing the store signs the last
+  /// one. A signature costs a few milliseconds.
+  int sealEveryMicros;
+
   ZxDbStoreOptions(
       {this.pageCacheBytes = 128 << 20,
       this.blockCacheBytes = 32 << 20,
@@ -136,7 +150,9 @@ class ZxDbStoreOptions {
       this.lsmMemBytes = 32 << 20,
       this.lsmMaxRuns = 20,
       this.lsmFoldRatio = 0.5,
-      this.lsmFoldMin = 65536})
+      this.lsmFoldMin = 65536,
+      this.signer,
+      this.sealEveryMicros = 0})
       : threads = threads ?? defaultThreads();
 }
 
@@ -270,7 +286,13 @@ class _Head {
   /// Every generation, the last one located.
   final List<ZxGeneration> gens;
   final DbView view;
-  _Head(this.index, this.loc, this.end, this.gens, this.view);
+
+  /// The Seal of the last generation (signed generations), or null.
+  final ZxLastSeal? seal;
+  _Head(this.index, this.loc, this.end, this.gens, this.view, [this.seal]);
+
+  /// Sealing is active: each commit writes a Seal.
+  bool get sealing => seal?.seal.policy.active ?? false;
 
   int get number => gens.last.number;
   int get time => gens.last.time;
@@ -333,6 +355,9 @@ class ZxDbStore implements ZxStore {
       ..password = _password
       ..threads = 1
       ..generationComment = 'database created';
+    // a new archive with a key is sealed from the start, the key its admin
+    final key = options.signer;
+    if (key != null) o.seal = ZxSealOptions()..signer = key;
     final clock = options.clock;
     if (clock != null) o.time = clock();
     final f = FileOutStream.create(tmp);
@@ -404,7 +429,7 @@ class ZxDbStore implements ZxStore {
       _file = file;
       _indexes.clear();
       _head = _Head(r.lastIndex, r.lastIndexLoc, r.validEnd, gens,
-          DbView(file, r.lastIndex.database));
+          DbView(file, r.lastIndex.database), r.lastSeal);
       _statSize = st.size;
       _statTime = st.modified;
     } catch (_) {
@@ -480,7 +505,7 @@ class ZxDbStore implements ZxStore {
     _file.blocks.clear();
     _file.maps.clear();
     _head = _Head(_head.index, _head.loc, _head.end, _head.gens,
-        DbView(_file, _head.index.database));
+        DbView(_file, _head.index.database), _head.seal);
   }
 
   /// Bytes of pages in the write buffer (not folded).
@@ -601,6 +626,13 @@ class ZxDbStore implements ZxStore {
     if (_closed) return;
     final t = _txn;
     if (t != null && !t._closed) t.rollback();
+    if (_pendingSeal && options.signer != null && !readOnly) {
+      try {
+        sealNow();
+      } on ZxDbException catch (e) {
+        warnings.add('zx: the last commits were not signed: ${e.message}');
+      }
+    }
     _closed = true;
     _file.close();
     for (final f in _oldFiles) {
@@ -615,12 +647,42 @@ class ZxDbStore implements ZxStore {
     return t;
   }
 
+  /// Signs the last generation of a sealed archive when it is pending
+  /// (written without signing, see [ZxDbStoreOptions.sealEveryMicros]):
+  /// appends a generation with the same data and a signed Seal. Returns
+  /// its number, or null when there was nothing to sign.
+  int? sealNow({int waitMs = 5000}) {
+    _checkOpen();
+    if (options.signer == null || readOnly) return null;
+    final lock = ZxWriteLock.tryAcquire(path, waitMs: waitMs);
+    if (lock == null) {
+      throw const ZxDbException(
+          'another writer holds the archive', ZxDbError.busy);
+    }
+    try {
+      _refresh(force: true);
+      final s = _head.seal?.seal;
+      final root = _head.index.database;
+      if (s == null || !_head.sealing || s.isSigned || root == null) {
+        _pendingSeal = false;
+        return null;
+      }
+      final w = _GenWriter(this, _openRaf(), _head.end, _sealPlan(force: true));
+      return _appendGeneration('seal', (_) => root, writer: w);
+    } finally {
+      lock.release();
+    }
+  }
+
   // ---- writing a generation
 
   // a writer of blocks after the last valid Footer; an interrupted
   // commit left bytes after it: they are cut (dart:io's append mode
   // positions at the end once, at open)
-  _GenWriter _openWriter() {
+  _GenWriter _openWriter() =>
+      _GenWriter(this, _openRaf(), _head.end, _sealPlan());
+
+  RandomAccessFile _openRaf() {
     final end = _head.end;
     final raf = File(path).openSync(mode: FileMode.append);
     try {
@@ -630,7 +692,47 @@ class ZxDbStore implements ZxStore {
       raf.closeSync();
       rethrow;
     }
-    return _GenWriter(this, raf, end);
+    return raf;
+  }
+
+  // when the last signed Seal was written (sealEveryMicros)
+  final Stopwatch _sinceSigned = Stopwatch();
+  bool _pendingSeal = false;
+
+  // the Seal plan of the next generation (null when sealing is off)
+  ZxSealPlan? _sealPlan({bool force = false}) {
+    final head = _head;
+    if (!head.sealing) return null;
+    final key = options.signer;
+    final sign = key != null &&
+        (force ||
+            options.sealEveryMicros <= 0 ||
+            !_sinceSigned.isRunning ||
+            _sinceSigned.elapsedMicroseconds >= options.sealEveryMicros);
+    try {
+      final plan = ZxSealPlan.make(
+          archiveId: _file.header.archiveId,
+          dataStart: head.end,
+          generation: head.number + 1,
+          last: head.seal,
+          options: ZxSealOptions()..signer = sign ? key : null);
+      if (plan != null && sign) {
+        _sinceSigned
+          ..reset()
+          ..start();
+      }
+      _pendingSeal = plan != null && !sign;
+      if (plan != null && !sign && key == null) {
+        if (!warnings.any((w) => w.contains('pending'))) {
+          warnings.add('zx: this archive is sealed and the commits are not '
+              'signed (no key): they stay pending until an allowed key '
+              'signs a later generation');
+        }
+      }
+      return plan;
+    } on SevenZipException catch (e) {
+      throw ZxDbException(e.message, ZxDbError.generic);
+    }
   }
 
   /// Appends a generation whose database root is made by [build] (which
@@ -690,6 +792,7 @@ class ZxDbStore implements ZxStore {
         final d = idx.encodeDelta(baseLoc, baseGen);
         if (d.length * 2 + 256 < baseLoc.size) delta = d;
       }
+      w.beginIndex();
       if (delta != null) {
         idx.base = baseLoc;
         idx.baseGeneration = baseGen;
@@ -702,13 +805,21 @@ class ZxDbStore implements ZxStore {
         idx.chunkRuns = ZxChunkRuns(idx.blockTableHash, runs.runs);
       }
       final size = w.pos - start;
-      w.write(ZxFooter(start, size, idx.blocks.length).encode());
+      final sealBytes = w.seal(number);
+      ZxLastSeal? seal;
+      if (sealBytes != null) {
+        w.writeRaw(sealBytes);
+        seal = ZxLastSeal(ZxSeal.parse(sealBytes, _file.header.archiveId),
+            w.pos + zxFooterSize);
+      }
+      w.writeRaw(
+          ZxFooter(start, size, head.end, sealBytes?.length ?? 0).encode());
       w.flush();
       if (options.durable) raf.flushSync();
       final loc = ZxIndexLoc(0, start, size);
       _file.addChains(idx.chains);
       final gens = [...head.gens, gen.at(loc)];
-      _head = _Head(idx, loc, w.pos, gens, DbView(_file, root));
+      _head = _Head(idx, loc, w.pos, gens, DbView(_file, root), seal);
       final st = FileStat.statSync(path);
       _statSize = st.size;
       _statTime = st.modified;
@@ -1000,8 +1111,8 @@ class ZxDbStore implements ZxStore {
           }
           tickets.add(pool.submit(
               zxEncodeBlockJob,
-              ZxEncodeArg(
-                  data, g.specs, options.checkType, k?.aesKey, k?.macKey)));
+              ZxEncodeArg(data, g.specs, options.checkType, k?.aesKey,
+                  k?.macKey, _head.sealing)));
         }
         groups[i].encoded = ZxEncodedBlock.fromResult(pool.take(tickets[i]));
       }
@@ -1086,6 +1197,25 @@ class ZxDbStore implements ZxStore {
     }
     try {
       _refresh(force: true);
+      // a compaction rewrites the history: a sealed archive is sealed again
+      // by its admin (a new activation with the same roles)
+      ZxSealOptions? reseal;
+      final ls = _head.seal?.seal;
+      if (ls != null && ls.policy.active) {
+        final key = options.signer;
+        if (key == null ||
+            zxHex(publicKeyOf(key)) != zxHex(ls.policy.admin)) {
+          throw const ZxDbException(
+              'vacuum rewrites the history of a sealed archive: it needs '
+              'the admin key to seal it again',
+              ZxDbError.unsupported);
+        }
+        reseal = ZxSealOptions()
+          ..signer = key
+          ..activate = true
+          ..rule = ls.policy.rule;
+        reseal.addMaintainers.addAll(ls.policy.maintainers);
+      }
       _foldLocked(recompress || ultra, ultra ? 'ultra' : null);
       final before = File(path).lengthSync();
       final tmp = '$path.zx-compact';
@@ -1111,6 +1241,7 @@ class ZxDbStore implements ZxStore {
           rethrow;
         }
         f.close();
+        if (reseal != null) zxResealFile(tmp, reseal, _password);
       } finally {
         raf.closeSync();
       }
@@ -1152,14 +1283,48 @@ class _GenWriter {
   final Map<int, ZxChain> newChains = {};
   final BytesBuilder _buf = BytesBuilder(copy: false);
 
-  _GenWriter(this.s, this.raf, this.pos);
+  /// The Seal of this generation (signed generations), or null.
+  final ZxSealPlan? plan;
+  Sha256? _index;
+
+  _GenWriter(this.s, this.raf, this.pos, this.plan);
 
   ZxKeys? get keys => s._file.keys;
 
+  /// The block workers also hash the payloads (a sealed archive).
+  bool get digest => plan != null;
+
+  /// Bytes of this generation (hashed for its Seal).
   void write(Uint8List b) {
+    final p = plan;
+    if (p != null) {
+      final i = _index;
+      if (i != null) {
+        i.update(b);
+      } else {
+        p.hasher.add(b);
+      }
+    }
+    writeRaw(b);
+  }
+
+  /// Bytes outside the hashed ones (the Seal, the Footer).
+  void writeRaw(Uint8List b) {
     _buf.add(b);
     pos += b.length;
     if (_buf.length >= (1 << 20)) flush();
+  }
+
+  /// The next bytes are the Index.
+  void beginIndex() {
+    if (plan != null) _index = Sha256();
+  }
+
+  /// The Seal of generation [number], or null when sealing is off.
+  Uint8List? seal(int number) {
+    final p = plan;
+    if (p == null) return null;
+    return p.build(number, _index!.digest());
   }
 
   void flush() {
@@ -1201,7 +1366,8 @@ class _GenWriter {
       o += p.length;
     }
     final k = keys;
-    return ZxEncodeArg(data, specs, s.options.checkType, k?.aesKey, k?.macKey);
+    return ZxEncodeArg(
+        data, specs, s.options.checkType, k?.aesKey, k?.macKey, digest);
   }
 
   /// Writes an encoded group of pages of [lengths]; returns their places.
@@ -1215,6 +1381,8 @@ class _GenWriter {
     final at = pos;
     final size = hdr.length + enc.payload.length;
     write(hdr);
+    final cd = enc.coreDigest;
+    if (cd != null) plan?.hasher.hint(enc.payload, cd);
     write(enc.payload);
     final flags = (unfolded ? ZxDbLoc.unfolded : 0) | (tag << 16);
     final out = <ZxDbLoc>[];

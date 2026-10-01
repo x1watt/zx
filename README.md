@@ -79,6 +79,13 @@ SELECT path, distance FROM similar('report-final.pdf', 20);
 - **A format that never goes stale**: `.zx` names its codecs per block
   and states the oldest zx that can read it.
 - **Volumes across several disks**, encryption, parallel blocks.
+- **Signed with NOSTR keys**: an admin and maintainers (npubs) sign each
+  version; anyone can check, without the password, that nothing was
+  changed after them (`zx seal`, `-msign`; docs/zx-format.md section 17).
+- **Archives that describe themselves**: a `README.md` inside is shown
+  when the archive (or a folder of it) is opened, with its images read
+  from the archive itself; links out are allowed, fetching is not
+  ([docs/readme.md](docs/readme.md), `zx readme -check`).
 - **A file explorer** for desktop and Android that walks into archives.
 - **Pure Dart**: no native code, runs wherever Dart runs.
 
@@ -122,6 +129,8 @@ The syntax is 7-Zip's: if you know `7z`, you know `zx`.
 | `i` | supported formats and codecs |
 | `b` | benchmark |
 | `sql` | run SQL on a `.zx` database (zx extension) |
+| `readme` | show or check the README of an archive (zx extension) |
+| `seal` | show, check and sign the seals of a `.zx` archive (zx extension) |
 
 Common switches (all of 7-Zip's work):
 
@@ -153,6 +162,7 @@ zx extensions (not in 7-Zip):
 | `-mvdir=DIR[:SIZE\|:full]` | write volumes to several folders/disks in order |
 | `-mvsearch=DIR` | where to look for volumes when reading |
 | `-mmemuse=SIZE` | cap the memory of parallel workers |
+| `-msign=KEY` | sign the new .zx generation with a NOSTR key (nsec, @file, or $ZX_NSEC) |
 
 ### Examples
 
@@ -187,6 +197,14 @@ zx l disk.img                             # partitions; zx l -snest for files
 zx sql backup.zx "SELECT path, size FROM zx_files ORDER BY size DESC LIMIT 10"
 zx sql backup.zx "SELECT path, distance FROM similar('docs/report.pdf', 20)"
 zx sql notes.zx                           # interactive shell, like sqlite3
+
+# Signed versions (NOSTR keys)
+zx a -msign=@admin.nsec book.zx chapters/ # sealed: the key is the admin
+zx seal -full book.zx                     # who signed what; was it changed?
+
+# The README of an archive
+zx readme project.zx                      # the README.md at its top
+zx readme -check -all project.zx          # images and links stay inside
 ```
 
 Full reference of every switch: [docs/cli.md](docs/cli.md).
@@ -406,7 +424,7 @@ Heavy work runs in worker isolates, never on the UI isolate. API guide:
 - [docs/performance.md](docs/performance.md): every number, with the
   method to reproduce it.
 - [docs/zx-format.md](docs/zx-format.md), [docs/zxdb-sql.md](docs/zxdb-sql.md),
-  [docs/cli.md](docs/cli.md).
+  [docs/cli.md](docs/cli.md), [docs/readme.md](docs/readme.md).
 
 Tests (`dart test`, `cd app && flutter test`) compare against the real
 tools wherever they exist: 7z, xz, zip/unzip, tar, gzip, bzip2, rar and
@@ -437,6 +455,7 @@ zx stands on the work of many people. Every file names its sources.
 | paq8, lpaq | **Matt Mahoney**, **Alexander Rhatushnyak**, **Serge Osnach** |
 | paq8px models (text, image, audio, x86, SSE...) | **Jan Ondrus**, **Marcio Pais**, **Andrew Epstein**, **Zoltan Gotthardt**, **Sebastian Lehmann** and the paq8px authors; **Florin Ghido** (audio predictor) |
 | cmix: LSTM, byte mixer, dictionary | **Byron Knoll** |
+| BIP-340 Schnorr signatures | **Pieter Wuille**, **Jonas Nick**, **Tim Ruffing** (port from Arca) |
 
 The full notices are in [LICENSE](LICENSE). 7-Zip is a registered
 trademark of Igor Pavlov; zx is not affiliated with or endorsed by him.

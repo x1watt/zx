@@ -13,6 +13,7 @@ import '../archive_model.dart';
 import '../db_session.dart';
 import '../dialogs/db_dialogs.dart';
 import 'format_utils.dart';
+import 'readme_view.dart';
 
 const _maxPreviewBytes = 512 * 1024;
 const _maxTextChars = 64 * 1024;
@@ -23,7 +24,17 @@ class PreviewPane extends StatefulWidget {
   /// The archive's database: the file's metadata is shown above the
   /// preview.
   final DbSession? db;
-  const PreviewPane({super.key, required this.model, this.db});
+
+  /// The links of a rendered markdown file (see [ReadmeView]).
+  final void Function(ReadmeInternal target)? onInternalLink;
+  final void Function(String url)? onExternalLink;
+  const PreviewPane({
+    super.key,
+    required this.model,
+    this.db,
+    this.onInternalLink,
+    this.onExternalLink,
+  });
 
   @override
   State<PreviewPane> createState() => _PreviewPaneState();
@@ -33,6 +44,7 @@ enum _Kind {
   none,
   loading,
   text,
+  markdown,
   image,
   binary,
   error,
@@ -49,6 +61,9 @@ class _PreviewPaneState extends State<PreviewPane> {
   ZxCancelToken? _cancel;
   Timer? _debounce;
   int _gen = -1;
+
+  /// Markdown files are shown as text instead of rendered.
+  bool _markdownRaw = false;
 
   @override
   void initState() {
@@ -97,6 +112,11 @@ class _PreviewPaneState extends State<PreviewPane> {
     }
     if (item.encrypted && m.archive.password == null) {
       _set(_Kind.encrypted);
+      return;
+    }
+    if (!_markdownRaw && isMarkdownName(item.name)) {
+      // rendered by ReadmeView, which reads it
+      _set(_Kind.markdown);
       return;
     }
     _set(_Kind.loading);
@@ -234,6 +254,15 @@ class _PreviewPaneState extends State<PreviewPane> {
             ),
           ),
         );
+      case _Kind.markdown:
+        body = ReadmeView(
+          key: ValueKey(('preview-md', widget.model.archive, item!.path)),
+          archive: widget.model.archive,
+          item: item,
+          padding: const EdgeInsets.all(12),
+          onInternal: widget.onInternalLink,
+          onExternal: widget.onExternalLink,
+        );
       case _Kind.text:
         body = Scrollbar(
           child: SingleChildScrollView(
@@ -269,14 +298,40 @@ class _PreviewPaneState extends State<PreviewPane> {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           color: cs.surfaceContainerLow,
           alignment: Alignment.centerLeft,
-          child: Text(
-            item == null ? 'Preview' : item.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.labelMedium!.copyWith(
-              color: cs.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  item == null ? 'Preview' : item.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium!.copyWith(
+                    color: cs.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              if (item != null && !item.isDir && isMarkdownName(item.name))
+                IconButton(
+                  key: const Key('preview-md-toggle'),
+                  tooltip: _markdownRaw ? 'Show rendered' : 'Show text',
+                  iconSize: 16,
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 28,
+                    height: 28,
+                  ),
+                  icon: Icon(
+                    _markdownRaw ? Icons.article_outlined : Icons.code_rounded,
+                  ),
+                  onPressed: () {
+                    _markdownRaw = !_markdownRaw;
+                    _item = null;
+                    _onModel();
+                  },
+                ),
+            ],
           ),
         ),
         Divider(height: 1, color: cs.outlineVariant),

@@ -1154,3 +1154,65 @@ not apply).
   killed while it holds the writer lock leaves its marker; the other
   isolates of that process then wait until the process ends.
 
+## 18. The README of an archive (zx extension)
+
+An archive describes itself with a README entry (docs/readme.md). It is
+not part of any format: the README is an ordinary file, found by name in
+the listing, so every format carries one.
+
+- `lib/src/readme/`: new code (no C source, so no function names to
+  keep), synchronous and pure Dart (`dart:convert` and `dart:typed_data`
+  only). `markdown.dart` parses the GitHub flavored subset into plain
+  objects (`MdDocument`), so the parse can run in an isolate and the
+  result come back by copy. Raw HTML is dropped, except `<img>` (an
+  `MdImage`) and `<br>`. `readme_links.dart` is the rule that keeps a
+  README inside its archive (`classifyReadmeUrl`): images only from
+  entries, links to other places only http, https and mailto, no path
+  above the top. `checkReadme` reports what breaks the rule.
+- `ZxArchive.readme` / `readmeOf`: the bytes come from `readBytes` (the
+  worker isolate, at most 1 MiB), the parse runs in `Isolate.run`, and
+  only the check (a walk over the links, with the cached path map) runs on
+  the caller's isolate.
+- `zx readme` (`lib/src/cli/readme_command.dart`) opens the archive with
+  the same `ArchiveLink` as `l` and reads the one item through an extract
+  callback into memory.
+- The app (`ui/readme_view.dart`) renders the document with widgets. It
+  has no network code at all: images are `Image.memory` of bytes read
+  from the archive, and an image from elsewhere shows its description. A
+  link to another place goes through `Launcher.openUrl` after the reader
+  confirms it. A test (`app/test/readme_view_test.dart`) fails when the
+  view or `lib/src/readme` mentions a network API.
+
+## 19. Seals: signed generations (zx extension)
+
+Optional NOSTR signatures over the generations of a .zx archive
+(docs/zx-format.md section 17), so that anyone, without the password,
+sees whether the archive was changed after its admin or a maintainer
+signed it.
+
+- `lib/src/crypto/schnorr.dart` (BIP-340 on secp256k1) and `nip19.dart`
+  (npub, nsec) are ported from Arca's `arca_core` (same author), with
+  zx's SHA-256 and a precomputed table for the generator. New code with
+  no C source, pure Dart on BigInt; not constant time (secret keys are
+  used only by the machine that signs).
+- `format/zx/zx_seal.dart` holds the whole feature: the policy and the
+  Seal encoding, `ZxPieceHasher` (the data hash, fed block by block and
+  used by both the writer and the checker, so the two can not disagree),
+  `ZxSealPlan` (what a writer must write: the rules for activation,
+  changes of roles, acceptance of a new admin, refusing keys that may not
+  sign), `ZxSealSink` (a `ZxSink` that feeds the hasher) and
+  `zxCheckSeals` (the walk back through the Footers' `data_start`, then
+  the chain, signatures and roles forward).
+- Writers: `ZxWriter.create` / `append` wrap their sink when sealing is
+  active and ask the block workers for the payload digest
+  (`ZxEncodeArg.digest`); the zxdb store does the same in `_GenWriter`
+  (and signs at most every `sealEveryMicros`, the last commit at close);
+  a compaction or a vacuum seals its output again with the admin's key.
+- Readers need nothing new to read a sealed archive. `ZxArchiveReader`
+  exposes the last Seal and `checkSeals`; `zxCheckSealsOfFile` reads only
+  the Header, Footers, Seals and (full check) the stored bytes, so it
+  works without the password. The handler shows the state as the archive
+  property `Seal` (`l -slt`) and opens with `-mverify=strict` as of the
+  last generation whose seal checks.
+- Not supported: volume sets (refused when sealing).
+

@@ -8,6 +8,7 @@
 // questions of the operation (password, overwrite).
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -16,7 +17,12 @@ import 'api.dart';
 import 'cli/nest.dart' show NestNodeSpec;
 import 'io/streams.dart';
 import 'format/zx/zx_writer.dart' show ZxVolumeDir;
+import 'readme/markdown.dart' show MdDocument;
+import 'readme/readme.dart';
+import 'readme/readme_links.dart' show ReadmeIssue, checkReadme;
 import 'util/tlsh.dart' show tlshDistance;
+import 'format/zx/zx_seal.dart'
+    show ZxGenerationSeal, ZxSealState, ZxWriteRule, zxCheckSealsOfFile;
 import 'zx_estimate.dart';
 import 'zx_worker.dart';
 
@@ -267,6 +273,29 @@ class ZxCapabilities {
 
 /// An item that could not be extracted or tested (or a link that was not
 /// created).
+/// A README of an archive ([ZxArchive.readme]).
+class ZxReadme {
+  /// The file.
+  final ZxItem item;
+
+  /// Its folder: the relative links and images start there.
+  final String baseDir;
+  final MdDocument doc;
+
+  /// The links and images that can not work (images from outside the
+  /// archive are never shown).
+  final List<ReadmeIssue> issues;
+  const ZxReadme(this.item, this.baseDir, this.doc, this.issues);
+}
+
+// Top level, so that the closure sent to the isolate holds only these.
+Future<MdDocument> _parseReadmeInIsolate(
+        String name, Uint8List bytes, bool truncated) =>
+    Isolate.run(() => parseReadme(name, bytes, truncated: truncated));
+
+/// The part of a README that [ZxArchive.readme] reads.
+const int readmeMaxBytes = 1 << 20;
+
 class ZxItemError {
   final String path;
   final SevenZipError kind;
@@ -394,6 +423,12 @@ class ZxOptions {
   /// available memory, and at most the available memory minus 1.5 GiB.
   final int? memoryLimit;
 
+  /// .zx: the NOSTR key (an nsec or 64 hex digits) that signs the new
+  /// generation (signed generations, docs/zx-format.md "Seals"): the
+  /// archive's admin or a maintainer. A new archive is sealed with it, the
+  /// key its admin.
+  final String? signKey;
+
   const ZxOptions({
     this.level,
     this.method,
@@ -408,6 +443,7 @@ class ZxOptions {
     this.compression,
     this.dedup,
     this.memoryLimit,
+    this.signKey,
   });
 }
 
@@ -967,6 +1003,39 @@ class ZxArchive {
     }
   }
 
+  /// The README of the folder [dir] ('' for the top of the archive): the
+  /// file README.md (or README.markdown, README.txt, README, in any case)
+  /// directly inside it, or null. See docs/readme.md.
+  ZxItem? readmeIn(String dir) {
+    final files = <String, ZxItem>{};
+    for (final i in children(dir)) {
+      if (!i.isDir) files[i.name] = i;
+    }
+    final n = pickReadme(files.keys);
+    return n == null ? null : files[n];
+  }
+
+  /// The README of the folder [dir], parsed (null when it has none, see
+  /// [readmeIn]). The first [readmeMaxBytes] bytes are read; the parsing
+  /// runs in a background isolate.
+  Future<ZxReadme?> readme({String dir = '', ZxCancelToken? cancel}) async {
+    final item = readmeIn(dir);
+    return item == null ? null : readmeOf(item, cancel: cancel);
+  }
+
+  /// The file [item] parsed as a README (markdown for a .md name, text
+  /// otherwise), with the links and images that can not work (see
+  /// [checkReadme]).
+  Future<ZxReadme> readmeOf(ZxItem item, {ZxCancelToken? cancel}) async {
+    final bytes =
+        await readBytes(item, maxBytes: readmeMaxBytes, cancel: cancel);
+    final doc = await _parseReadmeInIsolate(
+        item.name, bytes, bytes.length >= readmeMaxBytes);
+    final base = item.parent;
+    final issues = checkReadme(doc, base, (p) => this[p] != null);
+    return ZxReadme(item, base, doc, issues);
+  }
+
   /// The data of one file (at most [maxBytes] bytes, the start of the file,
   /// for previews). Throws [SevenZipException] on a data error or a wrong
   /// password (unless [maxBytes] was reached before the error).
@@ -1077,6 +1146,59 @@ class ZxArchive {
         onPassword: onPassword);
     _set(l);
     return freed;
+  }
+
+  /// .zx: the seals of the archive (signed generations, docs/zx-format.md
+  /// "Seals"), from its last generation back to the activation: the Index
+  /// hashes, signatures, chain and roles are checked, and with [full]
+  /// every stored byte (one pass over the file). No password is needed.
+  /// Empty for a volume set; all [ZxSealState.plain] for an archive that
+  /// was never sealed.
+  Future<List<ZxGenerationSeal>> seals({bool full = false}) async {
+    _needZx('seals');
+    final p = path;
+    return Isolate.run(() => zxCheckSealsOfFile(p, full: full));
+  }
+
+  /// .zx: appends a generation with the same files, signed with [key] (an
+  /// nsec or 64 hex digits): it signs the history so far, or with
+  /// [activate] starts sealing ([key] becomes the admin). The admin can
+  /// also switch sealing off ([deactivate]), add and remove maintainers
+  /// (npubs or hex keys), set who may sign ([rule]), and hand the admin
+  /// role to [newAdmin], who accepts it with its key ([newAdminKey]) or
+  /// its acceptance signature ([acceptance], 128 hex digits). Returns the
+  /// number of the new generation.
+  Future<int> sign(String key,
+      {bool activate = false,
+      bool deactivate = false,
+      List<String> addMaintainers = const [],
+      List<String> removeMaintainers = const [],
+      ZxWriteRule? rule,
+      String? newAdmin,
+      String? newAdminKey,
+      String? acceptance,
+      ZxCancelToken? cancel}) async {
+    _needZx('seals');
+    final props = [
+      ['sign', key],
+      if (activate) ['seal', 'on'],
+      if (deactivate) ['seal', 'off'],
+      if (addMaintainers.isNotEmpty) ['addmaintainer', addMaintainers.join(',')],
+      if (removeMaintainers.isNotEmpty)
+        ['delmaintainer', removeMaintainers.join(',')],
+      if (rule != null) ['writerule', rule.name],
+      if (newAdmin != null) ['admin', newAdmin],
+      if (newAdminKey != null) ['adminkey', newAdminKey],
+      if (acceptance != null) ['adminaccept', acceptance],
+    ];
+    final req = ZxZxRequest(path, password, onPassword != null, ZxZxOp.seal,
+        jsonEncode(props), searchDirs);
+    final (l, gen) = await _zxRun<(ZxListing, int)>(
+        (ops) => workerZx(req, ops),
+        cancel: cancel,
+        onPassword: onPassword);
+    _set(l);
+    return gen;
   }
 
   /// .zx: every version of the file at [path] across the generations,

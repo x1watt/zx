@@ -112,6 +112,35 @@ chunk. On 100 MB of random data stored (`-mx0`, one thread, without TLSH)
 the write takes 1.82 s with dedup against 0.95 s without, so chunking and
 hashing run at about 115 MB/s, far above the LZMA2 workers.
 
+### .zx, seals (signed generations)
+
+AOT, 16 threads, this machine; 35.5 MB of Dart source and 40 MB of
+random data (41.2 MB archive), each time the mean of 5 runs, without and
+with `-msign` (docs/zx-format.md section 17):
+
+| write | plain | signed | cost |
+|---|---|---|---|
+| `-mx5` (LZMA2) | 6.93 s | 6.96 s | +0.4% |
+| `-mx0` (store) | 2.89 s | 3.01 s | +4.4% |
+
+| read | time |
+|---|---|
+| open and list (the Seal is not read) | 0.01 s |
+| `zx seal` (the quick check: Index hashes, signatures, chain, roles) | 0.01 s |
+| `zx seal -full` (every stored byte, no password) | 0.33 s |
+
+The block workers hash each payload right after coding it (the "core"
+digest, in parallel); the writer's isolate hashes only the block headers,
+the last 32 bytes of each payload and the small blocks it writes itself
+(inline records, the Index): about 4.5 KB of a 1.2 MB archive in a test
+with one 35 MB file. SHA-256 runs at about 130 MB/s per isolate here
+(BLAKE2sp, measured for the choice, at 107 MB/s), so the cost shows only
+when the coder is faster than the hash, as with store. A BIP-340
+signature takes 2.3 ms and a verification 1.6 ms (pure Dart on BigInt,
+with a table for the generator). The full check is one sequential
+SHA-256 pass over the file. An archive that is not sealed writes and
+reads exactly as before.
+
 ### .zx, the chunk index at scale
 
 `tool/zx_dedup_scale.dart` (AOT, one process per case, under
@@ -593,6 +622,11 @@ zcm text runs at zcm's decode speed).
   data: progress at most every 100 ms, the questions one at a time.
 - Progress crosses isolates at most every 100 ms; per block or per MB
   callbacks inside the codecs stay on the worker isolate.
+- Seals (signed generations): payloads are hashed by the block workers
+  that code them, never again on the writer's isolate (the "core"
+  digest of zx_seal.dart travels with the coded block); opening an
+  archive does not read its Seal, and the quick check hashes only the
+  Indexes.
 - Blocks cross isolates as `TransferableTypedData`, and the parallel
   encoder keeps at most one block per worker plus one in flight, so
   memory is bounded by the number of workers, not by the input.

@@ -67,4 +67,7 @@ class AndroidLauncher implements Launcher {
 
   @override
   Future<void> openFolder(String path) async {}
+
+  @override
+  Future<bool> openUrl(String url) async => false;
 }

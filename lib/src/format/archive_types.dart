@@ -141,6 +141,9 @@ abstract final class ZxKpid {
   /// zx: the generation in which a version of an item was deleted (the
   /// timeline listing).
   static const deletedIn = Kpid.userDefined + 6;
+
+  /// zx: the seals of the archive (signed generations), as a line of text.
+  static const seal = Kpid.userDefined + 7;
 }
 
 /// The names of the [ZxKpid] properties in `l -slt`.
@@ -151,6 +154,7 @@ const Map<int, String> kZxPropNames = {
   ZxKpid.wasted: 'Wasted',
   ZxKpid.minReader: 'Min reader',
   ZxKpid.deletedIn: 'Deleted in',
+  ZxKpid.seal: 'Seal',
 };
 
 /// kpv_ErrorFlags_* (PropID.h).

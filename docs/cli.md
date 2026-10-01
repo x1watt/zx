@@ -265,6 +265,51 @@ isolate for Flutter apps; `sqliteImport` and `sqliteExport`
 (`lib/src/db/sqlite_io/sqlite_io.dart`) move tables between a session
 and a SQLite file.
 
+### Signed generations: `zx seal` and `-msign`
+
+A .zx archive can be sealed with NOSTR keys (docs/zx-format.md section
+17): each generation is signed by the admin or a maintainer, and anyone,
+without the password, sees whether the archive was changed after that.
+Keys are given as an nsec, 64 hex digits, `@FILE` (its first line) or,
+with an empty value, the environment variable `ZX_NSEC`, so that they are
+not on the command line.
+
+```sh
+zx a -msign=@admin.nsec book.zx chapters/      # a new archive, sealed: the key is its admin
+zx seal -sign=@admin.nsec -add=npub1... book.zx # a maintainer (also -remove=, -rule=admin)
+zx u -msign=@maint.nsec book.zx chapters/      # a maintainer's update, signed
+zx seal book.zx                                # who signed what (quick check)
+zx seal -full book.zx                          # every byte checked, exit code 1 if changed
+zx l -slt book.zx                              # the "Seal" property
+zx l -mverify=strict book.zx                   # shown as of the last valid seal
+zx seal -sign=@admin.nsec -activate old.zx     # seal an archive with a history
+zx seal -sign=@admin.nsec -off book.zx         # switch sealing off
+```
+
+An update without a key to a sealed archive is written with an unsigned
+("pending") seal, until an allowed key signs a later generation; a key
+that is neither the admin nor an allowed maintainer is refused. The admin
+role is handed over in two steps: the new admin prints its acceptance
+(`zx seal -acceptance=@new.nsec book.zx`), the admin writes it
+(`zx seal -sign=@admin.nsec -admin=npub1... -accept=HEX book.zx`). A
+compaction (`-mcompact`) needs the admin key, as it seals the rewritten
+archive again. Volume sets can not be sealed.
+
+### The README of an archive: `zx readme`
+
+An archive describes itself with a `README.md` at its top (and each folder
+with its own), as a git repository does; docs/readme.md has the details.
+Every image and linked file of it must be an entry of the archive: links to
+other places (http, https, mailto) are allowed, images from other places
+are never fetched. `zx readme` (a zx extension command, every format)
+prints the README, and `-check` reports what can not work (exit code 1):
+
+```sh
+zx readme project.zx                 # the README at the top
+zx readme project.zip docs           # the README of the folder docs
+zx readme -check -all project.zx     # check every README of the archive
+```
+
 ### Installing
 
 - With the Dart SDK: `dart pub global activate --source path <repo>` puts

@@ -27,6 +27,7 @@ import 'zx_codecs.dart';
 import 'zx_crypto.dart';
 import 'zx_dedup.dart';
 import 'zx_format.dart';
+import 'zx_seal.dart';
 import 'zx_memory.dart';
 import 'zx_reader.dart';
 
@@ -194,6 +195,11 @@ class ZxWriteOptions {
   /// repacks partly used blocks with it (otherwise with the chain of each
   /// block).
   bool codersSet = false;
+
+  /// Signed generations (zx_seal.dart): the key that signs, and the
+  /// changes of the roles. A new archive with a signer is activated with
+  /// it as the admin.
+  ZxSealOptions? seal;
   String? archiveComment;
   String generationComment = '';
 
@@ -595,6 +601,11 @@ class ZxWriter {
   final List<ZxGeneration> _gens;
   final ZxIndexLoc? _prev;
   final int _genNumber;
+
+  // where this generation's bytes start (the end of the last Footer, 0
+  // for a new archive) and in which volume
+  int _dataStart = 0;
+  int _dataVolume = 0;
   final int _time;
   final List<ZxVolumeInfo> _earlierVolumes;
 
@@ -747,9 +758,23 @@ class ZxWriter {
     h.optional = (o.hashTable ? ZxOptFeature.hashTable : 0) |
         (o.tlsh ? ZxOptFeature.similarity : 0);
     h.minReaderVersion = _minReader(o.coders);
-    final sink = makeSink(h);
-    if (!multi) sink.write(h.encode());
-    return ZxWriter._(o, h, sink, keys, {}, [], [], null, 1, t, const []);
+    final hb = h.encode();
+    var sink = makeSink(h);
+    final so = o.seal;
+    if (so != null && so.signer != null) so.activate = true;
+    final plan = so == null
+        ? null
+        : ZxSealPlan.make(
+            archiveId: h.archiveId,
+            dataStart: 0,
+            generation: 1,
+            headerSize: multi ? 0 : hb.length,
+            options: so,
+            multiVolume: multi);
+    if (plan != null) sink = ZxSealSink(sink, plan);
+    if (!multi) sink.write(hb);
+    return ZxWriter._(o, h, sink, keys, {}, [], [], null, 1, t, const [])
+      .._dataVolume = sink.volume;
   }
 
   static ZxVer _minReader(List<ZxCoderSpec> coders) {
@@ -777,6 +802,20 @@ class ZxWriter {
     final number = (gens.isEmpty ? 0 : gens.last.number) + 1;
     final t = _genTime(o, gens);
     o.streamed = r.header.streamed;
+    final multi = r.header.multiVolume || sink.multi;
+    final dataStart = sink.position, dataVolume = sink.volume;
+    final plan = ZxSealPlan.make(
+        archiveId: r.header.archiveId,
+        dataStart: r.validEnd,
+        generation: number,
+        last: multi ? null : r.lastSeal,
+        options: o.seal,
+        prefix: () => r.prefixHash(r.validEnd),
+        multiVolume: multi);
+    if (plan != null) {
+      o.warnings.addAll(plan.warnings);
+      sink = ZxSealSink(sink, plan);
+    }
     return ZxWriter._(
         o,
         r.header,
@@ -789,6 +828,8 @@ class ZxWriter {
         number,
         t,
         last.volumes ?? const [])
+      .._dataStart = dataStart
+      .._dataVolume = dataVolume
       .._prevPaths = {for (final e in last.entries) e.path}
       .._database = last.database
       .._vols = r.volumes
@@ -1248,7 +1289,8 @@ class ZxWriter {
       _writeNext();
     }
     final arg =
-        ZxEncodeArg(data, _coders, o.checkType, keys?.aesKey, keys?.macKey);
+        ZxEncodeArg(data, _coders, o.checkType, keys?.aesKey, keys?.macKey,
+            sink is ZxSealSink);
     final ticket = _pool.submit(zxEncodeBlockJob, arg);
     // keep the input for a re-split only when volumes may need one
     _pending.add(
@@ -1346,6 +1388,8 @@ class ZxWriter {
     final ref = ZxBlockRef(
         sink.volume, sink.position, hdr.length, payload.length, len, chainId);
     sink.write(hdr);
+    final ss = sink, cd = enc.coreDigest;
+    if (ss is ZxSealSink && cd != null) ss.hint(payload, cd);
     sink.write(payload);
     _blocks.add(ref);
     _blockRange.add((start, len));
@@ -1659,8 +1703,13 @@ class ZxWriter {
     }
     final start = sink.position;
     final body = sink.multi ? idx.encode(multiVolume: true) : content;
+    final ss = sink;
+    if (ss is ZxSealSink) ss.beginIndex();
     _writeMeta(body, ZxBlockType.index);
-    final footer = ZxFooter(start, sink.position - start, _blocks.length);
+    final indexSize = sink.position - start;
+    final sealSize = ss is ZxSealSink ? ss.writeSeal(_genNumber) : 0;
+    final footer = ZxFooter(start, indexSize,
+        sink.volume == _dataVolume ? _dataStart : 0, sealSize);
     sink.write(footer.encode());
     final end = sink.position;
     final vols = sink.close();
@@ -2065,6 +2114,9 @@ ZxWriteResult zxCompact(
   final newGens = <ZxGeneration>[];
   ZxIndexLoc? prev;
   late ZxFooter footer;
+  // the first generation's bytes start with the Header
+  var dataStart = 0;
+  var dataVolume = 0;
   for (var gi = 0; gi < kept.length; gi++) {
     final g = kept[gi];
     final src = indexes[gi];
@@ -2147,8 +2199,10 @@ ZxWriteResult zxCompact(
       sink.write(enc.payload);
     } while (off < content.length);
     final size = sink.position - start;
-    footer = ZxFooter(start, size, blocks.length);
+    footer = ZxFooter(start, size, vol == dataVolume ? dataStart : 0);
     sink.write(footer.encode());
+    dataStart = sink.position;
+    dataVolume = sink.volume;
     prev = ZxIndexLoc(vol, start, size);
     newGens.add(g.at(prev));
   }

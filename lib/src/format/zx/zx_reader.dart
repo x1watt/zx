@@ -7,12 +7,14 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../../crypto/sha256.dart';
 import '../../io/streams.dart';
 import '../../util/xxhash.dart';
 import 'zx_blocks.dart';
 import 'zx_codecs.dart';
 import 'zx_crypto.dart';
 import 'zx_format.dart';
+import 'zx_seal.dart';
 
 /// A volume that is needed and not found.
 class ZxMissingVolumeException extends SevenZipException {
@@ -280,6 +282,9 @@ class ZxArchiveReader {
 
   ZxKeys? keys;
 
+  /// The last Footer.
+  final ZxFooter lastFooter;
+
   ZxArchiveReader._(
       this.header,
       this.volumes,
@@ -289,7 +294,45 @@ class ZxArchiveReader {
       this.validEnd,
       this.lastIndexLoc,
       this.warnings,
-      this.keys);
+      this.keys,
+      this.lastFooter);
+
+  /// Reads bytes of the volume with the last Footer (the file of a
+  /// single-file archive).
+  Uint8List readRaw(int off, int len) => volumes.readAt(lastVolume, off, len);
+
+  ZxLastSeal? _lastSeal;
+
+  /// The Seal of the last generation, or null when it has none.
+  ZxLastSeal? get lastSeal {
+    final f = lastFooter;
+    if (f.sealSize == 0) return null;
+    return _lastSeal ??= ZxLastSeal(
+        ZxSeal.parse(readRaw(f.indexOffset + f.indexSize, f.sealSize),
+            header.archiveId),
+        validEnd);
+  }
+
+  /// The SHA-256 of the bytes before [end] (for an activation).
+  Uint8List prefixHash(int end) {
+    final h = Sha256();
+    var p = 0;
+    while (p < end) {
+      final n = end - p < (1 << 20) ? end - p : 1 << 20;
+      h.update(readRaw(p, n));
+      p += n;
+    }
+    return h.digest();
+  }
+
+  /// Checks the seals from the last generation back to the activation
+  /// ([full]: also the data, one pass over the file).
+  List<ZxGenerationSeal> checkSeals({bool full = false}) => zxCheckSeals(
+      readRaw,
+      header.archiveId,
+      validEnd,
+      lastIndex.generation?.number ?? generations.length,
+      full: full);
 
   /// Every generation, oldest first.
   List<ZxGeneration> get generations {
@@ -379,7 +422,7 @@ class ZxArchiveReader {
         try {
           final len = vols.lengthOf(last);
           final t = ZxVolumeTrailer.tryParse(
-              vols.readAt(last, len - zxFooterSize, zxFooterSize), 0);
+              vols.readAt(last, len - zxTrailerSize, zxTrailerSize), 0);
           if (t != null) {
             throw ZxMissingVolumeException(last + 1, vols.nameOf(last + 1));
           }
@@ -403,7 +446,7 @@ class ZxArchiveReader {
       }
     }
     final r = ZxArchiveReader._(
-        header, vols, last, last, lastVol, end, loc, warnings, keys);
+        header, vols, last, last, lastVol, end, loc, warnings, keys, footer);
     final sel = p.generation;
     if (sel != null) r.selectGeneration(sel);
     return r;
@@ -450,7 +493,7 @@ class ZxArchiveReader {
       final b = vols.readAt(v, pos, zxFooterSize);
       final f = ZxFooter.tryParse(b, 0);
       if (f == null) return null;
-      if (f.indexOffset + f.indexSize != pos) return null;
+      if (f.position != pos) return null;
       try {
         final idx = readIndex(
             vols, header, keys, ZxIndexLoc(v, f.indexOffset, f.indexSize));
@@ -485,7 +528,7 @@ class ZxArchiveReader {
             b[i + 1] == 0x5A &&
             b[i + 2] == 0x45 &&
             b[i + 3] == 0x1A) {
-          final pos = lo + i - 28;
+          final pos = lo + i - (zxFooterSize - 4);
           final idx2 = tryAt(pos);
           if (idx2 != null) {
             final fb = vols.readAt(v, pos, zxFooterSize);

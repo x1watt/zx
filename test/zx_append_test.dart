@@ -273,9 +273,11 @@ void main() {
       for (final p in res.files) {
         final bytes = File(p).readAsBytesSync();
         expect(bytes.length, lessThanOrEqualTo(100000 + 4096));
-        final tail = bytes.sublist(bytes.length - 32);
-        final ok = ZxVolumeTrailer.tryParse(tail, 0) != null ||
-            ZxFooter.tryParse(tail, 0) != null;
+        final ok = ZxVolumeTrailer.tryParse(
+                    bytes.sublist(bytes.length - zxTrailerSize), 0) !=
+                null ||
+            ZxFooter.tryParse(bytes.sublist(bytes.length - zxFooterSize), 0) !=
+                null;
         expect(ok, true, reason: p);
       }
     });
@@ -314,10 +316,13 @@ void main() {
       expect(readSet(res.files.first, [d1.path, d2.path]), files);
       for (final p in res.files) {
         final bytes = File(p).readAsBytesSync();
-        final tail = bytes.sublist(bytes.length - 32);
         expect(
-            ZxVolumeTrailer.tryParse(tail, 0) != null ||
-                ZxFooter.tryParse(tail, 0) != null,
+            ZxVolumeTrailer.tryParse(
+                        bytes.sublist(bytes.length - zxTrailerSize), 0) !=
+                    null ||
+                ZxFooter.tryParse(
+                        bytes.sublist(bytes.length - zxFooterSize), 0) !=
+                    null,
             true);
       }
     });

@@ -17,6 +17,10 @@ import 'settings.dart';
 abstract class Launcher {
   Future<void> openFile(String path);
   Future<void> openFolder(String path);
+
+  /// Opens a web address (http, https or mailto) in the browser or mail
+  /// program; false when that is not possible here.
+  Future<bool> openUrl(String url);
 }
 
 /// xdg-open on Linux, open on macOS, start on Windows.
@@ -28,6 +32,12 @@ class SystemLauncher implements Launcher {
 
   @override
   Future<void> openFolder(String path) => _open(path);
+
+  @override
+  Future<bool> openUrl(String url) async {
+    await _open(url);
+    return true;
+  }
 
   Future<void> _open(String path) async {
     if (Platform.isWindows) {

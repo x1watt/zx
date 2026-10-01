@@ -22,8 +22,11 @@ const int zxFormatVersion = 1;
 /// Size of the fixed part of the Header.
 const int zxHeaderFixedSize = 64;
 
-/// Size of the Footer and of the volume trailer.
-const int zxFooterSize = 32;
+/// Size of the Footer.
+const int zxFooterSize = 40;
+
+/// Size of the volume trailer.
+const int zxTrailerSize = 32;
 
 /// "ZXB" 0x01, the marker of a block header.
 const int zxBlockMarker = 0x01425A58; // little endian of 5A 58 42 01
@@ -1793,17 +1796,26 @@ class ZxDbRoot {
 class ZxFooter {
   final int indexOffset;
   final int indexSize;
-  final int blockCount;
-  final int flags;
-  const ZxFooter(this.indexOffset, this.indexSize, this.blockCount,
-      [this.flags = 0]);
+
+  /// Where this generation's bytes start: the end of the previous Footer
+  /// (0 for the first generation, whose bytes start with the Header).
+  final int dataStart;
+
+  /// The size of the Seal between the Index and the Footer (0: none).
+  final int sealSize;
+  const ZxFooter(this.indexOffset, this.indexSize, this.dataStart,
+      [this.sealSize = 0]);
+
+  /// Where the Footer starts: after the Index and the Seal.
+  int get position => indexOffset + indexSize + sealSize;
 
   Uint8List encode() {
     final w = ZxBytes(zxFooterSize);
     w.u64(indexOffset);
     w.u64(indexSize);
-    w.u32(blockCount);
-    w.u32(flags);
+    w.u64(dataStart);
+    w.u32(sealSize);
+    w.u32(0);
     w.u32(Crc32c.of(w.view()));
     w.u32(zxFooterMagic);
     return w.toBytes();
@@ -1812,10 +1824,10 @@ class ZxFooter {
   /// Parses a Footer at b[off]; null when the magic or the CRC is wrong.
   static ZxFooter? tryParse(Uint8List b, int off) {
     if (b.length - off < zxFooterSize) return null;
-    if (getUint32LE(b, off + 28) != zxFooterMagic) return null;
-    if (Crc32c.of(b, off, off + 24) != getUint32LE(b, off + 24)) return null;
+    if (getUint32LE(b, off + 36) != zxFooterMagic) return null;
+    if (Crc32c.of(b, off, off + 32) != getUint32LE(b, off + 32)) return null;
     return ZxFooter(getUint64LE(b, off), getUint64LE(b, off + 8),
-        getUint32LE(b, off + 16), getUint32LE(b, off + 20));
+        getUint64LE(b, off + 16), getUint32LE(b, off + 24));
   }
 }
 
@@ -1827,7 +1839,7 @@ class ZxVolumeTrailer {
   const ZxVolumeTrailer(this.volume, this.dataSize, this.idPrefix);
 
   Uint8List encode() {
-    final w = ZxBytes(zxFooterSize);
+    final w = ZxBytes(zxTrailerSize);
     w.u32(volume);
     w.u32(0);
     w.u64(dataSize);
@@ -1838,7 +1850,7 @@ class ZxVolumeTrailer {
   }
 
   static ZxVolumeTrailer? tryParse(Uint8List b, int off) {
-    if (b.length - off < zxFooterSize) return null;
+    if (b.length - off < zxTrailerSize) return null;
     if (getUint32LE(b, off + 28) != zxTrailerMagic) return null;
     if (Crc32c.of(b, off, off + 24) != getUint32LE(b, off + 24)) return null;
     return ZxVolumeTrailer(getUint32LE(b, off), getUint64LE(b, off + 8),

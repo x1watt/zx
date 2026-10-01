@@ -30,6 +30,8 @@ import 'update_callback_console.dart';
 import 'wildcard.dart';
 import 'extracting_file_path.dart';
 import 'prop_id_utils.dart';
+import 'readme_command.dart';
+import 'seal_command.dart';
 import 'sql_command.dart';
 import 'platform.dart';
 
@@ -64,7 +66,13 @@ const String _kHelpString = 'Usage: zx'
     '  h : Calculate hash values for files\n'
     '  i : Show information about supported formats\n'
     '  l : List contents of archive\n'
+    '  readme : (zx) show the README of the archive or of a folder in it:\n'
+    '    zx readme <archive> [folder]; -check checks that its images and\n'
+    '    linked files are in the archive; zx readme -help lists the options\n'
     '  rn : Rename files in archive\n'
+    '  seal : (zx) show and check the signed generations of a .zx archive,\n'
+    '    sign it (NOSTR keys) and change its admin and maintainers;\n'
+    '    zx seal -help lists the options\n'
     '  sql : (zx) run SQL on the database of a .zx archive:\n'
     '    zx sql <archive> ["SQL" ...]; without SQL an interactive shell with\n'
     '    sqlite3-like dot commands (.help); zx sql -help lists the options\n'
@@ -465,6 +473,12 @@ int _main2(List<String> commandStrings, CliIo io) {
   }
   if (commandStrings.first.toLowerCase() == 'sql') {
     return runSqlCommand(commandStrings.sublist(1), io);
+  }
+  if (commandStrings.first.toLowerCase() == 'readme') {
+    return runReadmeCommand(commandStrings.sublist(1), io);
+  }
+  if (commandStrings.first.toLowerCase() == 'seal') {
+    return runSealCommand(commandStrings.sublist(1), io);
   }
 
   final options = ArcCmdLineOptions();

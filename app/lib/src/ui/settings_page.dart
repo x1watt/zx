@@ -277,6 +277,16 @@ class _SettingsPageState extends State<SettingsPage> {
                       value: s.showPreview,
                       onChanged: (v) => s.showPreview = v,
                     ),
+                    SwitchListTile(
+                      key: const Key('set-readme'),
+                      secondary: const Icon(Icons.menu_book_outlined),
+                      title: const Text('README'),
+                      subtitle: const Text(
+                        'Show the README of the archive folder below its items',
+                      ),
+                      value: s.showReadme,
+                      onChanged: (v) => s.showReadme = v,
+                    ),
                   ]),
                   section('New archives', [
                     ListTile(

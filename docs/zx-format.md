@@ -34,14 +34,17 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 ## 2. Overall structure
 
 ```
-ZxFile = Header, { Block }, Index, Footer, { { Block }, Index, Footer }
+ZxFile = Header, { Block }, Index, [ Seal ], Footer,
+         { { Block }, Index, [ Seal ], Footer }
 ```
 
 A file MUST start with a Header and end with a Footer. Blocks carry data
 and metadata. The Index is stored in one or more Index blocks
 (block_type 5) followed by the Footer that locates it. With the
 `appendable` feature (section 9) a file holds several Index and Footer
-pairs, one per generation; the last valid Footer is the current one.
+pairs, one per generation; the last valid Footer is the current one. A
+generation of a sealed archive has a Seal between its Index and its
+Footer (section 17).
 
 ## 3. Header
 
@@ -972,16 +975,21 @@ LZMA dictionary, the PPMd model, the zpaq method, the zcm budget).
 
 ## 14. Footer
 
-Last 32 bytes of the file (of the last volume), and of each generation:
+Last 40 bytes of the file (of the last volume), and of each generation:
 
 | Offset | Type | Field |
 |---|---|---|
 | 0 | u64 | index_offset (marker of the first Index block) |
-| 8 | u64 | index_size (bytes from index_offset to the footer) |
-| 16 | u32 | block_count (entries of the block table) |
-| 20 | u32 | footer_flags (reserved, 0) |
-| 24 | u32 | footer_crc: CRC-32C of bytes 0..23 |
-| 28 | bytes(4) | magic `ZXE` 0x1A |
+| 8 | u64 | index_size (bytes of the Index blocks) |
+| 16 | u64 | data_start: where this generation's bytes start, the end of the previous Footer (0 for the first generation, whose bytes start with the Header; 0 in a volume set when the previous Footer is in another volume) |
+| 24 | u32 | seal_size: bytes of the Seal between the Index and the Footer (0: none, section 17) |
+| 28 | u32 | reserved, 0 |
+| 32 | u32 | footer_crc: CRC-32C of bytes 0..31 |
+| 36 | bytes(4) | magic `ZXE` 0x1A |
+
+The Footer starts at `index_offset + index_size + seal_size`; a reader
+checks that. `data_start` lets a reader walk the generations back from
+the last Footer without decoding any Index (the seals do, section 17).
 
 When the Footer is missing or damaged, a reader MAY rebuild the entry
 list from inline records (streamed files) or report the archive as
@@ -1006,7 +1014,6 @@ Changes made while implementing the draft in zx 0.5.0:
    without reading every Index.
 5. **Block table**: data blocks only, cumulative across generations
    (stable block numbers); `header_size_total` is the whole block header.
-   `block_count` of the Footer is the number of table entries.
 6. **Times** are svint (zigzag) in every case.
 7. **Streamed files**: where inline blocks go, chains declared before
    their first use, sizes and the start extent in the inline records, the
@@ -1137,6 +1144,15 @@ already):
 32. **Catalog record version 2** (section 16.5): a tree may have delta
     runs (sorted changes merged into the tree at a fold), so that random
     writes into a large tree do not rewrite its pages at every commit.
+
+Changes made for signed generations (section 17; there were no users
+yet, so the Footer changed size):
+
+33. **The Footer is 40 bytes** (section 14): `block_count` (written,
+    never read) is gone; `data_start` (u64) and `seal_size` (u32) are
+    new. The volume trailer stays 32 bytes.
+34. **Seals** (section 17): an optional, signed chain of hashes over the
+    stored bytes of each generation.
 
 ## 16. Database (zxdb)
 
@@ -1297,3 +1313,107 @@ A KV store `name` is the tree `kv:name`; its settings are in the tree
 flags: bit 0 some value has a ttl). A stored value is `u8 0, value` or
 `u8 1, u64 expiry (ms since 1970-01-01 UTC), value`; a value whose expiry
 has passed is absent, and a fold or a compaction removes it.
+
+## 17. Seals (signed generations)
+
+A file can be changed by whoever holds it; a seal makes every change
+visible to anyone who reads it, without the password of an encrypted
+archive. Sealing is optional and can start at any generation: an archive
+that never uses it has no Seal anywhere and pays nothing.
+
+The keys are NOSTR keys (secp256k1, x-only public keys, BIP-340 Schnorr
+signatures; shown as npub and nsec, NIP-19). An archive has one **admin**
+and any number of **maintainers**; a write rule says whether the
+maintainers may sign generations or only the admin.
+
+### 17.1 What a generation's Seal covers
+
+The Seal of generation N sits between its Index and its Footer
+(`seal_size` of the Footer). It covers:
+
+- `data_hash`: SHA-256 over the piece digests of the stored bytes from
+  `data_start` to `index_offset`, in order. The first generation's bytes
+  start with the Header, one piece: its digest is SHA-256 of its bytes.
+  Every other piece is a block (of any type, data, inline, chunk run,
+  database pages, padding): its digest is
+  `SHA-256(block header || SHA-256(payload but its last 32 bytes) ||
+  the last 32 bytes of the payload)` (the whole payload is the tail when
+  it is shorter than 32 bytes). The writer's block workers hash the
+  payloads in parallel; the MAC of an encrypted block, written last, is
+  in the tail. Every byte from `data_start` to `index_offset` MUST be a
+  block (or the Header), or the hash can not be checked.
+- `index_hash`: SHA-256 of the stored Index bytes (`index_offset`,
+  `index_size`), encrypted or not.
+- `prev_root`: the root of generation N-1's Seal, so one signature
+  covers every sealed generation before it. An **activation** (the first
+  sealed generation, or the first after sealing was switched off) has
+  `prefix_hash` instead: SHA-256 of every byte before `data_start`.
+
+The digests are of stored bytes: ciphertext in an encrypted archive, so
+they reveal nothing of the content and anyone can check them.
+
+### 17.2 Seal layout
+
+```
+Seal = u32 magic "ZXS1", vint version (1),
+       Record chain (0x02):    vint generation, vint data_start,
+                               bytes(32) data_hash, bytes(32) index_hash,
+                               bytes(32) prev_root (zero in an activation)
+       [Record genesis (0x04): bytes(32) prefix_hash]       activation only
+       Record policy (0x06):   vint seq, u8 state (0 active, 1 off),
+                               u8 rule (0 admin, 1 maintainers),
+                               bytes(32) admin, vint n, n x bytes(32)
+       [Record accept (0x08):  bytes(64) the new admin's signature]
+       [Record signature (0x0A): bytes(32) signer, bytes(64) signature]
+       u32 crc: CRC-32C of everything before
+```
+
+Records follow the rules of section 5 (an unknown odd type is critical).
+`root = SHA-256("zx/seal/1" || archive_id || the bytes from the version
+to the signature record)` and the signature is BIP-340 over `root`. A
+Seal without a signature is **pending**: written by someone without a
+key while sealing is active; a later signed Seal covers it through the
+chain.
+
+### 17.3 Roles and their changes
+
+The policy in force at generation N is the one in generation N-1's Seal.
+A reader replays them; the public keys are in the file, so no network is
+needed.
+
+- **Activation**: signed by the admin it names.
+- **A generation** is valid when its Seal is signed by the admin, or by
+  a maintainer when the rule allows it, its chain (`prev_root`,
+  generation number, `data_start` equal to the Footer's) holds, and its
+  hashes match.
+- **Changing the roles** (maintainers, rule, switching off, a new admin)
+  needs the admin's signature and raises `seq`. Generations signed by a
+  maintainer before its removal stay valid; its later signatures do not.
+- **A new admin** accepts the role: the accept record holds its BIP-340
+  signature over `SHA-256("zx/admin/1" || archive_id || new admin key ||
+  u64 generation)` for the generation of the change. From the next
+  generation on only the new admin may change the roles.
+- **Switching off**: a generation signed by the admin with state 1. The
+  generations after it have no Seal. Switching on again is a new
+  activation.
+- **Endorsing**: any allowed key can append a generation with the same
+  files and a signed Seal; through the chain it signs the history up to
+  its activation.
+
+A generation without a Seal after one whose policy is active is
+**broken** (a stripped seal). A reader walks the Footers back through
+`data_start`; zx's quick check does so through at most 256 generations
+without a Seal, its full check through all of them.
+
+### 17.4 What it does not show
+
+Rollback: the newest generations cut off leave an older, validly sealed
+archive. Only an outside record of the last root (for example a NOSTR
+event of the admin) shows that. And a reader learns the admin's key from
+outside the file: someone who rewrites the whole archive under a key of
+their own makes another archive, which only its npub tells apart.
+
+Volume sets are not sealed (zx refuses `-msign` for them). A compaction
+rewrites the history, so zx seals the compacted archive again with the
+admin's key (a new activation with the same roles).
+

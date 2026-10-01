@@ -23,6 +23,14 @@ class FakeLauncher implements Launcher {
 
   @override
   Future<void> openFolder(String path) async => folders.add(path);
+
+  final urls = <String>[];
+
+  @override
+  Future<bool> openUrl(String url) async {
+    urls.add(url);
+    return true;
+  }
 }
 
 class FakePicker implements FilePicker {

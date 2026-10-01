@@ -23,6 +23,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'api.dart';
+import 'common/method_props.dart' show PropVariant;
 import 'cli/arc_compound.dart';
 import 'cli/arc_handlers.dart';
 import 'cli/arc_rar.dart';
@@ -2050,6 +2051,8 @@ List<MapEntry<String, String>> _props(
     if (dd != null) r.add(MapEntry('dedup', dd ? 'on' : 'off'));
     final ml = o.memoryLimit;
     if (ml != null) r.add(MapEntry('memuse', '${ml}b'));
+    final sk = o.signKey;
+    if (sk != null) r.add(MapEntry('sign', sk));
     final vs = o.volumeSizes;
     if (vs.isNotEmpty) r.add(MapEntry('vsizes', vs.join(',')));
     for (final d in o.volumeDirs) {
@@ -2516,7 +2519,7 @@ _Written _writeSync(Codecs codecs, _Opened? o, ZxUpdateRequest r, String? pw,
 // ---------------------------------------------------------------------------
 // .zx operations
 
-enum ZxZxOp { compact, timeline }
+enum ZxZxOp { compact, timeline, seal }
 
 class ZxZxRequest {
   final String archivePath;
@@ -2560,6 +2563,23 @@ Future<Object?> workerZx(ZxZxRequest r, ZxOps ops) async {
                         isUtc: true),
                 v.deleted)
         ];
+      case ZxZxOp.seal:
+        // arg: the -m switches, JSON [[name, value]...]
+        final props = [
+          for (final e in jsonDecode(r.arg) as List)
+            MapEntry((e as List)[0] as String, PropVariant.bstr(e[1] as String))
+        ];
+        final path = a.openedPath ?? r.archivePath;
+        a.h.setProperties(props);
+        final res = a.h.sealFile(path, password: o.password);
+        o.close();
+        closed = true;
+        final o2 = _openSync(codecs, r.archivePath, o.password);
+        try {
+          return (_readListing(o2), res.generation);
+        } finally {
+          o2.close();
+        }
       case ZxZxOp.compact:
         final keep = int.parse(r.arg);
         final path = a.openedPath ?? r.archivePath;
