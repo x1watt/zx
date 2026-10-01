@@ -1,6 +1,7 @@
-# Builds the zx command line tool for Linux, Windows and macOS.
-# Every push and pull request runs the tests and uploads the binaries as
-# workflow artifacts; a pushed tag v* also attaches them to a GitHub release.
+# Builds the zx command line tool for Linux, Windows and macOS, and the
+# Android app (zx.apk, on tags and manual runs). Every push and pull request
+# runs the tests and uploads the binaries as workflow artifacts; a pushed tag
+# v* also attaches them to a GitHub release.
 name: build
 
 on:
@@ -66,9 +67,77 @@ jobs:
           name: ${{ matrix.name }}
           path: dist/${{ matrix.name }}
 
+  # The Android app, signed with the release key from the repository secrets
+  # (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS,
+  # ANDROID_KEY_PASSWORD). A tag never publishes a debug-signed APK; a
+  # manual run without the secrets builds one for testing.
+  android:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.5
+          cache: true
+      - run: flutter --version
+      - name: Release key
+        shell: bash
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::the release key secrets are not set"; exit 1
+            fi
+            echo "::warning::no release key: the APK is signed with the debug key"
+            exit 0
+          fi
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/zx-release.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/zx-release.jks"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > app/android/key.properties
+      - name: Build zx.apk
+        shell: bash
+        run: |
+          name=0.0.0
+          [[ "$GITHUB_REF" == refs/tags/v* ]] && name="${GITHUB_REF_NAME#v}"
+          IFS=. read -r major minor patch <<< "${name%%-*}"
+          code=$(( ${major:-0} * 10000 + ${minor:-0} * 100 + ${patch:-0} ))
+          [ "$code" -gt 0 ] || code=1
+          cd app
+          flutter build apk --release --build-name="$name" --build-number="$code"
+          mkdir -p ../dist
+          cp build/app/outputs/flutter-apk/app-release.apk ../dist/zx.apk
+      - name: Check the signature
+        shell: bash
+        run: |
+          bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          certs=$("$ANDROID_HOME/build-tools/$bt/apksigner" verify --print-certs dist/zx.apk)
+          echo "$certs"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]] && grep -q "CN=Android Debug" <<< "$certs"; then
+            echo "::error::zx.apk is signed with the debug key"; exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zx.apk
+          path: dist/zx.apk
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, build]
+    needs: [test, build, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write

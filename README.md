@@ -104,8 +104,7 @@ zx comes as two programs: `zx`, the command line, and `zx-gui`, the app
 | Linux, Windows or macOS, no Dart | Download the command line (`zx-linux-x64`, `zx-windows-x64.exe`, `zx-macos-arm64`...) from the releases, rename it `zx`, put it on the PATH |
 | The Dart SDK | `dart pub global activate --source path <repo>` |
 | The desktop app (Linux) | `tool/install_linux.sh`, or the `.deb` from `tool/build_deb.sh` (both `zx` and `zx-gui`) |
-| Android | `zx.apk` from `tool/build_apk.sh` (`--split` for one APK per ABI) |
-| Termux (Android) | `pkg install dart git`, then `dart pub global activate --source git https://github.com/x1watt/zx`: the `zx` command line |
+| Android | `zx.apk` from the [latest release](https://github.com/x1watt/zx/releases/latest/download/zx.apk), or built with `tool/build_apk.sh` (`--split` for one APK per ABI) |
 
 Binaries are built by `.github/workflows/release.yml` (six targets) or
 locally with `tool/build_binaries.sh`. Details: [docs/app.md](docs/app.md).

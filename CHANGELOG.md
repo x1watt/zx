@@ -1,9 +1,10 @@
 ## Unreleased
 
 - **Two programs**: `zx`, the command line, and `zx-gui`, the app (the
-  app's executable was `zx_app`); on Android the app is `zx.apk`
-  (tool/build_apk.sh), and on Termux `zx` installs with
-  `dart pub global activate --source git https://github.com/x1watt/zx`.
+  app's executable was `zx_app`); on Android the app is `zx.apk`,
+  attached to each release and signed with the release key (release
+  builds were signed with the debug key; tool/build_apk.sh builds it
+  locally).
 - **New logo**: a database marked ZX squeezed in a clamp (logo/), in the
   app, the web page and the Windows executables (icon and version
   information, tool/windows_exe_icon.sh).

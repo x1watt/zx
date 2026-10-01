@@ -4,16 +4,23 @@
 # phone of the last years), dist/zx-armeabi-v7a.apk (older 32 bit phones)
 # and dist/zx-x86_64.apk (emulators, Chromebooks).
 #
-# The build goes through ~/bin/android-build-locked when it exists (one
-# Android or Flutter build at a time on the machine).
+# The build goes through ~/bin/android-build-locked (one Android or Flutter
+# build at a time on the machine); without it the script refuses to run,
+# except in CI ($CI set), where builds run alone.
 #
 # Usage: tool/build_apk.sh [--split]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p dist
 
-run=(flutter)
-[ -x "$HOME/bin/android-build-locked" ] && run=("$HOME/bin/android-build-locked" flutter)
+if [ -x "$HOME/bin/android-build-locked" ]; then
+  run=("$HOME/bin/android-build-locked" flutter)
+elif [ -n "${CI:-}" ]; then
+  run=(flutter)
+else
+  echo "build_apk: ~/bin/android-build-locked is missing; builds go through it" >&2
+  exit 1
+fi
 
 out=app/build/app/outputs/flutter-apk
 if [ "${1:-}" = --split ]; then

@@ -6,8 +6,10 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// The release key: android/key.properties (storeFile, storePassword,
-// keyAlias, keyPassword), never committed.
+// The release key: android/key.properties (storeFile, an absolute path,
+// storePassword, keyAlias, keyPassword), never committed. Without it the
+// release build is signed with the debug key (local test builds only; the
+// release workflow refuses to publish such an APK).
 val releaseKey: Properties? = rootProject.file("key.properties").let { f ->
     if (f.exists()) Properties().apply { f.inputStream().use { load(it) } } else null
 }
@@ -49,9 +51,11 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (releaseKey != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

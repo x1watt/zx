@@ -317,10 +317,8 @@ zx readme -check -all project.zx     # check every README of the archive
 - Without it: copy a binary from `dist/` (or from a release) into a
   folder on the PATH, as `zx` (`zx.exe` on Windows), and make it
   executable (`chmod +x`).
-- Termux on Android: `pkg install dart git`, then
-  `dart pub global activate --source git https://github.com/x1watt/zx`
-  (add `~/.pub-cache/bin` to the PATH). The app itself is `zx.apk`
-  (`tool/build_apk.sh`); the command line is `zx`, the desktop app
+- On Android the app is `zx.apk`, attached to each release (or built
+  with `tool/build_apk.sh`); the command line is `zx`, the desktop app
   `zx-gui`.
 
 Native binaries (no Dart SDK needed to run them):
