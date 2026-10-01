@@ -1,738 +1,407 @@
 # zx
 
-A **port**, not a new archiver: a pure Dart implementation of 7-Zip as the
-public domain LZMA SDK has it, which is the complete `7zr` program. It
-gives Dart and Flutter programs 7z archives (with LZMA, LZMA2, PPMd, the
-branch filters, BCJ2, Delta and AES-256 encryption), xz and lzma files,
-and a command line tool with 7-Zip's commands and switches. The encoders
-write **byte for byte the output of the SDK** at the same settings, so
-archives match 7-Zip's (see Compatibility for the one exception), and
-7-Zip reads everything written here.
+**One archiver for everything, in pure Dart.** zx reads and writes 7z,
+zip, rar, tar, gz, bz2, xz, zpaq, arj, lzh and its own `.zx` format, opens
+disc images, disk images and device firmware down to their files, ships a
+SQL database inside every archive, and compresses with context mixing
+models that land within a few percent of paq8px, from a command line that
+speaks 7-Zip's language.
 
-On top of the SDK, the command line tool reads and writes zip (and jar),
-tar, gzip, bzip2, tar.gz / tgz, tar.bz2, tar.xz, LZH and ARJ, and reads
-RAR (writing RAR5), ported from permissively licensed sources (zlib,
-bzip2, libarchive, lhasa, rardecode) or written from the format
-specifications.
+No native code, no FFI, no plugins: it runs wherever Dart runs (Linux,
+Windows, macOS, Android, iOS), as a library, a command line tool (`zx`)
+and a file explorer app.
 
-No native code, no FFI, no plugins, no run-time dependencies: it works
-wherever `dart:io` does (Android, iOS, Linux, macOS, Windows). All heavy
-work happens in background isolates, so the UI isolate never blocks.
+Version 0.5.0. BSD 3-clause, Copyright (c) 2026 Max Brito.
 
-Status: version 0.5.0, not published to pub.dev (`publish_to: none`).
-Version 0.3.0 added **zx**, a desktop archive manager (Flutter, in `app/`),
-see Desktop app below. Version 0.4.0 reads firmware and disk images (pak,
-uImage, device trees, cpio, ISO, UDF, SquashFS, cramfs, JFFS2, UBI, UBIFS,
-MBR, GPT, FAT, ext) and opens the archives nested in them (see Nested
-archives below), and reads and writes zpaq journaling archives, every
-version of them (engine vendored from the author's zpaq-flutter port of
-libzpaq and zpaq 7.15). Version 0.5.0 adds **.zx**, the format of zx
-itself (see The .zx format below): any codec inside one container,
-explicit compatibility, parallel blocks, appended generations with
-history by date, SHA-256 and TLSH per file, encryption and volumes spread
-over several disks. It is the default format of the app.
+---
 
-## Credits
+## Highlights
 
-All the design, the formats and the codecs behind this package come from
-other people. This is a rewrite in Dart of their work, function by
-function, and it would not exist without it.
+- **7-Zip, ported.** The public domain LZMA SDK (7z, xz, lzma, LZMA,
+  LZMA2, PPMd, BCJ2, AES-256) is ported function by function: at the same
+  settings the encoders write **the same bytes as 7-Zip**, and the command
+  line takes 7-Zip's commands and switches.
+- **Every common format.** zip/jar (Deflate, Deflate64, BZip2, LZMA,
+  PPMd, ZipCrypto, WinZip AES, Zip64), RAR 1.5 to RAR 7 (reading, with
+  every RAR cipher) and RAR5 (writing, with volumes and recovery records),
+  tar and compressed tars, gzip, bzip2, xz, zpaq (journaling, all
+  versions), ARJ, LHA.
+- **Images and firmware.** ISO 9660 (Joliet, Rock Ridge, El Torito), UDF,
+  MBR, GPT, FAT, ext2/3/4, SquashFS, cramfs, JFFS2, UBI, UBIFS, cpio,
+  U-Boot images, device trees and Reolink firmware, opened through every
+  nesting level (`firmware.pak > rootfs > etc`).
+- **`.zx`, a format that never goes stale.** Any codec inside one
+  container, explicit "needs zx X" compatibility, parallel blocks,
+  deduplication, append-only versions with dates and per-file timelines,
+  SHA-256 and TLSH per file, encryption, volumes spread over several disks.
+- **zcm, context mixing in nine levels.** From 1.2 MB/s to a cmix-class
+  mode, built on the models of zpaq, paq8px and cmix: smaller than xz and
+  7-Zip at every level, smaller than paq8px on English text and source
+  code.
+- **zxdb, a database in every archive.** SQLite's SQL (checked against
+  sqlite3), key-value stores, time series for logs, full-text search,
+  `AS OF` time travel, and built-in tables that find any file by SHA-256
+  or by similarity, 5 to 20 times smaller than SQLite.
+- **A file explorer.** Browse the file system and walk into archives like
+  folders, on the desktop and on Android.
 
-| | |
+---
+
+## Install
+
+| You have | Do |
 |---|---|
-| **LZMA SDK**: 7z, xz and lzma formats, LZMA, LZMA2, the branch filters, BCJ2, Delta, 7zAES, the 7zr program | **Igor Pavlov**: <https://www.7-zip.org/sdk.html>. Public domain. Version 26.01 is the specification this port follows, file by file. |
-| **PPMd var.H**, the PPMd model used by 7z (`lib/src/codec/ppmd`) | **Dmitry Shkarin** (2001). Public domain, as included in the LZMA SDK. |
-| **SHA-256** (`lib/src/crypto/sha256.dart`) | **Wei Dai**, from the Crypto++ library. Public domain, as included in the LZMA SDK. |
-| **zlib**: Deflate, Deflate64 (contrib/infback9), used by gzip and zip (`lib/src/codec/deflate`) | **Jean-loup Gailly** and **Mark Adler**: <https://zlib.net>. zlib license. Version 1.3.1. |
-| **bzip2 / libbzip2**: BZip2, used by bzip2 files and zip (`lib/src/codec/bzip2`) | **Julian Seward**: <https://sourceware.org/bzip2/>. bzip2 license (BSD style). Version 1.0.8. |
-| **libarchive**: tar, zip, the RAR 2.9/3.x and RAR5 readers, parts of the LHA reader | **Tim Kientzle** and contributors (Michihiro Nakajima, Andres Mejia, Grzegorz Antoniak and others): <https://www.libarchive.org>. BSD 2-clause. |
-| **rardecode**: the RAR 2.0 decoder with its audio mode, the RAR 3.x key derivation and encrypted headers, RAR 7 (compression version 1) decoding (`lib/src/codec/rar/rar2_decoder.dart`, `lib/src/crypto/rar3_kdf.dart`, `lib/src/codec/rar/rar5_decoder.dart`) | **Nicholas Waples**: <https://github.com/nwaples/rardecode>. BSD 2-clause. |
-| **lhasa**: the LHA decoders (`lib/src/codec/lzh`) | **Simon Howard**: <https://github.com/fragglet/lhasa>. ISC license. |
-| **PPMd var.I**, zip method 98 (`lib/src/codec/ppmd8`) | **Dmitry Shkarin** (2001), as ported to C by Igor Pavlov. Public domain. |
-| **BLAKE2sp**, the RAR5 file hash | **Samuel Neves**, the BLAKE2 reference code. CC0 1.0. |
-| **zpaq**: the ZPAQ journaling format, libzpaq, the ZPAQL machine (`lib/src/zpaq`, vendored from the author's zpaq-flutter port); its content-defined fragmenter also cuts the chunks of .zx dedup (`lib/src/format/zx/zx_dedup.dart`) | **Matt Mahoney**: <http://mattmahoney.net/dc/zpaq.html>. Public domain. zpaq 7.15 is the specification. |
-| **zpaqfranz**: the per file attribute extension (hashes and CRC-32) and its tables | **Franco Corbelli**: <https://github.com/fcorbelli/zpaqfranz>. MIT. |
-| **divsufsort** (in libzpaq), **scrypt** (the zpaq `-key` derivation, also the .zx key derivation) | **Yuta Mori** (MIT) and **Colin Percival** (BSD 2-clause). |
-| **TLSH**, the similarity digest of .zx entries (`lib/src/util/tlsh.dart`) | **Jonathan Oliver**, **Chun Cheng** and **Yanggui Chen** (Trend Micro): "TLSH: A Locality Sensitive Hash" (2013), <https://github.com/trendmicro/tlsh>. Apache 2.0 or BSD 3-clause; used under the BSD license. |
-| **zcm**, the experimental context mixing codecs (`lib/src/codec/zcm`): paq8 and lpaq (StateMap, APM, ContextMap, mixer, match, word, sparse, record, indirect, DMC and x86 models, the arithmetic coder) | **Matt Mahoney** (paq8, lpaq1: <http://mattmahoney.net/dc/>), with **Alexander Rhatushnyak** and **Serge Osnach** (paq8 exe and model work). GNU GPL. |
-| zcm: the paq8px state table, byte history context map, char group, indirect, word, text (with the English stemmer), match, sparse match, sparse bit, linear prediction, similarity, chart, nest, XML and x86 models, stationary and residual maps, image and audio models, E8/E9 transform, SSE stages and APMPost | the **paq8px** authors: Jan Ondrus, **Marcio Pais** (image models from his Emma, audio models), **Andrew Epstein**, **Zoltan Gotthardt**, **Sebastian Lehmann** (the OLS and LMS predictors), Simon Berger, Moises Cardona, Surya Kandau and others (<https://github.com/hxim/paq8px>); the audio model follows **Florin Ghido**'s stereo audio predictor. GNU GPL. |
-| zcm: the LSTM byte model, byte models turned into bit predictions, the English dictionary transform and its word list | **Byron Knoll** (cmix, <https://github.com/byronknoll/cmix>, and lstm-compress). GNU GPL v3. |
-| zcm: PPMd var.H as a byte predictor | **Dmitry Shkarin** (PPMd), through the LZMA SDK port in `lib/src/codec/ppmd`. |
+| Linux, Windows or macOS, no Dart | Download a binary (`zx-linux-x64`, `zx-windows-x64.exe`, `zx-macos-arm64`...) from the releases, rename it `zx`, put it on the PATH |
+| The Dart SDK | `dart pub global activate --source path <repo>` |
+| The desktop app (Linux) | `tool/install_linux.sh`, or the `.deb` from `tool/build_deb.sh` |
+| Android | the APK from `app/build/app/outputs/flutter-apk/` (`cd app && flutter build apk --split-per-abi`) |
 
-The 7z, xz and lzma code comes only from the public domain LZMA SDK; the
-other formats come from the permissive sources above or were written from
-the format documents (PKWARE APPNOTE, RFC 1951 and 1952, POSIX ustar and
-pax, WinZip AES, the RAR5 and ARJ technotes, and for the RAR 1.5 method
-and the RAR 1.5 and 2.0 ciphers the format descriptions of rar-research,
-with black box tests against RAR 1.55, WinRAR 2.90 and unrar). No code from the GNU LGPL
-licensed parts of 7-Zip, from unRAR or from the GPL ARJ was read or used,
-which is why this package can be BSD licensed (with one exception: the
-experimental zcm codecs in `lib/src/codec/zcm` are new Dart code that
-draws on paq8, paq8px and cmix, credited above); each notice is in
-`LICENSE`. 7-Zip is a registered trademark of Igor Pavlov; this
-package is not affiliated with or endorsed by him.
+Binaries are built by `.github/workflows/release.yml` (six targets) or
+locally with `tool/build_binaries.sh`. Details: [docs/app.md](docs/app.md).
 
-The Dart port itself (the ports of the SDK files, the isolate based API,
-the parallel encoder, the tooling and the tests) is Copyright (c) 2026 Max
-Brito, BSD 3-clause, see `LICENSE`.
+---
 
-## What you get
+## The command line
 
-- **7z archives**: create, update (add, replace, delete, rename without
-  recompressing), list, extract, test. Solid and non solid, 7-Zip's
-  automatic filter choice for executables, header compression, split
-  volumes (`name.7z.001`).
-- **Methods**: LZMA, LZMA2, PPMd, Copy; filters BCJ, BCJ2, ARM, ARMT,
-  ARM64, PPC, IA64, SPARC, RISCV, Delta, SWAP2, SWAP4; 7zAES (AES-256 with
-  the SHA-256 key derivation), with or without encrypted file names.
-- **xz**: create and extract, all checks (none, CRC32, CRC64, SHA-256),
-  the branch filters and Delta, multi-block files with sizes in the block
-  headers, multi-stream files. Compression with several threads runs the
-  blocks in parallel isolates and writes the bytes `7z a -txz -mmt=N`
-  writes.
-- **lzma**: `.lzma` (LzmaAlone) and `.lzma86` files.
-- **Other formats** (command line tool): see the table below.
-- **Levels 0 to 9** exactly as 7-Zip maps them to dictionary, match finder
-  and fast bytes.
-
-## Compatibility
-
-Checked by the tests against 7-Zip 23.01 (`/usr/bin/7z`) and xz:
-
-| | |
-|---|---|
-| Archives made by 7-Zip are read here | yes, all SDK methods, solid, encrypted, split |
-| Archives made here are read by 7-Zip | yes |
-| Same settings, same bytes (LZMA, LZMA2, PPMd, filters, xz with `-mmt`) | yes, see below |
-| xz files, both ways with xz 5 | yes |
-
-The LZMA encoder is the SDK's single thread encoder: on a 38 MB input it
-writes the same file as the SDK's `LzmaUtil` built single threaded. 7-Zip
-with more than one thread uses a multithreaded match finder at levels 5 to
-9, which can choose other matches on inputs of several MB, so those
-archives are equally valid but not always identical. The port also follows
-SDK 26.01 where it differs from older 7-Zip versions (level 5 uses a 32 MB
-dictionary; 7-Zip 23.01 used 16 MB).
-
-### Formats of the command line tool
-
-| Format | Extract | Create and update | Checked with |
-|---|---|---|---|
-| 7z | all SDK methods, AES | LZMA, LZMA2, PPMd, Copy, filters, AES | 7z |
-| xz | yes | yes | xz, 7z |
-| lzma, lzma86 | yes | lzma: one file, the LZMA `-m` switches (`-mx`, `-md`, `-mfb`, `-mlc`...); lzma86 through the library | xz, 7z |
-| zip, jar (and zipx, docx, epub...) | Store, Shrink, Reduce, Implode, Deflate, Deflate64, BZip2, LZMA, xz, PPMd; ZipCrypto, WinZip AES | Store, Deflate, Deflate64, BZip2, LZMA, xz, PPMd (`-mm=`); ZipCrypto, AES-128/192/256 (`-mem=`, `-p`); `-mcu`, `-mx` | unzip, jar, 7z |
-| tar | ustar, GNU, pax, long names, sparse files | GNU (default), pax (`-mm=pax`, `-mm=posix`) | tar |
-| gzip (`.gz`) | several members | one file, Deflate, `-mx` | gzip |
-| bzip2 (`.bz2`) | several streams | one file, `-mx` | bzip2 |
-| tar.gz, tgz, tar.bz2, tbz2, tar.xz, txz, tar.lzma, tlz | as one archive (see below) | as one archive | tar |
-| LZH (`.lzh`, `.lha`) | every method lhasa decodes (lh0 to lh7, lzs, lz4, lz5, pm0 to pm2) | lh5 (default), lh6, lh7, lh0 (`-mm=`) | lhasa, jlha |
-| ARJ | methods 0 to 4, garbled files (`-p`), multi-volume archives (`x.arj`, `x.a01`...), UNIX links | methods 0 to 4 (`-mm=`, default 1), garbled files (`-p`), symbolic links (`-snl`) | arj 3.10 |
-| RAR (`.rar`) | RAR 1.5, 2.0 (with audio blocks), 2.9, 3.x, RAR5 and RAR 7 (compression version 1), volumes, the RAR 1.5, RAR 2.0, RAR 3.x and RAR5 encryption (data and headers) | RAR5: volumes (`-v`, `name.part1.rar`...), recovery record (`-mrr=<n>`), encryption (`-p`, `-mhe`) | unrar, rar 7.00; rar 3.93, RAR 2.90 and RAR 1.55 (DOSBox) for the fixtures |
-| cpio | newc, crc, odc, afio large ASCII, old binary (both byte orders), hard and symbolic links | no (extract only) | cpio |
-| ISO 9660 (`.iso`) | Joliet, Rock Ridge, El Torito boot images, zisofs, raw 2352 byte sector images | no (extract only) | xorriso, genisoimage, 7z |
-| UDF (`.iso`, `.udf`) | UDF volumes, ISO/UDF bridge discs | no (extract only) | mkudffs, 7z |
-| SquashFS | version 4.0, gzip, lzma, xz, lzo, lz4 and zstd | no (extract only) | mksquashfs, unsquashfs |
-| cramfs | both byte orders, holes, the extended block pointers | no (extract only) | mkfs.cramfs |
-| JFFS2 | both byte orders; none, zero, rtime, zlib, lzo and lzma nodes | no (extract only) | mkfs.jffs2 |
-| UBI, UBIFS | UBI volumes; UBIFS with lzo, zlib and zstd | no (extract only) | ubinize, mkfs.ubifs |
-| MBR, GPT (disk images) | partitions as items, named after their file system (`0.fat`, `1.ext`) | no (extract only) | sfdisk, sgdisk, 7z |
-| FAT | FAT12, FAT16, FAT32, long names | no (extract only) | mkfs.vfat, mtools |
-| ext2, ext3, ext4 | block maps and extents, inline data, links, devices (the journal is not replayed) | no (extract only) | mke2fs, debugfs |
-| Reolink pak (firmware) | the sections (loader, device tree, U-Boot, kernel, rootfs, app...) | no (extract only) | pakler |
-| uImage (U-Boot legacy image) | the payload, decompressed (gzip, bzip2, lzma, lzo, lz4, zstd) | no (extract only) | mkimage |
-| Device tree (`.dtb`) | the nodes and properties as files, plus the source (`.dts`) | no (extract only) | dtc |
-| zx (`.zx`, zx's own format) | every generation (`-mversion=N` or a date), every codec of the registry (zstd, LZ4 and LZO1X read only), encryption, volume sets, streamed files from a pipe (`-si`) | appends a generation per update (in place, a set gets new volumes); any chain (`-m0=`, `-mf=`), solid or not, encryption (`-p`, names too by default), volumes (`-v`, `-mvdir`), compaction (`-mcompact`) | the tests (it is zx's own) |
-| zpaq (`.zpaq`, journaling) | every version (`-mversion=N`, default the last), all methods, encryption (`-p`, zpaq `-key`), the zpaqfranz hashes and CRC-32 | appends a version per update: deduplicated fragments, deletions recorded, renames without recompression; methods 0 to 5 (`-mx`, default 1) or a zpaq method string (`-mm=`), encryption when created (`-p`) | zpaq 7.15, zpaqfranz |
-
-The RAR 1.5 method and the RAR 1.5 and 2.0 ciphers are independent
-implementations, written from format descriptions and black box tests
-with the old RAR programs and unrar, not from the code of any other
-decoder.
-
-Not supported: RAR recovery volumes (`.rev`), the ARJCRYPT ciphers of ARJ (`arj -hg`), ARJ
-volume creation, cab, wim and the other
-formats of the full 7-Zip, and the Deflate, Deflate64, BZip2 and ZSTD
-methods inside 7z (such archives list, and those items report
-`unsupportedMethod`). Also absent: SFX modules, NTFS alternate streams and
-security data, restoring POSIX permissions (dates are restored), and the
-web platform. The library API (`SevenZipArchive` and the helpers) covers
-7z, xz and lzma; the other formats have synchronous handlers in
-`lib/src/format` and are used through the command line tool.
-
-## Use
-
-```yaml
-dependencies:
-  zx:
-    path: ../zx   # or a git reference
 ```
+zx <command> [<switches>...] <archive> [<files>...] [@listfile]
+```
+
+The syntax is 7-Zip's: if you know `7z`, you know `zx`.
+
+| Command | Does |
+|---|---|
+| `a` | add files (creates the archive) |
+| `u` | update (add new and changed files) |
+| `x` | extract with full paths |
+| `e` | extract without paths |
+| `l` | list (`-slt` for every property) |
+| `t` | test integrity |
+| `d` | delete |
+| `rn` | rename inside the archive |
+| `h` | hashes of files (`-scrcSHA256`...) |
+| `i` | supported formats and codecs |
+| `b` | benchmark |
+| `sql` | run SQL on a `.zx` database (zx extension) |
+
+Common switches (all of 7-Zip's work):
+
+| Switch | Meaning |
+|---|---|
+| `-o{dir}` | output folder |
+| `-p{password}` | password; `-mhe` also encrypts file names |
+| `-t{type}` | archive type (`-tzip`, `-t7z`, `-tzx`, `-ttar`...); default from the extension |
+| `-mx={0..9}` | level; `-mm=`, `-m0=` choose the method |
+| `-r` | recurse; `-x!pattern`, `-i!pattern` exclude/include |
+| `-v{size}` | split into volumes (`-v4g`) |
+| `-ao{a,s,t,u}` | overwrite mode (all, skip, rename new, rename old) |
+| `-y` | yes to all |
+| `-si`, `-so` | read from stdin / write to stdout |
+| `-sdel` | delete files after adding |
+| `-bb{0..3}` | output detail |
+
+zx extensions (not in 7-Zip):
+
+| Switch | Meaning |
+|---|---|
+| `-snest[N]` | list, test or extract through nested archives and images as one tree |
+| `-mversion=N` or `=YYYY-MM-DD[ HH:MM]` | read an archive (.zx, zpaq) as it was at that version or date |
+| `-mtimeline=path` | every version of one file, with dates |
+| `-mgenerations` | list the versions of a .zx archive |
+| `-mcompact[=N]` | rewrite a .zx keeping only the last N versions |
+| `-m0=zcm:auto`, `-mtime=10m`, `-mmem=2g` | pick the strongest zcm level that fits a time and memory budget |
+| `-mdedup=on/off` | chunk-level deduplication in .zx (on by default) |
+| `-mvdir=DIR[:SIZE\|:full]` | write volumes to several folders/disks in order |
+| `-mvsearch=DIR` | where to look for volumes when reading |
+| `-mmemuse=SIZE` | cap the memory of parallel workers |
+
+### Examples
+
+```sh
+# Everyday archives
+zx a backup.7z ~/docs                     # 7z, LZMA2, 7-Zip's defaults
+zx a -mx9 -psecret -mhe backup.7z ~/docs  # max level, encrypted names
+zx x backup.7z -o/restore                 # extract
+zx a site.zip public/ -mm=Deflate -mx9    # zip
+zx a src.tar.gz src/                      # a tar written straight into gzip
+zx x release.tar.xz -oout                 # tar.xz extracted in one pass
+zx x photos.rar                           # any RAR, 1.5 to 7
+zx a -v700m -mrr=5% big.rar data/         # RAR5 volumes with recovery record
+
+# The .zx format
+zx a backup.zx ~/docs                     # first version
+zx a backup.zx ~/docs                     # second version: only the changes
+zx l backup.zx -mgenerations              # versions with their dates
+zx x backup.zx -mversion=2026-09-01 -oold # the archive as it was that day
+zx l backup.zx -mtimeline=docs/plan.txt   # every version of one file
+zx a -mcompact backup.zx                  # drop old versions, keep the last
+zx a -m0=zcm:auto -mtime=10m corpus.zx texts/   # strongest zcm in 10 minutes
+zx a -m0=zcm:cmix -mmem=8g corpus.zx texts/     # cmix-class, slow, smallest
+zx a -v4g -v25g -mvdir=/mnt/a:full -mvdir=/mnt/b:full huge.zx data/
+
+# Firmware and disk images
+zx l -snest firmware.pak                  # sections, kernel, rootfs files...
+zx x -snest -snld20 firmware.pak -oout    # the whole root file system
+zx l disk.img                             # partitions; zx l -snest for files
+
+# The database inside an archive
+zx sql backup.zx "SELECT path, size FROM zx_files ORDER BY size DESC LIMIT 10"
+zx sql backup.zx "SELECT path, distance FROM similar('docs/report.pdf', 20)"
+zx sql notes.zx                           # interactive shell, like sqlite3
+```
+
+Full reference of every switch: [docs/cli.md](docs/cli.md).
+
+---
+
+## Formats
+
+| Format | Read | Write |
+|---|---|---|
+| **zx** (`.zx`) | everything | everything (see below) |
+| 7z | all methods of the LZMA SDK, AES, split volumes | LZMA, LZMA2, PPMd, filters, BCJ2, AES, solid, update in place of 7-Zip's rules |
+| zip, jar, docx, epub, apk... | Store, Shrink, Reduce, Implode, Deflate, Deflate64, BZip2, LZMA, xz, PPMd; ZipCrypto, WinZip AES; Zip64 | Store, Deflate, Deflate64, BZip2, LZMA, xz, PPMd; ZipCrypto, AES-128/192/256 |
+| rar | RAR 1.5, 2.0, 2.9, 3.x, RAR5, RAR 7; all ciphers; volumes | RAR5 with volumes, recovery records, encryption |
+| tar | ustar, GNU, pax, sparse, long names | GNU or pax |
+| tar.gz, tgz, tar.bz2, tar.xz, tar.lzma | as one archive | as one archive |
+| gz, bz2, xz, lzma | yes | yes |
+| zpaq | every version, encryption | appends versions (dedup, deletions), zpaq 7.15 and zpaqfranz compatible |
+| arj, lzh/lha | all methods, ARJ passwords and volumes | yes |
+| ISO 9660, UDF | Joliet, Rock Ridge, El Torito, zisofs; UDF 1.02 to 2.60 | |
+| SquashFS, cramfs, JFFS2, UBI, UBIFS | all compressors | |
+| MBR, GPT, FAT, ext2/3/4, cpio | yes | |
+| uImage, device tree, Reolink pak | firmware sections, decompressed kernels, `.dts` source | |
+
+Files are recognized by their content, not their name: a 7z renamed
+`.txt` or a tar.gz made in a pipe opens correctly.
+
+---
+
+## The .zx format
+
+`.zx` is zx's own container ([specification](docs/zx-format.md),
+[design](docs/zx-format-design.md)). The extension says only "zx can read
+this"; every block names the codec chain that made it, so new algorithms
+never need a new extension.
+
+- **Explicit compatibility.** Every file records the oldest zx version
+  that can decode it and the features it needs. An older zx refuses at
+  once: "needs zx 0.7.0 or later: codec zstd-long".
+- **Any codec, per block.** LZMA2, LZMA, PPMd, PPMd8, BZip2, Deflate,
+  zpaq, zcm and the branch filters, chosen per block or automatically.
+- **Parallel.** Blocks of up to 64 MiB are coded by worker isolates: 3x
+  faster on 4 threads, identical output for any thread count. A memory
+  guard keeps the workers inside the free RAM.
+- **Deduplication.** Files are cut into content-defined chunks (zpaq's
+  fragmenter); a chunk already stored, in this update or any earlier one,
+  is stored once. A second version of a source tree costs 0.3 MB instead
+  of 4.8 MB; the chunk index scales to 100 GiB with 13 MB of RAM.
+- **Versions with dates.** Every update appends a generation and never
+  rewrites old bytes; an interrupted update is simply ignored. Read the
+  archive as of a version or a date, list one file's timeline, compact
+  when you want the space back.
+- **Find by content.** Every file has its SHA-256 (sorted for binary
+  search) and a TLSH similarity digest.
+- **Encryption.** scrypt, AES-256-CTR and HMAC-SHA-256; names hidden by
+  default; a wrong password is reported immediately.
+- **Volumes over several disks.** A list of volume sizes, destination
+  folders with budgets or "until full", search folders when reading;
+  updates add new volumes, so old disks can stay offline.
+- **Pipes.** Written to stdout and read from stdin in one pass.
+
+---
+
+## Compression: zcm
+
+zcm is zx's context mixing codec family, built on the models of zpaq,
+paq8px and cmix (credited below) and rewritten in Dart with fully
+deterministic arithmetic, so an archive decodes identically on every
+machine. Each level scales its models to a memory budget, and
+`-m0=zcm:auto` picks the strongest level that fits your time and memory.
+
+| Level | Speed (AOT) | Memory | Use |
+|---|---|---|---|
+| 1 | 1.2 MB/s | ~40 MiB | fast, already better than xz |
+| 3 | 200 KB/s | ~30 MiB | beats zpaq's strongest method |
+| 5 | 85 KB/s | ~35 MiB | paq8-style models with data detection |
+| 7 | 10 KB/s | ~170 MiB | paq8px text, image and audio models |
+| 9 | 4 to 6 KB/s | ~400 MiB | everything, plus PPMd and gain gating |
+| cmix preset | 2 to 3 KB/s | as budget allows | adds cmix's LSTM byte mixer |
+
+Small corpus (text, source code, an x86 binary, a firmware slice; 700,986
+bytes), total compressed bytes:
+
+| Compressor | Bytes |
+|---|---|
+| 7z PPMd | 384,433 |
+| xz -9e | 381,240 |
+| zpaq method 5 | 357,160 |
+| zcm level 1 | 366,552 |
+| zcm level 3 | 350,935 |
+| zcm level 5 | 341,206 |
+| zcm level 9 | 331,324 |
+| paq8px -8 (C++, 2.4 GB of RAM) | 330,801 |
+
+zcm level 9 against paq8px -8, per kind of data:
+
+| Data | zcm vs paq8px |
+|---|---|
+| English text | 0.7 to 5% smaller |
+| Source code (C++, Dart) | 0.5 to 1% smaller |
+| Grayscale image | +0.05% |
+| Color photo (PPM / BMP) | +0.45% / +3.45% |
+| 16-bit stereo music | +0.96% |
+| 8-bit voice | +0.34% |
+| x86 binary | +2.6% |
+
+What makes it work: data-type detection per block (text, x86 code,
+images including headerless raw ones, audio), an English dictionary
+transform, paq8px's word, text (with a stemmer), match, sparse, x86,
+image and audio models, two-layer mixers with SSE stages, PPMd and DMC
+as byte predictors gated by measured gain, and cmix's LSTM byte mixer.
+Speeds and all measurements: [docs/performance.md](docs/performance.md).
+zcm is experimental (stream version 1.0): the default `.zx` codec is
+still LZMA2 until benchmarks pick one.
+
+---
+
+## zxdb: the database inside every archive
+
+A `.zx` archive can hold a database next to its files
+([design](docs/zxdb-design.md), [SQL reference](docs/zxdb-sql.md)).
+Every commit is an archive version, so every table can be read as it was.
+
+```sql
+-- built into every archive, no setup
+SELECT path, size FROM zx_files WHERE sha256 = x'9f86d081...';
+SELECT path, distance FROM similar('photos/IMG_0042.jpg', 20);
+SELECT path FROM zx_files AS OF '2026-09-01' WHERE path LIKE 'docs/%';
+SELECT * FROM zx_file_history WHERE path = 'docs/plan.txt';
+
+-- your own tables, SQLite dialect, compression per table
+CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)
+  WITH (compression = 'max');
+SELECT * FROM notes AS OF GENERATION 42;
+SELECT * FROM HISTORY OF notes WHERE id = 7;
+
+-- key-value stores and time series
+CREATE KV STORE settings WITH (ttl = '30d');
+CREATE TIMESERIES logs (ts DATETIME, level TEXT, msg TEXT)
+  PARTITION BY DAY RETENTION '400d' WITH (tags = (level), fts = on);
+SELECT count(*) FROM logs WHERE ts >= '2026-09-01' AND level = 'error';
+```
+
+- **SQL**: SQLite's dialect, verified differentially against sqlite3
+  3.45.1 with fuzzing (joins, CTEs, upsert, RETURNING, JSON functions,
+  dates).
+- **Key-value stores**: get in 1.4 us, 315k sequential and 161k random
+  puts per second, TTL, change streams.
+- **Time series**: columnar segments (delta-of-delta timestamps, XOR
+  floats, dictionaries, zcm text), partitions, retention, rollups,
+  full-text search; 1M log lines take 8.6x less space than SQLite.
+- **Metadata compatible with arca**: descriptions, tags, subtitles,
+  transcripts, screenshots and fingerprints keyed by SHA-256, with
+  lossless import and export of arca sidecars, and BM25 full-text search.
+- **Find by content**: SHA-256 lookup in 2 us; the 20 most similar files
+  among a million in under 15 ms (TLSH band index).
+- **Tools**: `zx sql` (batch or interactive shell, sqlite3-compatible
+  output and dot commands, `.asof`, `.import-sqlite`, `.export-sqlite`),
+  and a pure Dart reader and writer of SQLite files.
+
+Against sqlite3 (100k rows): point select 4.8 us vs 11.7 us; files 4 to
+20 times smaller depending on data and level (20k JSON records: 158 KiB
+at `max` vs 2,680 KiB).
+
+---
+
+## The app
+
+zx is also a file explorer (Flutter; desktop and Android):
+
+- places, drives and bookmarks; breadcrumbs that continue into archives;
+  list and icon views with thumbnails; search; file operations with
+  progress, trash and conflict handling;
+- archives, nested archives, disk images and firmware open like folders:
+  copy out to extract, paste in to add;
+- `.zx` archives show their versions and a Data view with the database
+  (tables, KV stores, time series, queries, file metadata, find similar);
+- compression settings: Auto (time budget) or manual (method, memory,
+  LSTM, threads, dedup);
+- Linux integration: file associations and "Extract to folder" in the
+  file manager menus; Android: all-files storage access, SD and USB
+  volumes, open from and share to other apps.
+
+More: [docs/app.md](docs/app.md) and [app/README.md](app/README.md).
+
+---
+
+## Library
 
 ```dart
 import 'package:zx/zx.dart';
 
-final archive = SevenZipArchive('/data/backup.7z', password: 'optional');
+// Any format, in a background isolate
+final a = await ZxArchive.open('backup.zx');
+for (final item in a.items) print('${item.path} ${item.size}');
+await a.extract('/restore');
+await a.add([ZxSource('/home/me/docs')]);
+final old = await ZxArchive.open('backup.zx', date: '2026-09-01');
+final similar = a.findSimilar('docs/report.pdf'); // (item, distance) pairs
 
-// Create or update: files with the same stored name are replaced.
-await archive.add(
-  [SevenZipSource('/data/user/0/app/files/photos')], // stored as photos/...
-  options: const SevenZipOptions(level: 9, encryptHeaders: true),
-  onProgress: (p) => print('${p.doneBytes} of ${p.totalBytes}'),
-);
-
-final listing = await archive.list();
-for (final e in listing.entries) {
-  print('${e.path} ${e.size} ${e.modified}');
-}
-
-// Everything, or a subtree, with a policy for existing files.
-await archive.extract('/restore');
-await archive.extract('/restore',
-    paths: ['photos/2025'], overwrite: SevenZipOverwrite.skip);
-
-final bytes = await archive.readFile('photos/cat.jpg');
-print((await archive.test()).ok);
-
-await archive.rename({'photos/cat.jpg': 'photos/tom.jpg'});
-await archive.delete(['photos/2019']);
+// A database in an archive
+final db = await ZxDatabaseAsync.open('notes.zx');
+await db.execute('CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT)');
+await db.execute('INSERT INTO t (v) VALUES (?)', ['hello']);
+final r = await db.execute('SELECT * FROM t');
 ```
 
-Cancel any operation with a token; its isolates are killed and the files
-it was writing are removed:
+Heavy work runs in worker isolates, never on the UI isolate. API guide:
+[docs/api.md](docs/api.md).
 
-```dart
-final token = SevenZipCancelToken();
-final job = archive.extract('/restore', cancel: token);
-// later
-token.cancel(); // job completes with SevenZipException(cancelled)
-```
+---
 
-xz and lzma files, and small data in memory:
+## Under the hood
 
-```dart
-await xzCompressFile('big.tar', 'big.tar.xz', level: 6, threads: 4);
-await xzDecompressFile('big.tar.xz', 'big.tar');
-await lzmaCompressFile('a.bin', 'a.bin.lzma');
+- [docs/architecture.md](docs/architecture.md): how the code is organized
+  and the rules every change keeps.
+- [docs/performance.md](docs/performance.md): every number, with the
+  method to reproduce it.
+- [docs/zx-format.md](docs/zx-format.md), [docs/zxdb-sql.md](docs/zxdb-sql.md),
+  [docs/cli.md](docs/cli.md).
 
-final packed = xzCompress(bytes);          // on the calling isolate
-final plain = xzDecompress(packed);
-final z = sevenZipCompressBytes({'a.txt': utf8.encode('hello')});
-final files = sevenZipDecompressBytes(z);  // {'a.txt': [...]}
-```
+Tests (`dart test`, `cd app && flutter test`) compare against the real
+tools wherever they exist: 7z, xz, zip/unzip, tar, gzip, bzip2, rar and
+unrar, arj, lhasa, zpaq and zpaqfranz, sqlite3, mksquashfs, xorriso,
+mkfs.* and paq8px.
 
-The in memory helpers run on the calling isolate; wrap them in
-`Isolate.run` for large inputs.
+---
 
-### API
+## Credits
 
-| | |
+zx stands on the work of many people. Every file names its sources.
+
+| Work | Authors |
 |---|---|
-| `SevenZipArchive(path, {password})` | A 7z archive (or `name.7z.001` for split volumes). The password is used for encrypted data and names, and encrypts new data in `add`. |
-| `list()` | `SevenZipListing`: entries (`SevenZipEntry`: path, size, packed size, CRC, times, attributes, method, encrypted, block), solid, number of blocks, sizes. |
-| `extract(dir, {paths, overwrite, restoreTimes, onProgress, cancel})` | Extracts into `dir`. `paths` selects stored names; a directory selects everything below it. Returns `SevenZipExtractResult` (files, dirs, bytes, skipped, errors, `wrongPassword`). |
-| `test({paths, onProgress, cancel})` | Decodes and checks CRCs without writing. |
-| `readFile(name)` | One stored file as bytes. |
-| `add(sources, {options, onProgress, cancel})` | Creates or updates. Returns `SevenZipUpdateResult`. |
-| `delete(names, ...)`, `rename(map, ...)` | Remove items, or rename them (a directory with its contents) without recompressing. |
-| `xzCompressFile`, `xzDecompressFile`, `lzmaCompressFile`, `lzmaDecompressFile` | File to file, in a background isolate, with progress and cancellation. |
-| `xzCompress`, `xzDecompress`, `lzmaCompress`, `lzmaDecompress`, `sevenZipCompressBytes`, `sevenZipDecompressBytes` | In memory, on the calling isolate. |
+| LZMA SDK: 7z, xz, lzma, LZMA, LZMA2, branch filters, BCJ2, 7zAES, the 7zr program | **Igor Pavlov** (public domain) |
+| PPMd var.H and var.I | **Dmitry Shkarin** (public domain) |
+| SHA-256 | **Wei Dai**, Crypto++ (public domain) |
+| zlib: Deflate, Deflate64 | **Jean-loup Gailly** and **Mark Adler** |
+| bzip2 | **Julian Seward** |
+| libarchive: tar, zip, RAR readers, LHA | **Tim Kientzle** and contributors |
+| rardecode: RAR 2.0, RAR 3.x keys, RAR 7 | **Nicholas Waples** |
+| lhasa: LHA decoders | **Simon Howard** |
+| zpaq, libzpaq, the fragmenter | **Matt Mahoney** (public domain) |
+| zpaqfranz | **Franco Corbelli** |
+| divsufsort, scrypt | **Yuta Mori**, **Colin Percival** |
+| TLSH | **Jonathan Oliver**, **Chun Cheng**, **Yanggui Chen** (Trend Micro) |
+| BLAKE2 | **Samuel Neves** and the BLAKE2 team |
+| paq8, lpaq | **Matt Mahoney**, **Alexander Rhatushnyak**, **Serge Osnach** |
+| paq8px models (text, image, audio, x86, SSE...) | **Jan Ondrus**, **Marcio Pais**, **Andrew Epstein**, **Zoltan Gotthardt**, **Sebastian Lehmann** and the paq8px authors; **Florin Ghido** (audio predictor) |
+| cmix: LSTM, byte mixer, dictionary | **Byron Knoll** |
 
-`SevenZipOptions` sets `level` (0 to 9, default 5), `method` (`'LZMA2'`,
-`'LZMA'`, `'PPMd'`, `'Copy'`, or with properties such as
-`'LZMA2:d=64m:fb=64'`), `solid` or `solidBlock` (`'64m'`, `'100f'`, `'e'`),
-`filter` (`'BCJ2'`, `'ARM64'`, `'off'`...), `encryptHeaders`, `threads`,
-`storeSymlinks` and `switches`, any other `-m` switch body (`'qs'`,
-`'hc=off'`, `'tm=off'`). They are 7-Zip's switches, applied by the ported
-7z handler, so their meaning and defaults are 7-Zip's.
-
-Errors are `SevenZipException` with a `kind` (`SevenZipError.wrongPassword`,
-`crc`, `data`, `isNotArc`, `unsupportedMethod`, `cancelled`...), and cross
-the isolate boundary unchanged.
-
-### Lower level
-
-`package:zx/zx.dart` also exports the synchronous building blocks, for
-programs that run them in their own isolates or need streams:
-`SevenZipReader` and `SevenZipWriter.update` (items kept, replaced,
-renamed, added from any `InStream`), `XzArchive`, `LzmaAloneArchive`,
-`MultiInStream` / `MultiOutStream` for volumes, the stream classes, and the
-codecs (`LzmaCompressor`, `Lzma2Compressor`, `PpmdCompressor`, their
-decoder streams, `createFilterEncoder`, `Crc32`, `Crc64`, `Sha256`). They
-block while they work: do not call them on the UI isolate.
-
-### In a Flutter app
-
-Call the API from anywhere; each operation runs in its own isolate.
-Progress arrives on the calling isolate at most every 100 ms. Extraction
-writes `name.zx-part` and renames it only when the file is complete and its
-CRC matched, so a failed or cancelled extraction never leaves a half
-written file under the real name; an update writes the new archive beside
-the old one and renames it at the end.
-
-Memory is 7-Zip's: the LZMA encoder needs about 11 times the dictionary
-(level 5: 16 MB dictionary, about 200 MB; level 9: 64 MB, about 700 MB),
-the decoder about the dictionary. On phones prefer levels up to 5. See
-`docs/performance.md`.
-
-## Command line
-
-The package includes 7zr's command line as the `zx` program, with the same
-commands and switches as 7-Zip:
-
-```sh
-zx <command> [<switches>...] <archive> [<files>...]
-zx a -mx9 backup.7z docs/
-zx x -psecret backup.7z -oout
-zx l -slt backup.7z
-zx a site.zip public/ -mm=deflate -mx9
-zx a -psecret -mem=AES256 private.zip notes/
-zx a src.tar.gz src/            # a tar written straight into gzip
-zx x release.tar.xz -oout
-zx a old.lzh docs/ -mm=lh7
-zx t backup.arj
-zx a backup.zpaq docs/          # a new version of a zpaq backup
-zx l backup.zpaq -mversion=2    # as it was after version 2
-zx a backup.zx docs/            # a new generation of a .zx archive
-zx x backup.zx -mversion=2026-09-01 -oold   # as of a date
-```
-
-The format comes from the extension (`-t` chooses it: `-tzip`, `-ttar`,
-`-tgzip`, `-tbzip2`, `-tLzh`, `-tArj`, `-tRar5`...), and the `-m`
-switches are the ones 7-Zip has for that format.
-
-**Compressed tar archives.** 7-Zip opens `x.tar.gz` as a gzip archive that
-holds one file, `x.tar`. `zx` treats a tar inside gzip, bzip2, xz or lzma
-as one archive when the names say so (`x.tar.gz`, `x.tgz`, `x.tar.bz2`,
-`x.tbz2`, `x.tar.xz`, `x.txz`, `x.tar.lzma`, `x.tlz`..., or a stored name
-ending in `.tar`): `l` lists the tar items (with a block for each level,
-as 7-Zip prints nested archives), `x`, `e` and `t` read the tar in one
-pass through the decompressor, `a` writes the tar straight into the
-compressor, and `a`, `u`, `d` and `rn` on an existing archive decompress
-the tar to a temporary file (in the `-w` folder or next to the archive),
-update it and write the new archive in its place. `-m` switches go to the
-compressor (`-mx`, `-mmt`...), except `-mm=gnu|pax|posix`, `-mtm`, `-mtc`,
-`-mta`, `-mtp` and `-mcp`, which go to tar. `-ttar` opens any compressed
-tar this way, and so does the type chain `-ttar.gzip` (7-Zip's order:
-tar inside gzip). `-tgzip`, `-tbzip2`, `-txz` and `-tlzma` keep 7-Zip's
-view of one compressed file.
-
-**zpaq archives** are journals: every `a`, `u`, `d` or `rn` appends a new
-version and never rewrites the old ones (the new file is the old one plus
-the version). Files are cut into fragments and a fragment already stored
-in any version is not stored again; unchanged files cost nothing, a
-deleted file is recorded as a deletion, a renamed one reuses its
-fragments. `l`, `x`, `e` and `t` show the last version, or the version N
-with `-mversion=N` (`l -slt` prints `Versions` and each item's
-`Version`); an archive opened at an older version is not updated.
-Methods: `-mx=0` to `-mx=5` (zpaq's levels, default 1; higher values are
-5) or `-mm=<zpaq method>` (`14`, `x4.3ci1`...), `-mfragment=N` (zpaq
-`-fragment`), `-mhash=xxh64|sha1|off` (the zpaqfranz file hash, default
-XXHASH64). `-p` encrypts a new archive as zpaq `-key` does (AES-256 in CTR
-mode, scrypt); an encrypted archive has no signature and is recognized by
-its `.zpaq` extension (or `-tzpaq`). The update runs on one thread
-(`-mmt` is accepted and ignored). Archives stay readable and writable by
-zpaq 7.15 and zpaqfranz, in both directions.
-
-### The .zx format
-
-`.zx` is zx's own container (specification: `docs/zx-format.md`, design:
-`docs/zx-format-design.md`). The extension and the magic bytes
-(`89 5A 58 0D 0A 1A 0A 00`) only say "zx can read this": every block
-names its coder chain, so new codecs come without a new extension. Every
-file states the oldest zx release that can read it and the features it
-needs, and an older zx refuses cleanly ("needs zx 0.7.0 or later") before
-reading any data.
-
-- **Codecs**: LZMA2 (the default for now: the default chain will be
-  chosen by benchmarks), LZMA, PPMd (var.H), PPMd8 (var.I), BZip2,
-  Deflate, zpaq (context mixing, one zpaq block per zx block) and store,
-  after the filters BCJ, ARM, ARMT, ARM64, PPC, SPARC, IA64, RISCV and
-  Delta; zstd, LZ4 and LZO1X are read. Experimental codec families
-  register in their own id range (`registerZxCodec`): **zcm** (id
-  0x10000), context mixing in nine levels from about 0.6 MB/s (level 1)
-  to paq8px style models (levels 6 to 8, 12 to 22 KB/s) and level 9 with
-  PPMd and an optional LSTM (`-m0=zcm:level=3`, `-m0=zcm:cmix:mem=4g`;
-  `lib/src/codec/zcm`, `docs/performance.md`). An archive that uses it
-  can only be read by the zx version that wrote it or a later one.
-- **Compression settings** (zx switches, not in 7-Zip): `-m0=zcm:auto`
-  chooses the zcm level, its memory and the number of workers for this
-  machine and this input, and prints the choice before compressing
-  (`zcm level 6, 1.2 GiB, 2 threads, estimated 3 min`; `-bb1` adds the
-  machine, the budget and the reason). The choice is the strongest level
-  whose estimated time fits `-mtime` (`90s`, `10m`, `2h`, `1h30m`, or the
-  presets `fast`, `balanced` (the default) and `max`, about 500, 100 and
-  10 KB/s of input, and at least 5 s, 30 s and 5 min) within the memory zx may use: `-mmem=SIZE`, or 75% of
-  the available memory and at most the available memory less 1.5 GiB
-  (the default of `-mmemuse`, whose estimate the choice uses, so the
-  memory guard never has to cut its workers). The workers each code one
-  block (`-mmt`, `-mbs`, `-mmemuse` bound the choice when given). `-mcal` measures this machine first (a quarter of a
-  second) instead of the nominal speeds of `docs/performance.md`.
-  `-mtime` or `-mcal` without a method means `-m0=zcm:auto`. With a
-  fixed level, `-mmem` is the model memory of each block and
-  `-mlstm[=CELLS/LAYERS/HORIZON]` adds the LSTM of level 9 (with auto it
-  sizes the LSTM when it is chosen; `-mlstm-` never chooses it). `-mx`
-  takes names: with zcm `fast` (2), `normal` (4), `max` (6), `ultra` (8)
-  and `cmix` (9, with the LSTM), with the other methods `store` (0),
-  `fastest` (1), `fast` (3), `normal` (5), `max` (7), `ultra` (9). The
-  archive stores plain settings (`zcm:6:m1024`), so any machine decodes
-  it; decompression takes about as long as compression.
-- **Blocks** of 16 MiB (`-mbs=4k..64m`), solid by default (`-ms=off`: a
-  file per block), coded in parallel by worker isolates (`-mmt`; by
-  default as many as half the processors). The workers of a write, an
-  extraction or a compaction keep their estimated memory (from the codec
-  settings: the LZMA dictionary, the PPMd model, the zpaq method, the zcm
-  budget) under `-mmemuse=SIZE` (`4g`, or `p50` for half the RAM), by
-  default 75% of the available memory and at most the available memory
-  less 1.5 GiB; fewer blocks are coded at once when they would not fit. A damaged block fails only the files that use it; every block
-  has a check (`-mcheck=xxh64|crc32c|sha256|blake2sp|none`).
-- **Generations**: every `a`, `u`, `d` or `rn` appends a generation in
-  place, with its time; the old bytes are never rewritten, and an
-  interrupted update is ignored and overwritten by the next one. `l`, `x`,
-  `e`, `t` read any generation: `-mversion=3`, `-mversion=2026-09-01`,
-  `-mversion="2026-09-01 14:30"` (local time, the last generation up to
-  the end of that day or minute). `l -mgenerations` lists them, `l
-  -mtimeline=path` lists the versions of one file with the generation
-  (and date) that wrote each and the one that replaced or deleted it.
-  `a -mcompact[=N] x.zx` (without file names) rewrites the archive with
-  the data of the last N generations only (1 by default; blocks used in
-  part are repacked); `-mcompact` with an update compacts after it. `l
-  -slt` shows `Wasted`, the bytes a compaction frees.
-- **Dedup** (on by default, `-mdedup=off`): every file is cut into chunks
-  of about 64 KiB where its content says (zpaq's fragmenter,
-  `-mchunk=4k..4m`), and a chunk already stored, in this update or in an
-  earlier generation, is stored once; a file with the size and SHA-256 of
-  a stored one reuses its data at once. Copies, renamed or moved files,
-  files sharing parts and data added again later cost almost nothing (a
-  second version of a 7 MB source tree added as a new generation: 0.3 MB).
-  The archive keeps a table of its chunks for the next updates; it is
-  left out of a clear index of an encrypted archive.
-- **Hashes**: every file has its SHA-256 (sorted in a lookup table) and a
-  TLSH digest (similar files, `ZxArchive.findSimilar`).
-- **Encryption**: `-p` (scrypt, AES-256-CTR, HMAC-SHA-256); the names are
-  encrypted too unless `-mhe=off`. A wrong password is refused at once.
-- **Streamed**: written to a pipe (`zx a -tzx -so x.zx dir | ...`) the
-  file has inline records, and `zx x -tzx -si` reads it in one pass.
-- **Volumes**: `-v` (repeat it for a list of sizes, the last one
-  repeating: `-v4g -v25g`), `-mvdir=DIR[:SIZE|:full]` (destination
-  folders in order, each with a budget or until its disk is full),
-  `-mvsearch=DIR` (folders where volumes are looked for when reading;
-  volumes are recognized by their header, whatever their names). An
-  update of a set adds new volumes and leaves the old ones as they are.
-
-```sh
-zx a -m0=PPMd8:o=8:mem=256m notes.zx notes/
-zx a -mf=ARM64 -m0=LZMA2:d=64m firmware.zx build/
-zx a -m0=zcm:level=6 -mmt2 texts.zx texts/
-zx a -m0=zcm:auto -mtime=2h -mmem=4g corpus.zx corpus/
-zx a -mtime=max -mcal -bb1 notes.zx notes/
-zx a -mx=ultra -m0=zcm -mmem=1g logs.zx logs/
-zx a -v4g -v25g -mvdir=/mnt/disk1:100g -mvdir=/mnt/disk2:full big.zx data/
-zx l -mvsearch=/mnt/disk2 /mnt/disk1/big.zx.001
-zx l -mtimeline=docs/plan.txt backup.zx
-```
-
-In the library: `ZxArchive.create`, `open(version:, date:,
-searchDirs:)`, `add`, `delete`, `rename`, `extract`, `test`, `compact`,
-`timeline`, `findBySha256`, `findSimilar`, and `ZxOptions.volumeSizes`,
-`volumeDirs` and `compression`: `ZxCompression.auto(timeBudget:, speed:,
-memoryBudget:, calibrate:)` or `ZxCompression.manual(zcm: ZcmOptions(...))`
-/ `manual(chain: 'BCJ LZMA2:d=64m')`. `ZxArchive.estimate(sources,
-options:)` tells, without compressing, what an update would choose and
-cost: the zcm level, threads, estimated time and peak memory, a range of
-output sizes (from a 64 KiB sample of the input, which also measures this
-machine's speed) and warnings (more memory than the machine can spare,
-hours of work); its `compression` pins those settings for the update.
-`ZxOptions.dedup` and `memoryLimit` give `-mdedup` and `-mmemuse`.
-The synchronous building blocks (`ZxWriter`,
-`ZxArchiveReader`, `ZxHandler`, `Tlsh`) are exported by `package:zx/zx.dart`.
-
-### Nested archives
-
-Firmware and disk images hold images inside images: a Reolink pak holds a
-uImage kernel and UBI images whose volumes are UBIFS file systems, a disk
-image holds FAT and ext partitions. By default `zx` behaves as 7-Zip and
-opens one level: `zx l firmware.pak` lists the sections. The zx switch
-`-snest[N]` (not in 7-Zip) shows the whole thing as one tree for `l`, `t`,
-`x` and `e`: every item that is itself an archive or an image becomes a
-folder holding its contents, down to N levels (default 4):
-
-```sh
-zx l -snest firmware.pak        # loader, fdt/..., kernel/..., rootfs/bin/...
-zx x -snest firmware.pak -oout  # out/rootfs/ holds the root file system
-zx t -snest disk.img
-```
-
-The items of the container formats (pak, uImage, UBI, MBR, GPT) are
-always tried; any other item is tried when its first bytes match the
-signature of a known format (so an ISO inside a tar opens, a text file
-never does). A folder whose archive holds a single archive shows that one
-directly (`rootfs/` holds the UBIFS files of the only UBI volume); a
-compressed file or a device tree inside a file system (`x.gz`, `x.dtb`)
-stays a file. `-t` chains work as before. Symbolic links of firmware file
-systems often point up (`../bin/busybox`) or are absolute, which 7-Zip
-refuses by default: add `-snld20` to create them.
-
-The library does the same: `ZxArchive.open(path, flatten: true)` lists,
-extracts, tests and reads the tree (`ZxItem.nestedFormat` marks the
-folders of nested archives), and `archive.openNested(item)` opens one
-item as an archive of its own, with `parent` and `nestPath` to go back.
-Both are read only; `close()` deletes the temporary copies made for
-formats without random access to their items (7z, rar).
-
-Hard links (tar, cpio, SquashFS, UBIFS, ext...) are extracted as hard
-links, or as copies where the file system has none.
-
-`ZxArchive` handles zpaq like the other formats (`ZxArchive.create(
-'backup.zpaq', sources)`, `add`, `delete`, `rename`, `extract`, `test`,
-`readBytes`; `ZxOptions.method` is the zpaq method, `password` encrypts a
-new archive). `archive.versions` lists the versions (`ZxVersion`: number,
-time, added, deleted, packed size) and `ZxArchive.open(path, version: 2)`
-opens the archive as it was after version 2, read only:
-
-```dart
-final a = await ZxArchive.open('backup.zpaq');
-print('${a.numVersions} versions');
-final old = await ZxArchive.open('backup.zpaq', version: 1);
-await old.extract('/restore-v1');
-```
-
-### Database (zxdb) and `zx sql`
-
-A `.zx` archive can hold a database next to its files (zxdb,
-docs/zxdb-design.md): SQL tables in SQLite's dialect, key-value stores,
-metadata tables keyed by content (descriptions, tags, subtitles,
-screenshots) and read-only system tables over the archive (`zx_files`,
-`zx_generations`, `zx_file_history`, `similar()`, `fts_search()`). Every
-commit is a generation of the archive, so any table can be read as it was
-(`SELECT ... FROM t AS OF '2026-09-01'`). The SQL reference is
-docs/zxdb-sql.md.
-
-`zx sql` (a zx extension command) runs SQL on it, like the `sqlite3`
-program: statements given on the command line run in order; without them
-it reads statements from the standard input, an interactive shell with
-line editing and history on a terminal. The output modes and the dot
-commands are sqlite3's (`.tables`, `.schema`, `.indexes`, `.mode
-list|csv|json|line|table|box|markdown|quote|tabs`, `.headers`, `.import`,
-`.export`, `.read`, `.param`, `.timer`...), plus `.asof GEN|DATE` (the
-session reads an older generation), `.generations`, `.kv`, `.vacuum
-[ultra]`, `.import-arca` / `.export-arca DIR` (arca manifests, subtitles
-and previews) and `.import-sqlite` / `.export-sqlite FILE` (SQLite
-database files, read and written by a pure Dart implementation of the
-SQLite file format):
-
-```sh
-zx sql notes.zx "CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)"
-zx sql notes.zx "INSERT INTO t (body) VALUES ('first')"
-zx sql -table notes.zx "SELECT * FROM t"
-zx sql -json backup.zx "SELECT path, size FROM zx_files WHERE size > 1e6"
-zx sql backup.zx "SELECT path, distance FROM similar('docs/a.pdf', 20)"
-zx sql notes.zx ".export-sqlite notes.db"      # sqlite3 notes.db works
-zx sql notes.zx < script.sql                   # a script, errors with lines
-zx sql notes.zx                                # the shell (.help)
-```
-
-From Dart, `ZxDatabase.open(path)` gives the synchronous API (`db.sql`,
-`db.kv(name)`) and `ZxDatabaseAsync.open(path)` the same in a worker
-isolate for Flutter apps; `sqliteImport` and `sqliteExport`
-(`lib/src/db/sqlite_io/sqlite_io.dart`) move tables between a session
-and a SQLite file.
-
-### Installing
-
-- With the Dart SDK: `dart pub global activate --source path <repo>` puts
-  a `zx` command on the PATH (in `~/.pub-cache/bin`, which must be on it).
-- Without it: copy a binary from `dist/` (or from a release) into a
-  folder on the PATH, as `zx` (`zx.exe` on Windows), and make it
-  executable (`chmod +x`).
-
-Native binaries (no Dart SDK needed to run them):
-
-| File | Platform |
-|---|---|
-| `zx-linux-x64`, `zx-linux-arm64` | Linux |
-| `zx-windows-x64.exe`, `zx-windows-arm64.exe` | Windows |
-| `zx-macos-arm64`, `zx-macos-x64` | macOS (Apple silicon, Intel) |
-
-The GitHub workflow `.github/workflows/release.yml` builds all six on
-native runners and attaches them to the release when a `v*` tag is pushed.
-Locally, `tool/build_binaries.sh` writes them to `dist/`: the Dart SDK
-cross-compiles only to Linux, so from Linux it builds the two Linux
-binaries, plus `zx-windows-x64.exe` when `DART_WINDOWS` points to a
-Windows Dart SDK and wine is installed; on a Mac it builds that Mac's
-binary. Without a binary, `dart run zx:zx ...` runs the same program from
-source.
-
-## Desktop app
-
-`app/` is **zx**, a WinZip / 7-Zip File Manager style archive manager for
-Linux, Windows and macOS, written with Flutter on the `ZxArchive` API (so
-every format of the command line tool, and all the archive work in
-background isolates: the window never freezes).
-
-- Open archives from the command line, File > Open, drag and drop, or the
-  recent list; browse with a folder tree, a breadcrumb path bar (Back,
-  Forward, Up), a sortable file list (Name, Size, Packed, Ratio, Modified,
-  Method, Encrypted, CRC), multi selection, a quick filter and a preview
-  of text and images.
-- Extract (all or the selection, with or without paths, overwrite policy
-  with a per file question: Yes, No, Yes to all, No to all, Keep both,
-  Cancel), extract here, test, open a file with its default program.
-- Add files and folders (dialog or drag and drop, into the current folder
-  of the archive) with level, method, password, encrypted names and solid;
-  delete, rename, new folder, archive comment (zip, RAR5); new archives in
-  7z, zip, tar.gz, tar.bz2, tar.xz, rar (RAR5), tar, lzh, arj, zpaq, gz,
-  bz2, xz.
-- Passwords are asked when needed (show / hide, wrong password retry);
-  long operations show percent, current file, speed and Cancel. Actions a
-  format does not allow are disabled with a tooltip saying why.
-- Settings: theme (system, light, dark), default format and level,
-  confirmations, and the desktop integration switches below.
-
-### Installing on Linux
-
-The normal install is the Debian package (Ubuntu, Debian and their
-derivatives, amd64):
-
-```sh
-tool/build_deb.sh                        # writes dist/zx_<version>_amd64.deb
-sudo apt install ./dist/zx_0.5.0_amd64.deb
-nautilus -q                              # once, so Nautilus loads the extension
-```
-
-| What | Where |
-|---|---|
-| The release bundle | `/opt/zx` (`zx_app`) |
-| Launcher, command line tool | `/usr/bin/zx-gui`, `/usr/bin/zx` |
-| Desktop entry with the archive MIME types | `/usr/share/applications/zx.desktop` |
-| Icon (SVG and PNG sizes) | `/usr/share/icons/hicolor/*/apps/zx.*` |
-| The MIME type of .zx files (`application/x-zx`, magic and `*.zx`) | `/usr/share/mime/packages/zx-archive.xml` |
-| Nautilus: top level `Extract to "name/"` item on archives | `/usr/lib/x86_64-linux-gnu/nautilus/extensions-4/libzx-nautilus.so` |
-| Documentation, license | `/usr/share/doc/zx` |
-
-The package needs nothing beyond the libraries of a GTK desktop: the
-Nautilus item is a native extension (C, `native/nautilus/`), not a
-nautilus-python script, so no other package has to be installed. The
-package does not change anyone's default applications: each user turns
-that on in Settings. The Nautilus item is on unless a user switches it
-off in Settings (then `~/.config/zx/context-menu-disabled` exists and the
-extension shows nothing; no restart needed). `sudo apt remove zx`
-removes it all; the per user files (settings, `mimeapps.list` lines,
-Thunar action) stay until switched off in Settings before removing.
-
-Without root, a per user install:
-
-```sh
-tool/install_linux.sh            # build, install, associate, add the menu
-tool/install_linux.sh --no-associations --no-context-menu
-tool/uninstall_linux.sh [--purge]
-```
-
-| What | Where |
-|---|---|
-| The release bundle | `~/.local/share/zx/app` (`zx_app`) |
-| Launcher | `~/.local/bin/zx-gui` |
-| Desktop entry with the archive MIME types | `~/.local/share/applications/zx.desktop` |
-| Icon (SVG and PNG sizes) | `~/.local/share/icons/hicolor/*/apps/zx.*` |
-| The MIME type of .zx files | `~/.local/share/mime/packages/zx-archive.xml` |
-| Default application (when associated) | `~/.config/mimeapps.list` (the previous defaults are restored when switched off) |
-| Nautilus: "Extract to folder (zx)" under Scripts | `~/.local/share/nautilus/scripts/` |
-| Thunar custom action (merged, other actions kept) | `~/.config/Thunar/uca.xml` |
-
-A per user install can not add a top level Nautilus item (Nautilus
-loads extensions only from the system folder), so there it is under
-Scripts in the right-click menu.
-
-The two switches of Settings (associate archive types, "Extract to
-folder" in the file manager) install and remove the per user files: the
-Thunar action and, for a per user install, the Nautilus script; with the
-package the menu switch turns its Nautilus extension on and off. The
-switches and the script call the same code, also reachable as
-`zx_app --install-integration [--associations] [--context-menu]`,
-`zx_app --remove-integration [...]` and `zx_app --integration-status`.
-`zx_app --extract-to-folder a.zip b.tar.gz` extracts each archive into a
-new folder named after it next to it (`b.tar.gz` gives `b/`, an existing
-name gives `b (2)/`), in a small progress window that asks for a password
-when needed and closes itself; this is what the menu entries run.
-
-Windows (per user, `HKCU\Software\Classes`, no administrator rights) and
-macOS (document types in `Info.plist`, a Finder Quick Action) are
-described in `app/README.md`.
-
-## Speed
-
-Measured on an 8 core x86-64 desktop with 37.5 MB of mixed files (C
-sources, Python sources, shared libraries), AOT build, against 7-Zip 23.01;
-`docs/performance.md` has all the numbers and the method:
-
-| | zx | 7-Zip, 1 thread |
-|---|---|---|
-| 7z a, level 1 | 2.4 s | 1.4 s |
-| 7z a, level 5 | 16.2 s | 10.2 s |
-| 7z a, level 9 | 18.6 s | 11.1 s |
-| 7z a, PPMd | 7.7 s | 3.4 s |
-| 7z x, LZMA2 | 0.85 s | 0.62 s |
-| xz, 4 MB blocks, 8 threads | 3.5 s | 1.5 s (8 threads) |
-
-The 7z writer runs on one isolate; xz compression uses one isolate per
-block (section 6 of `docs/architecture.md`).
-
-## Tests
-
-```sh
-dart analyze
-dart test
-```
-
-Tests that compare with `/usr/bin/7z` or `xz` are skipped when those are
-not installed. The zpaq interop tests (`test/zpaq_test.dart`) look for
-`zpaq` and `zpaqfranz` on the PATH or in `ZPAQ_BIN` and `ZPAQFRANZ_BIN`.
-The .zx tests are `test/zx_format_test.dart`, `test/zx_generations_test.dart`,
-`test/zx_dedup_test.dart` (dedup, compaction and the memory guard) and
-`test/zx_tlsh_test.dart` (TLSH vectors made with the reference
-`tlsh_unittest` tool; a zstd block is made with `zstd` when it is
-installed). The desktop app has widget tests and end to end tests that
-drive the real Linux app against real archives:
-
-```sh
-cd app
-flutter analyze
-flutter test
-flutter test integration_test -d linux
-```
-
-## Layout
-
-- `lib/src/codec`: LZMA, LZMA2, PPMd, filters, BCJ2 (ports of the SDK's C
-  files and their C++ coder wrappers); Deflate and Deflate64 (zlib),
-  BZip2, PPMd var.I, the LHA and ARJ codecs, the RAR codecs;
-  `codec/zcm`: the zcm context mixing codecs (after paq8, paq8px and
-  cmix), with `tool/zcm_bench.dart`.
-- `lib/src/crypto`: AES, SHA-256, 7zAES, SHA-1, ZipCrypto, WinZip AES,
-  the RAR 3.x and RAR5 key derivations and BLAKE2sp.
-- `lib/src/format`: the 7z, xz, lzma and split handlers; gzip, bzip2, tar,
-  zip, LHA, ARJ, RAR and zpaq; `format/zx`: the .zx format (structures,
-  codec registry, reader, writer, handler).
-- `lib/src/zpaq`: the zpaq engine, vendored from zpaq-flutter (the
-  upstream); `tool/sync_zpaq.sh` copies it again.
-- `lib/src/cli`, `bin/zx.dart`: the command line (`zx`).
-- `lib/src/api.dart`: the isolate based public API; `lib/src/pool.dart`
-  and `lib/src/parallel.dart`: worker isolates and the parallel xz encoder;
-  `lib/src/sync_pool.dart`: worker isolates for synchronous code (the .zx
-  blocks).
-- `app/`: the desktop archive manager (Flutter), `tool/build_deb.sh` (the
-  Debian package), `tool/install_linux.sh` and `tool/uninstall_linux.sh`
-  (per user install).
-- `native/nautilus/`: the Nautilus extension of the package (C, with a
-  test harness: `make -C native/nautilus test`).
-- `docs/architecture.md`: how the port is organised and the rules a change
-  must keep.
-- `docs/performance.md`: measured numbers and how to measure.
-- `docs/zx-format.md`: the specification of .zx, and
-  `docs/zx-format-design.md`, its design.
+The full notices are in [LICENSE](LICENSE). 7-Zip is a registered
+trademark of Igor Pavlov; zx is not affiliated with or endorsed by him.
 
 ## License
 
-BSD 3-clause, Copyright (c) 2026 Max Brito, see `LICENSE`. The LZMA SDK by
-Igor Pavlov, and the PPMd var.H and SHA-256 code it includes, are public
-domain. The zlib, bzip2, libarchive, lhasa and BLAKE2 parts keep their own
-permissive licenses, reproduced in `LICENSE`. See Credits above.
+BSD 3-clause, Copyright (c) 2026 Max Brito. See [LICENSE](LICENSE).
