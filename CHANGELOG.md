@@ -6,8 +6,10 @@
   not uploaded), from an address (only the needed byte ranges are
   fetched when the server allows it, else a download into the library on
   request), or from a library in the browser's storage.
-  Links (`online/?url=ADDRESS&path=PATH`) open an archive at a folder or
-  file; Share link copies the link of the current view.
+  Links (`online/ADDRESS#path=PATH&theme=NAME`, the archive's address
+  pasted after the page's) open an archive at a folder or file in a
+  theme; Share link copies the link of the current view. Themes: dark,
+  light, and green and orange retro phosphor.
 - A wrong password for a .zx archive with encrypted names is asked again
   (it failed at once).
 - **Two programs**: `zx`, the command line, and `zx-gui`, the app (the

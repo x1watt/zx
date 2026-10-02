@@ -446,10 +446,12 @@ zx seal -full book.zx                              # verify every byte and every
   transfers its first and last blocks rather than the whole file; otherwise it can
   be downloaded into browser storage. Requires a browser with WebAssembly garbage
   collection (Chrome 119, Firefox 120, Safari 18.2).</p>
-  <p>Archives can be linked: <code>online/?url=ADDRESS</code> opens the archive at
-  ADDRESS, and <code>&amp;path=PATH</code> opens it at a folder or selects a file,
-  for instance its README. The <em>Share link</em> button produces the link of the
-  current view.</p>
+  <p>Archives can be linked by pasting their address after the page's:
+  <code>online/https://example.org/archive.zx</code>, optionally followed by
+  <code>#path=PATH</code> to open a folder or select a file, and
+  <code>#theme=green</code> (or <code>dark</code>, <code>light</code>,
+  <code>orange</code>) to choose the theme. The <em>Share link</em> button produces
+  the link of the current view.</p>
 </section>
 
 <section id="credits">

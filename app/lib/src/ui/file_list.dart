@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:zx/zx_client.dart';
 
 import '../archive_model.dart';
+import '../theme.dart' show IconTint;
 import 'format_utils.dart';
 import 'transfer.dart';
 import 'drag.dart';
@@ -365,11 +366,17 @@ class _Row extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final (icon, color) = iconFor(
+    final (icon, typeColor) = iconFor(
       item,
       cs,
       inContainer: model.inContainer(item),
     );
+    final tint = Theme.of(context).extension<IconTint>();
+    final color = tint == null
+        ? typeColor
+        : item.isDir
+        ? tint.folder
+        : tint.file;
     final base = Theme.of(context).textTheme.bodyMedium!.copyWith(fontSize: 13);
     final fg = selected ? cs.onSecondaryContainer : cs.onSurface;
     final dim = selected ? cs.onSecondaryContainer : cs.onSurfaceVariant;

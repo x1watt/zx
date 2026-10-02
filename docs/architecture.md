@@ -1309,6 +1309,14 @@ files, from a URL, or from a library kept in the browser.
   addresses, downloads, `webDbOpener`). Shared files reach the outside
   through `services_base.dart` (interfaces) and `ui/save_text.dart`
   (conditional: a file, or a download). `app/web/` is the page shell.
+- **Links.** `online/ADDRESS#path=...&theme=...` has no file on GitHub
+  Pages, which serves the site's `404.html`: `tool/web_404.sh` makes it
+  from the page of the app (same base element, plus a script sending
+  other missing paths to the start page), and the app reads the address
+  from its location (`linkParameters`). Flutter's URL strategy is off
+  (`setUrlStrategy(null)`), so only the page writes its address. No
+  service worker (`app/web/flutter_bootstrap.js`): a deploy is seen at
+  the next load.
 - **Building and testing.** `tool/build_web.sh` (through the build lock
   locally) builds the UI and the engine into `app/build/web`;
   `.github/workflows/pages.yml` runs the gates, the browser test and the

@@ -15,7 +15,9 @@ import 'package:zx/zx_web.dart';
 
 import '../archive_model.dart';
 import '../db_session.dart';
+import '../theme.dart';
 import '../ui/format_utils.dart';
+import 'theme_choice.dart';
 import 'web_archive.dart';
 import 'web_services.dart';
 
@@ -37,7 +39,14 @@ class _Source {
 class WebHome extends StatefulWidget {
   /// Where the engine worker is (relative to the page).
   final String engineUrl;
-  const WebHome({super.key, this.engineUrl = 'engine/zx_engine_worker.js'});
+
+  /// The theme (the menu at the top right; links may carry it).
+  final ThemeChoice themes;
+  const WebHome({
+    super.key,
+    required this.themes,
+    this.engineUrl = 'engine/zx_engine_worker.js',
+  });
 
   @override
   State<WebHome> createState() => _WebHomeState();
@@ -64,7 +73,14 @@ class _WebHomeState extends State<WebHome> {
     listenForDrops(_openFiles, (h) {
       if (h != _hover && mounted) setState(() => _hover = h);
     });
+    widget.themes.addListener(_updateLink);
     unawaited(_start());
+  }
+
+  @override
+  void dispose() {
+    widget.themes.removeListener(_updateLink);
+    super.dispose();
   }
 
   Future<void> _start() async {
@@ -226,20 +242,29 @@ class _WebHomeState extends State<WebHome> {
 
   /// Keeps the address bar on the link of what is shown.
   void _updateLink() {
-    final url = _source?.url;
-    if (url == null || (_model?.parent != null)) return;
-    setLinkParameters(url, path: _place());
+    if (_model?.parent != null) return;
+    setLinkParameters(
+      _source?.url,
+      path: _source?.url == null ? null : _place(),
+      theme: widget.themes.linked?.name,
+    );
   }
 
   Future<void> _share() async {
     final url = _source?.url;
     if (url == null) return;
     var here = _place() != null;
+    var withTheme = true;
+    final theme = widget.themes.value;
     await showDialog<void>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialog) {
-          final link = shareLink(url, path: here ? _place() : null);
+          final link = shareLink(
+            url,
+            path: here ? _place() : null,
+            theme: withTheme ? theme.name : null,
+          );
           return AlertDialog(
             icon: const Icon(Icons.share_rounded),
             title: const Text('Link to this archive'),
@@ -257,6 +282,12 @@ class _WebHomeState extends State<WebHome> {
                       onChanged: (v) => setDialog(() => here = v ?? false),
                       title: Text('Open at ${_place()}'),
                     ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: withTheme,
+                    onChanged: (v) => setDialog(() => withTheme = v ?? false),
+                    title: Text('With the ${theme.label} theme'),
+                  ),
                   const SizedBox(height: 8),
                   const Text(
                     'Whoever opens the link reads the archive from its '
@@ -303,7 +334,7 @@ class _WebHomeState extends State<WebHome> {
 
   Future<void> _close() async {
     await _closeCurrent();
-    setLinkParameters(null);
+    setLinkParameters(null, theme: widget.themes.linked?.name);
     if (mounted) setState(() => _source = null);
   }
 
@@ -771,6 +802,20 @@ class _WebHomeState extends State<WebHome> {
             tooltip: 'Open address',
             onPressed: _engine == null ? null : _askUrl,
             icon: const Icon(Icons.link_rounded),
+          ),
+          PopupMenuButton<WebTheme>(
+            key: const Key('web-theme'),
+            tooltip: 'Theme',
+            icon: const Icon(Icons.palette_outlined),
+            onSelected: widget.themes.choose,
+            itemBuilder: (context) => [
+              for (final t in WebTheme.values)
+                CheckedPopupMenuItem(
+                  value: t,
+                  checked: t == widget.themes.value,
+                  child: Text(t.label),
+                ),
+            ],
           ),
           const SizedBox(width: 8),
         ],

@@ -82,49 +82,94 @@ void listenForDrops(
 /// The name of a File of the page.
 String fileName(JSObject file) => (file['name'] as JSString).toDart;
 
-/// The parameters of a link to the page (docs/app.md "Links"): `url`, the
-/// address of an archive, and `path`, a folder of it to show or a file to
-/// select.
-({String? url, String? path}) linkParameters() {
-  final href = ((_window['location'] as JSObject)['href'] as JSString).toDart;
-  final q = Uri.tryParse(href)?.queryParameters ?? const {};
+/// The address of the page itself (its base element, ".../zx/online/").
+String pageBase() => (_document['baseURI'] as JSString).toDart;
+
+String _href() =>
+    ((_window['location'] as JSObject)['href'] as JSString).toDart;
+
+/// The parameters of a link to the page (docs/app.md "Links"):
+///   PAGE/ADDRESS#path=PATH&theme=THEME  (the archive's address pasted
+///                                        after the page's)
+///   PAGE/?url=ADDRESS&path=PATH&theme=THEME
+/// `url` is the address of an archive, `path` a folder of it to show or a
+/// file to select, `theme` a WebTheme name. In the first form the options
+/// are in the fragment, so the archive's own query string stays its own.
+({String? url, String? path, String? theme}) linkParameters() {
+  final href = _href();
+  final hash = href.indexOf('#');
+  final main = hash < 0 ? href : href.substring(0, hash);
+  final frag = hash < 0
+      ? const <String, String>{}
+      : Uri.splitQueryString(href.substring(hash + 1));
+  final base = pageBase();
+  String? url;
+  Map<String, String> query = const {};
+  if (main.startsWith(base)) {
+    final rest = main.substring(base.length);
+    final m = RegExp(r'^(https?):/+', caseSensitive: false).firstMatch(rest);
+    if (m != null) {
+      // a server or browser may have merged the slashes after the scheme
+      url = '${m[1]!.toLowerCase()}://${rest.substring(m.end)}';
+    } else {
+      query = Uri.tryParse(main)?.queryParameters ?? const {};
+    }
+  }
   String? get(String k) {
-    final v = q[k];
+    final v = frag[k] ?? query[k];
     return v == null || v.isEmpty ? null : v;
   }
 
-  return (url: get('url'), path: get('path'));
+  return (url: url ?? get('url'), path: get('path'), theme: get('theme'));
 }
 
-/// A link that opens the archive at [url] on this page, at [path] when
-/// given.
-String shareLink(String url, {String? path}) {
-  final href = ((_window['location'] as JSObject)['href'] as JSString).toDart;
-  final page = Uri.parse(href).replace(query: '', fragment: '');
-  final base = page.toString().replaceAll(RegExp(r'[?#]+$'), '');
-  return Uri.parse(base)
-      .replace(queryParameters: {'url': url, 'path': ?path})
-      .toString();
+/// A link that opens the archive at [url] on this page (the address after
+/// the page's), at [path] and with [theme] when given; without [url], the
+/// page alone.
+String shareLink(String? url, {String? path, String? theme}) {
+  final frag = {'path': ?path, 'theme': ?theme};
+  final f = frag.isEmpty ? '' : '#${Uri(queryParameters: frag).query}';
+  return '${pageBase()}${url ?? ''}$f';
 }
 
 /// Puts the link of what is shown ([shareLink]) into the address without
-/// loading the page again, so the address bar can be copied; a null [url]
-/// removes it.
-void setLinkParameters(String? url, {String? path}) {
-  final href = ((_window['location'] as JSObject)['href'] as JSString).toDart;
-  final next = url == null
-      ? Uri.parse(href)
-            .replace(query: '')
-            .toString()
-            .replaceAll(RegExp(r'\?$'), '')
-      : shareLink(url, path: path);
-  if (next == href) return;
+/// loading the page again, so the address bar can be copied.
+void setLinkParameters(String? url, {String? path, String? theme}) {
+  final next = shareLink(url, path: path, theme: theme);
+  if (next == _href()) return;
   (_window['history'] as JSObject).callMethod<JSAny?>(
     'replaceState'.toJS,
     null,
     ''.toJS,
     next.toJS,
   );
+}
+
+// ---------------------------------------------------------------------------
+// The theme
+
+const _kThemeKey = 'zx.theme';
+
+String? storedTheme() {
+  try {
+    return _localStorage
+        ?.callMethod<JSString?>('getItem'.toJS, _kThemeKey.toJS)
+        ?.toDart;
+  } catch (_) {
+    return null;
+  }
+}
+
+void storeTheme(String name) {
+  try {
+    _localStorage?.callMethod<JSAny?>(
+      'setItem'.toJS,
+      _kThemeKey.toJS,
+      name.toJS,
+    );
+  } catch (_) {
+    // storage blocked: the choice lasts for this page
+  }
 }
 
 // ---------------------------------------------------------------------------

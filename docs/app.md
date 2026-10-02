@@ -52,20 +52,27 @@ browse, preview, READMEs, seals, test, the Data view of a .zx database
   sites at all (GitHub release downloads, for one), the app says so;
 - from the library (the sidebar), which stays in this browser.
 
-Links open archives: `https://x1watt.github.io/zx/online/?url=ADDRESS`
-opens the archive at ADDRESS (percent-encoded), and `&path=PATH` opens it
-at the folder PATH, or selects the file PATH and previews it (a README.md
-is shown rendered). For example
+Links open archives: paste the archive's address after the page's,
 
-    https://x1watt.github.io/zx/online/?url=https%3A%2F%2Fx1watt.github.io%2Fzx%2Fexamples%2Fzx-demo.zx&path=docs%2Fzx-format.md
+    https://x1watt.github.io/zx/online/https://x1watt.github.io/zx/examples/zx-demo.zx
 
-opens the demo archive of the site (site/examples/zx-demo.zx) with the
-.zx specification selected.
+and add `#path=PATH` to open it at the folder PATH, or with the file PATH
+selected and previewed (a README.md is shown rendered), and `#theme=NAME`
+(`dark`, `light`, `green`, `orange`) to show it in that theme:
 
-While an archive from an address is shown, the browser's address bar
-holds the link of the current folder or selected file, and Share link
-copies it. The archive must be served as described above (CORS, and
-ranges to read it in place).
+    https://x1watt.github.io/zx/online/https://x1watt.github.io/zx/examples/zx-demo.zx#path=docs/zx-format.md&theme=green
+
+The options go after `#`, so the archive's own address keeps its query
+string (`?token=...`). The older form `online/?url=ADDRESS&path=PATH`
+works too. While an archive from an address is shown, the browser's
+address bar holds the link of the current folder or selected file, and
+Share link copies it (with the current theme, unless unticked). The
+archive must be served as described above (CORS, and ranges to read it in
+place).
+
+Themes: dark, light, and two retro ones, green and orange phosphor on
+black with a terminal font, from the palette icon at the top right. The
+browser remembers the choice; a link's theme applies to that visit only.
 
 It needs WebAssembly with garbage collection and module workers (Chrome
 and Edge 119, Firefox 120, Safari 18.2 or newer). Writing archives,

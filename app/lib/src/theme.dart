@@ -131,3 +131,160 @@ ThemeData buildTheme(Brightness b, {bool monochrome = false}) {
     ),
   );
 }
+
+// ---------------------------------------------------------------------------
+// The themes of the web version
+
+/// The colors of the item icons when a theme sets them (the retro themes:
+/// everything in the phosphor color); null keeps the colors by file type.
+class IconTint extends ThemeExtension<IconTint> {
+  final Color folder;
+  final Color file;
+  const IconTint(this.folder, this.file);
+
+  @override
+  IconTint copyWith({Color? folder, Color? file}) =>
+      IconTint(folder ?? this.folder, file ?? this.file);
+
+  @override
+  IconTint lerp(IconTint? other, double t) => other == null
+      ? this
+      : IconTint(
+          Color.lerp(folder, other.folder, t)!,
+          Color.lerp(file, other.file, t)!,
+        );
+}
+
+/// The theme of the web version.
+enum WebTheme {
+  dark('Dark'),
+  light('Light'),
+  green('Green (retro)'),
+  orange('Orange (retro)');
+
+  final String label;
+  const WebTheme(this.label);
+
+  bool get retro => this == green || this == orange;
+
+  static WebTheme? byName(String? name) {
+    for (final t in values) {
+      if (t.name == name) return t;
+    }
+    return null;
+  }
+}
+
+/// A phosphor monitor: [glow] on black, dimmer shades of it for the rest.
+ColorScheme _phosphorScheme(Color glow, Color paper) {
+  Color shade(double a) => Color.alphaBlend(glow.withValues(alpha: a), paper);
+  return ColorScheme(
+    brightness: Brightness.dark,
+    primary: glow,
+    onPrimary: paper,
+    primaryContainer: shade(0.22),
+    onPrimaryContainer: glow,
+    secondary: shade(0.75),
+    onSecondary: paper,
+    secondaryContainer: shade(0.16),
+    onSecondaryContainer: glow,
+    tertiary: shade(0.6),
+    onTertiary: paper,
+    error: const Color(0xFFFF3B5C),
+    onError: paper,
+    surface: paper,
+    onSurface: shade(0.92),
+    onSurfaceVariant: shade(0.6),
+    surfaceContainerLowest: paper,
+    surfaceContainerLow: shade(0.04),
+    surfaceContainer: shade(0.06),
+    surfaceContainerHigh: shade(0.09),
+    surfaceContainerHighest: shade(0.13),
+    outline: shade(0.45),
+    outlineVariant: shade(0.2),
+    inverseSurface: glow,
+    onInverseSurface: paper,
+    inversePrimary: paper,
+    shadow: glow,
+    scrim: Colors.black,
+    surfaceTint: Colors.transparent,
+  );
+}
+
+const kRetroFont = 'ShareTechMono';
+
+ThemeData buildWebTheme(WebTheme t) {
+  switch (t) {
+    case WebTheme.dark:
+      return buildTheme(Brightness.dark, monochrome: true);
+    case WebTheme.light:
+      return buildTheme(Brightness.light, monochrome: true);
+    case WebTheme.green:
+    case WebTheme.orange:
+      final glow = t == WebTheme.green
+          ? const Color(0xFF39FF6A)
+          : const Color(0xFFFFA22B);
+      final paper = t == WebTheme.green
+          ? const Color(0xFF020803)
+          : const Color(0xFF0A0501);
+      final cs = _phosphorScheme(glow, paper);
+      final base = buildTheme(Brightness.dark, monochrome: true);
+      final glowText = [
+        Shadow(color: glow.withValues(alpha: 0.55), blurRadius: 6),
+      ];
+      final text = base.textTheme
+          .apply(
+            fontFamily: kRetroFont,
+            bodyColor: cs.onSurface,
+            displayColor: glow,
+          )
+          .copyWith(
+            headlineSmall: base.textTheme.headlineSmall?.copyWith(
+              fontFamily: kRetroFont,
+              color: glow,
+              shadows: glowText,
+            ),
+            titleLarge: base.textTheme.titleLarge?.copyWith(
+              fontFamily: kRetroFont,
+              color: glow,
+              shadows: glowText,
+            ),
+          );
+      return base.copyWith(
+        colorScheme: cs,
+        scaffoldBackgroundColor: paper,
+        textTheme: text,
+        primaryTextTheme: text,
+        iconTheme: IconThemeData(color: glow),
+        dividerTheme: DividerThemeData(
+          color: glow.withValues(alpha: 0.28),
+          thickness: 1,
+          space: 1,
+        ),
+        appBarTheme: AppBarTheme(
+          backgroundColor: paper,
+          foregroundColor: glow,
+          titleTextStyle: text.titleLarge,
+        ),
+        inputDecorationTheme: base.inputDecorationTheme.copyWith(
+          fillColor: cs.surfaceContainerHigh,
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(2),
+            borderSide: BorderSide(color: glow.withValues(alpha: 0.35)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(2),
+            borderSide: BorderSide(color: glow, width: 1.5),
+          ),
+        ),
+        dialogTheme: DialogThemeData(
+          backgroundColor: cs.surfaceContainerLow,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(2),
+            side: BorderSide(color: glow.withValues(alpha: 0.6)),
+          ),
+        ),
+        extensions: [IconTint(glow, cs.secondary)],
+      );
+  }
+}
