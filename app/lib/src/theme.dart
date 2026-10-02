@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 
 const kSeedColor = Color(0xFF2F62D6);
 
+/// The text font of the web version (Roboto, bundled).
+const kWebFont = 'ZxSans';
+
 /// Black, white and neutral grays, no hue (the web version).
 ColorScheme monochromeScheme(Brightness b) {
   final dark = b == Brightness.dark;
@@ -52,6 +55,8 @@ ThemeData buildTheme(Brightness b, {bool monochrome = false}) {
       : ColorScheme.fromSeed(seedColor: kSeedColor, brightness: b);
   final base = ThemeData(
     colorScheme: cs,
+    // the web version's own copy of Roboto (pubspec.yaml)
+    fontFamily: monochrome ? kWebFont : null,
     useMaterial3: true,
     visualDensity: VisualDensity.compact,
     scaffoldBackgroundColor: cs.surface,
@@ -268,8 +273,8 @@ ThemeData _classicTheme() {
   final base = buildTheme(Brightness.light, monochrome: true);
   // The pixel font is crisp only where its pixels fall on screen pixels:
   // one of them is 1/11 of the font size, so 11 and 22. It is used there
-  // (window titles, headings); the text in between is Roboto, which reads
-  // well at any size.
+  // (window titles, headings); the text in between is Roboto (kWebFont),
+  // which reads well at any size.
   TextStyle? pixel(TextStyle? s, double size) => s?.copyWith(
     fontFamily: kClassicFont,
     fontSize: size,

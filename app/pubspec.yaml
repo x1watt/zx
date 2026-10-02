@@ -68,11 +68,16 @@ flutter:
   assets:
     - assets/icon/
   fonts:
-    # the text of the app, bundled so that the web version loads no font
-    # from elsewhere (SIL Open Font License, assets/fonts/Roboto-OFL.txt)
-    - family: Roboto
+    # the text of the web version, bundled so that it loads no font from
+    # elsewhere: Roboto (SIL Open Font License, assets/fonts/Roboto-OFL.txt;
+    # static instances of the variable font, made with fontTools)
+    # under a name of its own: the web engine treats "Roboto" as its own
+    # default font, which it looks for elsewhere
+    - family: ZxSans
       fonts:
-        - asset: assets/fonts/Roboto.ttf
+        - asset: assets/fonts/Roboto-Regular.ttf
+        - asset: assets/fonts/Roboto-Bold.ttf
+          weight: 700
     # the retro themes of the web version (SIL Open Font License,
     # assets/fonts/ShareTechMono-OFL.txt)
     - family: ShareTechMono
