@@ -57,7 +57,10 @@ opens the archive at ADDRESS (percent-encoded), and `&path=PATH` opens it
 at the folder PATH, or selects the file PATH and previews it (a README.md
 is shown rendered). For example
 
-    https://x1watt.github.io/zx/online/?url=https%3A%2F%2Fexample.org%2Fdocs.zx&path=guide%2FREADME.md
+    https://x1watt.github.io/zx/online/?url=https%3A%2F%2Fx1watt.github.io%2Fzx%2Fexamples%2Fzx-demo.zx&path=docs%2Fzx-format.md
+
+opens the demo archive of the site (site/examples/zx-demo.zx) with the
+.zx specification selected.
 
 While an archive from an address is shown, the browser's address bar
 holds the link of the current folder or selected file, and Share link
