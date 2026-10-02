@@ -724,23 +724,24 @@ class _WebHomeState extends State<WebHome> {
             sourceText: _sourceText(),
             actions: [
               if (_source?.kind == _Kind.file && (_engine?.hasLibrary ?? false))
-                TextButton.icon(
-                  key: const Key('web-keep'),
-                  onPressed: busy == null ? _keep : null,
-                  icon: const Icon(Icons.bookmark_add_outlined),
-                  label: const Text('Keep in library'),
+                WebAction(
+                  const Key('web-keep'),
+                  Icons.bookmark_add_outlined,
+                  'Keep in library',
+                  busy == null ? _keep : null,
                 ),
               if (_source?.url != null)
-                TextButton.icon(
-                  key: const Key('web-share'),
-                  onPressed: _share,
-                  icon: const Icon(Icons.share_rounded),
-                  label: const Text('Share link'),
+                WebAction(
+                  const Key('web-share'),
+                  Icons.share_rounded,
+                  'Share link',
+                  _share,
                 ),
-              TextButton.icon(
-                onPressed: _close,
-                icon: const Icon(Icons.close_rounded),
-                label: const Text('Close'),
+              WebAction(
+                const Key('web-close'),
+                Icons.close_rounded,
+                'Close',
+                _close,
               ),
             ],
           );

@@ -19,6 +19,31 @@ import '../ui/save_text.dart';
 import '../ui/seal_badge.dart';
 import 'web_services.dart';
 
+/// A command of the archive pane: a labelled button where there is room,
+/// an icon with a tooltip otherwise.
+class WebAction {
+  final Key key;
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+  const WebAction(this.key, this.icon, this.label, this.onPressed);
+
+  Widget build({required bool labelled}) => labelled
+      ? TextButton.icon(
+          key: key,
+          onPressed: onPressed,
+          icon: Icon(icon, size: 18),
+          label: Text(label),
+        )
+      : IconButton(
+          key: key,
+          tooltip: label,
+          visualDensity: VisualDensity.compact,
+          onPressed: onPressed,
+          icon: Icon(icon, size: 20),
+        );
+}
+
 class WebArchiveView extends StatefulWidget {
   /// The level shown (its parents are the archives it was opened from).
   final ArchiveModel model;
@@ -33,8 +58,9 @@ class WebArchiveView extends StatefulWidget {
   /// Goes to another level (an archive the current one was opened from).
   final void Function(ArchiveModel level, String dir) onLevel;
 
-  /// The actions of the source (Keep in library), at the end of the bar.
-  final List<Widget> actions;
+  /// The actions of the source (Keep in library, Share link, Close), after
+  /// those of the archive.
+  final List<WebAction> actions;
 
   /// A line about the source (where the archive is read from).
   final String? sourceText;
@@ -58,6 +84,10 @@ class _WebArchiveViewState extends State<WebArchiveView> {
   final _filter = TextEditingController();
   final _filterFocus = FocusNode();
   bool _data = false;
+
+  // the share of the width the preview takes beside the list (the divider
+  // between them can be dragged)
+  double _previewShare = 0.45;
   String? _busy;
   ZxProgress? _progress;
   ZxCancelToken? _cancel;
@@ -309,10 +339,35 @@ class _WebArchiveViewState extends State<WebArchiveView> {
                 onOpen: _openItem,
                 onContextMenu: _contextMenu,
               );
+        final width = MediaQuery.sizeOf(context).width;
+        final actions = [
+          WebAction(
+            const Key('web-download'),
+            Icons.download_rounded,
+            'Download',
+            _busy == null ? _download : null,
+          ),
+          WebAction(
+            const Key('web-test'),
+            Icons.fact_check_outlined,
+            'Test',
+            _busy == null ? _test : null,
+          ),
+          if (hasData)
+            WebAction(
+              const Key('web-data'),
+              _data ? Icons.folder_open_rounded : Icons.table_chart_outlined,
+              _data ? 'Files' : 'Data',
+              () => setState(() => _data = !_data),
+            ),
+          ...widget.actions,
+        ];
+        // labels when the window is wide enough for them beside the path
+        final labelled = width >= 1500;
         return Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+              padding: EdgeInsets.fromLTRB(4, narrow ? 4 : 6, 4, 2),
               child: PathBarFrame(
                 crumbs: _crumbs(context),
                 edit: null,
@@ -331,62 +386,59 @@ class _WebArchiveViewState extends State<WebArchiveView> {
                 filterHint: 'Filter',
                 filterActive: m.filter.isNotEmpty,
                 onFilter: (t) => m.filter = t,
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Wrap(
-                spacing: 4,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  TextButton.icon(
-                    key: const Key('web-download'),
-                    onPressed: _busy == null ? _download : null,
-                    icon: const Icon(Icons.download_rounded),
-                    label: const Text('Download'),
-                  ),
-                  TextButton.icon(
-                    key: const Key('web-test'),
-                    onPressed: _busy == null ? _test : null,
-                    icon: const Icon(Icons.fact_check_outlined),
-                    label: const Text('Test'),
-                  ),
-                  if (hasData)
-                    TextButton.icon(
-                      key: const Key('web-data'),
-                      onPressed: () => setState(() => _data = !_data),
-                      icon: Icon(
-                        _data
-                            ? Icons.folder_open_rounded
-                            : Icons.table_chart_outlined,
+                trailing: narrow
+                    ? null
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(width: 6),
+                          for (final a in actions) a.build(labelled: labelled),
+                        ],
                       ),
-                      label: Text(_data ? 'Files' : 'Data'),
-                    ),
-                  ...widget.actions,
-                ],
               ),
             ),
+            if (narrow)
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  children: [for (final a in actions) a.build(labelled: true)],
+                ),
+              ),
             const Divider(),
             Expanded(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(child: list),
-                  if (!narrow && !_data) ...[
-                    const VerticalDivider(width: 1),
-                    SizedBox(
-                      width: 380,
-                      child: PreviewPane(
-                        model: m,
-                        db: m.parent == null ? db : null,
-                        onInternalLink: _readmeInternal,
-                        onExternalLink: _readmeExternal,
-                      ),
+              child: narrow || _data
+                  ? list
+                  : LayoutBuilder(
+                      builder: (context, box) {
+                        final w = box.maxWidth;
+                        final most = w - 320 < 280 ? 280.0 : w - 320;
+                        final preview = (w * _previewShare).clamp(280.0, most);
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Expanded(child: list),
+                            _splitter(cs, (dx) {
+                              setState(() {
+                                _previewShare = ((preview - dx) / w).clamp(
+                                  0.2,
+                                  0.75,
+                                );
+                              });
+                            }),
+                            SizedBox(
+                              width: preview,
+                              child: PreviewPane(
+                                model: m,
+                                db: m.parent == null ? db : null,
+                                onInternalLink: _readmeInternal,
+                                onExternalLink: _readmeExternal,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
                     ),
-                  ],
-                ],
-              ),
             ),
             const Divider(),
             Container(
@@ -420,6 +472,20 @@ class _WebArchiveViewState extends State<WebArchiveView> {
       },
     );
   }
+
+  /// The divider between the list and the preview; dragging it moves it.
+  Widget _splitter(ColorScheme cs, void Function(double dx) onDrag) =>
+      MouseRegion(
+        cursor: SystemMouseCursors.resizeColumn,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragUpdate: (d) => onDrag(d.delta.dx),
+          child: SizedBox(
+            width: 7,
+            child: Center(child: Container(width: 1, color: cs.outlineVariant)),
+          ),
+        ),
+      );
 
   String _statusText() {
     final busy = _busy;
