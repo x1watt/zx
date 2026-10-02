@@ -1,12 +1,55 @@
-// The themes of the app (light and dark from one seed color, compact for
-// the desktop), shared by the native and the web versions.
+// The themes of the app (light and dark from one seed color, or black and
+// white for the web version; compact for the desktop).
 
 import 'package:flutter/material.dart';
 
 const kSeedColor = Color(0xFF2F62D6);
 
-ThemeData buildTheme(Brightness b) {
-  final cs = ColorScheme.fromSeed(seedColor: kSeedColor, brightness: b);
+/// Black, white and neutral grays, no hue (the web version).
+ColorScheme monochromeScheme(Brightness b) {
+  final dark = b == Brightness.dark;
+  Color g(int v) => Color.fromARGB(255, v, v, v);
+  final ink = dark ? Colors.white : Colors.black;
+  final paper = dark ? Colors.black : Colors.white;
+  return ColorScheme(
+    brightness: b,
+    primary: ink,
+    onPrimary: paper,
+    primaryContainer: dark ? g(0x2A) : g(0xE4),
+    onPrimaryContainer: ink,
+    secondary: dark ? g(0xC8) : g(0x40),
+    onSecondary: paper,
+    secondaryContainer: dark ? g(0x33) : g(0xDD),
+    onSecondaryContainer: ink,
+    tertiary: dark ? g(0xB0) : g(0x50),
+    onTertiary: paper,
+    error: dark ? const Color(0xFFFF6B6B) : const Color(0xFFC62828),
+    onError: paper,
+    surface: paper,
+    onSurface: ink,
+    onSurfaceVariant: dark ? g(0xA8) : g(0x5A),
+    surfaceContainerLowest: paper,
+    surfaceContainerLow: dark ? g(0x0D) : g(0xF6),
+    surfaceContainer: dark ? g(0x14) : g(0xF0),
+    surfaceContainerHigh: dark ? g(0x1C) : g(0xEA),
+    surfaceContainerHighest: dark ? g(0x26) : g(0xE2),
+    outline: dark ? g(0x5C) : g(0x9A),
+    outlineVariant: dark ? g(0x30) : g(0xD4),
+    inverseSurface: ink,
+    onInverseSurface: paper,
+    inversePrimary: paper,
+    shadow: Colors.black,
+    scrim: Colors.black,
+    surfaceTint: Colors.transparent,
+  );
+}
+
+/// The theme of the app; [monochrome]: black and white (the web version),
+/// else from the seed color.
+ThemeData buildTheme(Brightness b, {bool monochrome = false}) {
+  final cs = monochrome
+      ? monochromeScheme(b)
+      : ColorScheme.fromSeed(seedColor: kSeedColor, brightness: b);
   final base = ThemeData(
     colorScheme: cs,
     useMaterial3: true,

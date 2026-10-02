@@ -13,8 +13,8 @@ void main() {
     MaterialApp(
       title: 'zx',
       debugShowCheckedModeBanner: false,
-      theme: buildTheme(Brightness.light),
-      darkTheme: buildTheme(Brightness.dark),
+      theme: buildTheme(Brightness.light, monochrome: true),
+      darkTheme: buildTheme(Brightness.dark, monochrome: true),
       home: const WebHome(),
     ),
   );

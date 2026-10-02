@@ -4,7 +4,7 @@
   "start_url": ".",
   "display": "standalone",
   "background_color": "#FFFFFF",
-  "theme_color": "#2F62D6",
+  "theme_color": "#000000",
   "description": "Open archives in the browser, read only.",
   "orientation": "any",
   "prefer_related_applications": false,
