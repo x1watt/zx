@@ -5,7 +5,7 @@
 const [url, port = '9222', timeout = '60'] = process.argv.slice(2);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let target;
-for (let i = 0; i < 50 && !target; i++) {
+for (let i = 0; i < 300 && !target; i++) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {method: 'PUT'});
     target = await res.json();

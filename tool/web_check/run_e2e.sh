@@ -34,13 +34,20 @@ document.body.append(s);
 </script>
 HTML
 
-browser=$(command -v chromium || command -v chromium-browser || command -v google-chrome || command -v google-chrome-stable)
+# $BROWSER, else Chrome (the CI runners have it), else Chromium
+browser=${BROWSER:-$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser)}
+echo "run_e2e: $browser"
 rm -f "$dir/.requests.log"
 node "$here/serve.mjs" "$dir" 8765 & srv=$!
-"$browser" --headless --disable-gpu --no-sandbox --remote-debugging-port=9333 \
-  --user-data-dir="$dir/.chrome" about:blank >/dev/null 2>&1 & chr=$!
+"$browser" --headless=new --disable-gpu --no-sandbox --no-first-run \
+  --remote-debugging-port=9333 --user-data-dir="$dir/.chrome" about:blank \
+  >"$dir/browser.log" 2>&1 & chr=$!
 trap 'kill $srv $chr 2>/dev/null || true' EXIT
-sleep 1
-out=$(node "$here/cdp_run.mjs" "http://localhost:8765/" 9333 120)
+if ! out=$(node "$here/cdp_run.mjs" "http://localhost:8765/" 9333 120); then
+  echo "$out"
+  echo "--- browser log"
+  tail -40 "$dir/browser.log"
+  exit 1
+fi
 echo "$out"
 grep -q '^ALL PASSED' <<<"$out"
