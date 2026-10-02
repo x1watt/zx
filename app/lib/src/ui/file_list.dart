@@ -374,6 +374,8 @@ class _Row extends StatelessWidget {
     final tint = Theme.of(context).extension<IconTint>();
     final color = tint == null
         ? typeColor
+        : selected
+        ? cs.onSecondaryContainer
         : item.isDir
         ? tint.folder
         : tint.file;

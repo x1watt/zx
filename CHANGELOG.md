@@ -8,8 +8,8 @@
   request), or from a library in the browser's storage.
   Links (`online/ADDRESS#path=PATH&theme=NAME`, the archive's address
   pasted after the page's) open an archive at a folder or file in a
-  theme; Share link copies the link of the current view. Themes: dark,
-  light, and green and orange retro phosphor.
+  theme; Share link copies the link of the current view. Themes: Dark,
+  Light, Green and Orange (phosphor), 80s (the early Macintosh desktop).
 - A wrong password for a .zx archive with encrypted names is asked again
   (it failed at once).
 - **Two programs**: `zx`, the command line, and `zx-gui`, the app (the

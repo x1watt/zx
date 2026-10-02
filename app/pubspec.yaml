@@ -73,6 +73,10 @@ flutter:
     - family: ShareTechMono
       fonts:
         - asset: assets/fonts/ShareTechMono-Regular.ttf
+    # the 80s theme (SIL Open Font License, assets/fonts/PixelifySans-OFL.txt)
+    - family: PixelifySans
+      fonts:
+        - asset: assets/fonts/PixelifySans.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

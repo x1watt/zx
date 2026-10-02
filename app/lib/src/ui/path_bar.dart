@@ -34,6 +34,7 @@ Widget crumbButton(
   bool current = false,
   String? tooltip,
   double maxWidth = 280,
+  bool bold = true,
 }) {
   final cs = Theme.of(context).colorScheme;
   Widget w = InkWell(
@@ -57,7 +58,9 @@ Widget crumbButton(
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 13,
-                fontWeight: current ? FontWeight.w600 : FontWeight.normal,
+                fontWeight: current && bold
+                    ? FontWeight.w600
+                    : FontWeight.normal,
                 color: current ? cs.onSurface : cs.onSurfaceVariant,
               ),
             ),

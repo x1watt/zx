@@ -58,7 +58,7 @@ Links open archives: paste the archive's address after the page's,
 
 and add `#path=PATH` to open it at the folder PATH, or with the file PATH
 selected and previewed (a README.md is shown rendered), and `#theme=NAME`
-(`dark`, `light`, `green`, `orange`) to show it in that theme:
+(`dark`, `light`, `green`, `orange`, `eighties`) to show it in that theme:
 
     https://x1watt.github.io/zx/online/https://x1watt.github.io/zx/examples/zx-demo.zx#path=docs/zx-format.md&theme=green
 
@@ -70,8 +70,10 @@ Share link copies it (with the current theme, unless unticked). The
 archive must be served as described above (CORS, and ranges to read it in
 place).
 
-Themes: dark, light, and two retro ones, green and orange phosphor on
-black with a terminal font, from the palette icon at the top right. The
+Themes, from the palette icon at the top right: Dark, Light, Green and
+Orange (phosphor on black with a terminal font and scanlines), and 80s
+(the early Macintosh desktop: black on white, framed windows with
+pinstriped title bars on a gray pattern, a bitmap-style font). The
 browser remembers the choice; a link's theme applies to that visit only.
 
 It needs WebAssembly with garbage collection and module workers (Chrome

@@ -159,13 +159,18 @@ class IconTint extends ThemeExtension<IconTint> {
 enum WebTheme {
   dark('Dark'),
   light('Light'),
-  green('Green (retro)'),
-  orange('Orange (retro)');
+  green('Green'),
+  orange('Orange'),
+  eighties('80s');
 
   final String label;
   const WebTheme(this.label);
 
+  /// The phosphor monitors (scanlines over the page).
   bool get retro => this == green || this == orange;
+
+  /// The desktop of an early Macintosh (windows on a gray pattern).
+  bool get classic => this == eighties;
 
   static WebTheme? byName(String? name) {
     for (final t in values) {
@@ -212,6 +217,174 @@ ColorScheme _phosphorScheme(Color glow, Color paper) {
 }
 
 const kRetroFont = 'ShareTechMono';
+const kClassicFont = 'PixelifySans';
+
+/// Marks the 80s theme: the web page draws its panes as windows with
+/// pinstriped title bars on a gray desktop pattern.
+class ClassicDesktop extends ThemeExtension<ClassicDesktop> {
+  const ClassicDesktop();
+  @override
+  ClassicDesktop copyWith() => this;
+  @override
+  ClassicDesktop lerp(ClassicDesktop? other, double t) => this;
+}
+
+/// One bit: black on white, inverted selection, square frames, rounded
+/// push buttons.
+ThemeData _classicTheme() {
+  const ink = Colors.black;
+  const paper = Colors.white;
+  const cs = ColorScheme(
+    brightness: Brightness.light,
+    primary: ink,
+    onPrimary: paper,
+    primaryContainer: ink,
+    onPrimaryContainer: paper,
+    secondary: ink,
+    onSecondary: paper,
+    secondaryContainer: ink,
+    onSecondaryContainer: paper,
+    tertiary: ink,
+    onTertiary: paper,
+    error: ink,
+    onError: paper,
+    surface: paper,
+    onSurface: ink,
+    onSurfaceVariant: Color(0xFF555555),
+    surfaceContainerLowest: paper,
+    surfaceContainerLow: paper,
+    surfaceContainer: paper,
+    surfaceContainerHigh: paper,
+    surfaceContainerHighest: paper,
+    outline: ink,
+    outlineVariant: ink,
+    inverseSurface: ink,
+    onInverseSurface: paper,
+    inversePrimary: paper,
+    shadow: ink,
+    scrim: Color(0x66000000),
+    surfaceTint: Colors.transparent,
+  );
+  final base = buildTheme(Brightness.light, monochrome: true);
+  final text = base.textTheme.apply(
+    fontFamily: kClassicFont,
+    bodyColor: ink,
+    displayColor: ink,
+  );
+  const frame = BorderSide(color: ink);
+  const square = RoundedRectangleBorder(side: frame);
+  final push = ButtonStyle(
+    shape: const WidgetStatePropertyAll(
+      RoundedRectangleBorder(
+        side: frame,
+        borderRadius: BorderRadius.all(Radius.circular(7)),
+      ),
+    ),
+    backgroundColor: WidgetStateProperty.resolveWith(
+      (s) => s.contains(WidgetState.pressed) ? ink : paper,
+    ),
+    foregroundColor: WidgetStateProperty.resolveWith(
+      (s) => s.contains(WidgetState.pressed)
+          ? paper
+          : s.contains(WidgetState.disabled)
+          ? const Color(0xFF999999)
+          : ink,
+    ),
+    overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+    textStyle: WidgetStatePropertyAll(text.labelLarge),
+  );
+  return base.copyWith(
+    colorScheme: cs,
+    scaffoldBackgroundColor: paper,
+    textTheme: text,
+    primaryTextTheme: text,
+    iconTheme: const IconThemeData(color: ink),
+    dividerTheme: const DividerThemeData(color: ink, thickness: 1, space: 1),
+    appBarTheme: AppBarTheme(
+      backgroundColor: paper,
+      foregroundColor: ink,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      shape: const Border(bottom: frame),
+      titleTextStyle: text.titleMedium,
+    ),
+    filledButtonTheme: FilledButtonThemeData(style: push),
+    outlinedButtonTheme: OutlinedButtonThemeData(style: push),
+    textButtonTheme: TextButtonThemeData(
+      style: ButtonStyle(
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (s) =>
+              s.contains(WidgetState.disabled) ? const Color(0xFF999999) : ink,
+        ),
+        overlayColor: const WidgetStatePropertyAll(Color(0x22000000)),
+        shape: const WidgetStatePropertyAll(RoundedRectangleBorder()),
+        textStyle: WidgetStatePropertyAll(text.labelLarge),
+      ),
+    ),
+    inputDecorationTheme: base.inputDecorationTheme.copyWith(
+      fillColor: paper,
+      border: const OutlineInputBorder(
+        borderRadius: BorderRadius.zero,
+        borderSide: frame,
+      ),
+      enabledBorder: const OutlineInputBorder(
+        borderRadius: BorderRadius.zero,
+        borderSide: frame,
+      ),
+      focusedBorder: const OutlineInputBorder(
+        borderRadius: BorderRadius.zero,
+        borderSide: BorderSide(color: ink, width: 2),
+      ),
+    ),
+    dialogTheme: const DialogThemeData(
+      backgroundColor: paper,
+      elevation: 0,
+      shape: RoundedRectangleBorder(side: BorderSide(color: ink, width: 2)),
+    ),
+    popupMenuTheme: const PopupMenuThemeData(
+      color: paper,
+      elevation: 0,
+      shape: square,
+    ),
+    menuTheme: const MenuThemeData(
+      style: MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(paper),
+        elevation: WidgetStatePropertyAll(0),
+        shape: WidgetStatePropertyAll(square),
+      ),
+    ),
+    tooltipTheme: TooltipThemeData(
+      textStyle: text.bodySmall?.copyWith(color: ink),
+      decoration: BoxDecoration(
+        color: paper,
+        border: Border.all(color: ink),
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: paper,
+      contentTextStyle: text.bodyMedium?.copyWith(color: ink),
+      shape: square,
+      elevation: 0,
+    ),
+    scrollbarTheme: const ScrollbarThemeData(
+      thickness: WidgetStatePropertyAll(10),
+      radius: Radius.zero,
+      thumbColor: WidgetStatePropertyAll(ink),
+    ),
+    checkboxTheme: CheckboxThemeData(
+      shape: const RoundedRectangleBorder(),
+      side: frame,
+      fillColor: WidgetStateProperty.resolveWith(
+        (s) => s.contains(WidgetState.selected) ? ink : paper,
+      ),
+    ),
+    progressIndicatorTheme: const ProgressIndicatorThemeData(
+      color: ink,
+      linearTrackColor: Color(0xFFCCCCCC),
+    ),
+    extensions: const [IconTint(ink, ink), ClassicDesktop()],
+  );
+}
 
 ThemeData buildWebTheme(WebTheme t) {
   switch (t) {
@@ -219,6 +392,8 @@ ThemeData buildWebTheme(WebTheme t) {
       return buildTheme(Brightness.dark, monochrome: true);
     case WebTheme.light:
       return buildTheme(Brightness.light, monochrome: true);
+    case WebTheme.eighties:
+      return _classicTheme();
     case WebTheme.green:
     case WebTheme.orange:
       final glow = t == WebTheme.green

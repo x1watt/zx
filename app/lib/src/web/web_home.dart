@@ -17,6 +17,7 @@ import '../archive_model.dart';
 import '../db_session.dart';
 import '../theme.dart';
 import '../ui/format_utils.dart';
+import 'classic_window.dart';
 import 'theme_choice.dart';
 import 'web_archive.dart';
 import 'web_services.dart';
@@ -743,6 +744,7 @@ class _WebHomeState extends State<WebHome> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final wide = MediaQuery.sizeOf(context).width >= 900;
+    final classic = Theme.of(context).extension<ClassicDesktop>() != null;
     final m = _model;
     final busy = _busy;
     final body = m == null
@@ -844,16 +846,45 @@ class _WebHomeState extends State<WebHome> {
       drawer: wide ? null : Drawer(child: SafeArea(child: _sidebar(context))),
       body: Stack(
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (wide) ...[
-                SizedBox(width: 260, child: _sidebar(context)),
-                const VerticalDivider(width: 1),
+          if (classic)
+            DecoratedBox(
+              decoration: const BoxDecoration(image: kDesktopPattern),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 14, 14),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (wide) ...[
+                      SizedBox(
+                        width: 250,
+                        child: ClassicWindow(
+                          title: 'Library',
+                          child: _sidebar(context),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                    ],
+                    Expanded(
+                      child: ClassicWindow(
+                        title: _source?.name ?? 'zx',
+                        child: body,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (wide) ...[
+                  SizedBox(width: 260, child: _sidebar(context)),
+                  const VerticalDivider(width: 1),
+                ],
+                Expanded(child: body),
               ],
-              Expanded(child: body),
-            ],
-          ),
+            ),
           if (_hover)
             Positioned.fill(
               child: IgnorePointer(

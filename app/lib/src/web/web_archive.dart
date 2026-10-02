@@ -291,6 +291,7 @@ class _WebArchiveViewState extends State<WebArchiveView> {
       out.add(
         crumbButton(
           context,
+          bold: false,
           key: Key('level$k'),
           label: level.displayName,
           icon: k == 0
@@ -311,6 +312,7 @@ class _WebArchiveViewState extends State<WebArchiveView> {
           ..add(
             crumbButton(
               context,
+              bold: false,
               key: Key('crumb:$p'),
               label: part,
               current: p == m.dir,
