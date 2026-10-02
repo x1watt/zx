@@ -1276,9 +1276,12 @@ class _Extractor extends ArchiveExtractCallback
     if (opRes == OperationResult.wrongPassword) {
       return SevenZipError.wrongPassword;
     }
+    // a wrong key decodes garbage, which fails as a data or CRC error, or
+    // runs past the end of the packed data
     if (encrypted &&
         (opRes == OperationResult.dataError ||
-            opRes == OperationResult.crcError)) {
+            opRes == OperationResult.crcError ||
+            opRes == OperationResult.unexpectedEnd)) {
       return SevenZipError.wrongPassword;
     }
     return opRes >= 1 && opRes <= 9
