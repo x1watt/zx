@@ -82,26 +82,43 @@ void listenForDrops(
 /// The name of a File of the page.
 String fileName(JSObject file) => (file['name'] as JSString).toDart;
 
-/// The ?url= parameter of the page's address.
-String? urlParameter() {
+/// The parameters of a link to the page (docs/app.md "Links"): `url`, the
+/// address of an archive, and `path`, a folder of it to show or a file to
+/// select.
+({String? url, String? path}) linkParameters() {
   final href = ((_window['location'] as JSObject)['href'] as JSString).toDart;
-  final u = Uri.tryParse(href)?.queryParameters['url'];
-  return u == null || u.isEmpty ? null : u;
+  final q = Uri.tryParse(href)?.queryParameters ?? const {};
+  String? get(String k) {
+    final v = q[k];
+    return v == null || v.isEmpty ? null : v;
+  }
+
+  return (url: get('url'), path: get('path'));
 }
 
-/// Puts [url] into the address (?url=) without loading the page again, so
-/// the address can be shared; null removes it.
-void setUrlParameter(String? url) {
-  final loc = _window['location'] as JSObject;
-  final href = (loc['href'] as JSString).toDart;
-  final u = Uri.parse(href);
-  final q = Map<String, String>.of(u.queryParameters);
-  if (url == null) {
-    q.remove('url');
-  } else {
-    q['url'] = url;
-  }
-  final next = u.replace(queryParameters: q.isEmpty ? null : q).toString();
+/// A link that opens the archive at [url] on this page, at [path] when
+/// given.
+String shareLink(String url, {String? path}) {
+  final href = ((_window['location'] as JSObject)['href'] as JSString).toDart;
+  final page = Uri.parse(href).replace(query: '', fragment: '');
+  final base = page.toString().replaceAll(RegExp(r'[?#]+$'), '');
+  return Uri.parse(base)
+      .replace(queryParameters: {'url': url, 'path': ?path})
+      .toString();
+}
+
+/// Puts the link of what is shown ([shareLink]) into the address without
+/// loading the page again, so the address bar can be copied; a null [url]
+/// removes it.
+void setLinkParameters(String? url, {String? path}) {
+  final href = ((_window['location'] as JSObject)['href'] as JSString).toDart;
+  final next = url == null
+      ? Uri.parse(href)
+            .replace(query: '')
+            .toString()
+            .replaceAll(RegExp(r'\?$'), '')
+      : shareLink(url, path: path);
+  if (next == href) return;
   (_window['history'] as JSObject).callMethod<JSAny?>(
     'replaceState'.toJS,
     null,

@@ -52,6 +52,18 @@ browse, preview, READMEs, seals, test, the Data view of a .zx database
   sites at all (GitHub release downloads, for one), the app says so;
 - from the library (the sidebar), which stays in this browser.
 
+Links open archives: `https://x1watt.github.io/zx/online/?url=ADDRESS`
+opens the archive at ADDRESS (percent-encoded), and `&path=PATH` opens it
+at the folder PATH, or selects the file PATH and previews it (a README.md
+is shown rendered). For example
+
+    https://x1watt.github.io/zx/online/?url=https%3A%2F%2Fexample.org%2Fdocs.zx&path=guide%2FREADME.md
+
+While an archive from an address is shown, the browser's address bar
+holds the link of the current folder or selected file, and Share link
+copies it. The archive must be served as described above (CORS, and
+ranges to read it in place).
+
 It needs WebAssembly with garbage collection and module workers (Chrome
 and Edge 119, Firefox 120, Safari 18.2 or newer). Writing archives,
 extracting to folders and nested archives that need a temporary copy (an

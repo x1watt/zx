@@ -9,6 +9,7 @@ import 'dart:async';
 import 'dart:js_interop';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:zx/zx_client.dart';
 import 'package:zx/zx_web.dart';
 
@@ -72,8 +73,8 @@ class _WebHomeState extends State<WebHome> {
       if (!mounted) return;
       setState(() => _engine = e);
       await _loadLibrary();
-      final url = urlParameter();
-      if (url != null) await _openUrl(url);
+      final link = linkParameters();
+      if (link.url != null) await _openUrl(link.url!, path: link.path);
     } catch (e) {
       if (mounted) setState(() => _engineError = e);
     }
@@ -169,7 +170,7 @@ class _WebHomeState extends State<WebHome> {
     return r;
   }
 
-  Future<void> _show(_Source s) async {
+  Future<void> _show(_Source s, {String? path}) async {
     final a = await _run(
       'Opening ${s.name}',
       (cancel) =>
@@ -188,12 +189,104 @@ class _WebHomeState extends State<WebHome> {
       );
       unawaited(db.start());
     }
+    if (path != null) _goTo(m, path);
+    m.addListener(_updateLink);
     setState(() {
       _source = s;
       _model = m;
       _db = db;
     });
-    setUrlParameter(s.url);
+    _updateLink();
+  }
+
+  /// Shows [path] of the archive: a folder is opened, a file is selected
+  /// (and so previewed) in its folder.
+  void _goTo(ArchiveModel m, String path) {
+    final p = path.split('/').where((c) => c.isNotEmpty).join('/');
+    final item = m.archive[p];
+    if (item == null) {
+      _snack('$path: not in the archive');
+    } else if (item.isDir) {
+      m.navigate(p);
+    } else {
+      m.navigate(item.parent);
+      m.selectPaths([p]);
+    }
+  }
+
+  /// The place shown in the archive, for links: the selected file, else
+  /// the folder (null at the top). Only the archive file's own level.
+  String? _place() {
+    final m = _model;
+    if (m == null || m.parent != null) return null;
+    final sel = m.selectedItems;
+    if (sel.length == 1 && !sel.first.isDir) return sel.first.path;
+    return m.dir.isEmpty ? null : m.dir;
+  }
+
+  /// Keeps the address bar on the link of what is shown.
+  void _updateLink() {
+    final url = _source?.url;
+    if (url == null || (_model?.parent != null)) return;
+    setLinkParameters(url, path: _place());
+  }
+
+  Future<void> _share() async {
+    final url = _source?.url;
+    if (url == null) return;
+    var here = _place() != null;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialog) {
+          final link = shareLink(url, path: here ? _place() : null);
+          return AlertDialog(
+            icon: const Icon(Icons.share_rounded),
+            title: const Text('Link to this archive'),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SelectableText(link, key: const Key('web-share-link')),
+                  if (_place() != null)
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: here,
+                      onChanged: (v) => setDialog(() => here = v ?? false),
+                      title: Text('Open at ${_place()}'),
+                    ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Whoever opens the link reads the archive from its '
+                    'address with zx online; nothing of it is stored '
+                    'elsewhere.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close'),
+              ),
+              FilledButton.icon(
+                key: const Key('web-share-copy'),
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: link));
+                  if (context.mounted) Navigator.pop(context);
+                  _snack('Link copied.');
+                },
+                icon: const Icon(Icons.copy_rounded),
+                label: const Text('Copy link'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   Future<void> _closeCurrent() async {
@@ -203,13 +296,14 @@ class _WebHomeState extends State<WebHome> {
     _db = null;
     await db?.close();
     for (ArchiveModel? l = m; l != null; l = l.parent) {
+      l.removeListener(_updateLink);
       await l.closeHandles();
     }
   }
 
   Future<void> _close() async {
     await _closeCurrent();
-    setUrlParameter(null);
+    setLinkParameters(null);
     if (mounted) setState(() => _source = null);
   }
 
@@ -240,7 +334,7 @@ class _WebHomeState extends State<WebHome> {
     if (files != null && files.length > 0) await _openFiles(files);
   }
 
-  Future<void> _openUrl(String url) async {
+  Future<void> _openUrl(String url, {String? path}) async {
     final e = _engine;
     if (e == null) return;
     final u = Uri.tryParse(url.trim());
@@ -254,15 +348,18 @@ class _WebHomeState extends State<WebHome> {
       case ZxUrlAccess.range:
         rememberUrl('$u');
         setState(() => _recent = recentUrls());
-        await _show(_Source(_Kind.url, info.name, info.path!, url: '$u'));
+        await _show(
+          _Source(_Kind.url, info.name, info.path!, url: '$u'),
+          path: path,
+        );
       case ZxUrlAccess.full:
-        await _offerDownload('$u', info);
+        await _offerDownload('$u', info, path);
       case ZxUrlAccess.blocked:
         await _explainBlocked('$u', info);
     }
   }
 
-  Future<void> _offerDownload(String url, ZxUrlInfo info) async {
+  Future<void> _offerDownload(String url, ZxUrlInfo info, String? path) async {
     final e = _engine!;
     final size = info.size == null ? '' : ' (${formatBytes(info.size)})';
     final ok = await showDialog<bool>(
@@ -306,7 +403,7 @@ class _WebHomeState extends State<WebHome> {
     );
     if (entry == null) return;
     await _loadLibrary();
-    await _openLibrary(entry.name, url: url);
+    await _openLibrary(entry.name, url: url, path: path);
   }
 
   Future<void> _explainBlocked(String url, ZxUrlInfo info) async {
@@ -385,12 +482,12 @@ class _WebHomeState extends State<WebHome> {
     if (url != null && url.trim().isNotEmpty) await _openUrl(url.trim());
   }
 
-  Future<void> _openLibrary(String name, {String? url}) async {
+  Future<void> _openLibrary(String name, {String? url, String? path}) async {
     final e = _engine;
     if (e == null) return;
-    final path = await _run('Opening $name', (_) => e.libraryPath(name));
-    if (path == null) return;
-    await _show(_Source(_Kind.library, name, path, url: url));
+    final p = await _run('Opening $name', (_) => e.libraryPath(name));
+    if (p == null) return;
+    await _show(_Source(_Kind.library, name, p, url: url), path: path);
   }
 
   Future<void> _keep() async {
@@ -632,6 +729,13 @@ class _WebHomeState extends State<WebHome> {
                   onPressed: busy == null ? _keep : null,
                   icon: const Icon(Icons.bookmark_add_outlined),
                   label: const Text('Keep in library'),
+                ),
+              if (_source?.url != null)
+                TextButton.icon(
+                  key: const Key('web-share'),
+                  onPressed: _share,
+                  icon: const Icon(Icons.share_rounded),
+                  label: const Text('Share link'),
                 ),
               TextButton.icon(
                 onPressed: _close,
