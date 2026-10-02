@@ -688,7 +688,7 @@ class _WebHomeState extends State<WebHome> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Image.asset('assets/icon/zx-256.png', width: 96, height: 96),
+              const ThemedLogo(size: 96),
               const SizedBox(height: 16),
               Text(
                 'Open an archive',
@@ -783,7 +783,7 @@ class _WebHomeState extends State<WebHome> {
         titleSpacing: 12,
         title: Row(
           children: [
-            Image.asset('assets/icon/zx-256.png', width: 28, height: 28),
+            const ThemedLogo(size: 28),
             const SizedBox(width: 10),
             Flexible(
               child: Text(

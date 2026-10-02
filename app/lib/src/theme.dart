@@ -160,6 +160,74 @@ class IconTint extends ThemeExtension<IconTint> {
         );
 }
 
+/// How a theme recolors the logo (and other pictures of the app itself):
+/// the phosphor themes map its brightness to their color, the 80s theme
+/// makes it one bit black and white.
+class LogoFilter extends ThemeExtension<LogoFilter> {
+  final ColorFilter filter;
+  const LogoFilter(this.filter);
+
+  /// Brightness (Rec. 709 luma) times [glow], a little brighter.
+  factory LogoFilter.phosphor(Color glow) {
+    const lr = 0.2126, lg = 0.7152, lb = 0.0722, gain = 1.25;
+    List<double> row(double c) => [
+      c * lr * gain,
+      c * lg * gain,
+      c * lb * gain,
+      0,
+      0,
+    ];
+    return LogoFilter(
+      ColorFilter.matrix([
+        ...row(glow.r),
+        ...row(glow.g),
+        ...row(glow.b),
+        0, 0, 0, 1, 0, //
+      ]),
+    );
+  }
+
+  /// Luma pushed to black or white around the middle.
+  factory LogoFilter.oneBit() {
+    const k = 12.0;
+    const lr = 0.2126 * k, lg = 0.7152 * k, lb = 0.0722 * k;
+    const off = 128 - 128 * k;
+    return const LogoFilter(
+      ColorFilter.matrix([
+        lr, lg, lb, 0, off, //
+        lr, lg, lb, 0, off, //
+        lr, lg, lb, 0, off, //
+        0, 0, 0, 1, 0, //
+      ]),
+    );
+  }
+
+  @override
+  LogoFilter copyWith({ColorFilter? filter}) =>
+      LogoFilter(filter ?? this.filter);
+
+  @override
+  LogoFilter lerp(LogoFilter? other, double t) =>
+      t < 0.5 || other == null ? this : other;
+}
+
+/// The logo of the app at [size], in the colors the theme allows.
+class ThemedLogo extends StatelessWidget {
+  final double size;
+  const ThemedLogo({super.key, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    final img = Image.asset(
+      'assets/icon/zx-256.png',
+      width: size,
+      height: size,
+    );
+    final f = Theme.of(context).extension<LogoFilter>();
+    return f == null ? img : ColorFiltered(colorFilter: f.filter, child: img);
+  }
+}
+
 /// The theme of the web version.
 enum WebTheme {
   dark('Dark'),
@@ -399,7 +467,11 @@ ThemeData _classicTheme() {
       color: ink,
       linearTrackColor: Color(0xFFCCCCCC),
     ),
-    extensions: const [IconTint(ink, ink), ClassicDesktop()],
+    extensions: [
+      const IconTint(ink, ink),
+      const ClassicDesktop(),
+      LogoFilter.oneBit(),
+    ],
   );
 }
 
@@ -476,7 +548,7 @@ ThemeData buildWebTheme(WebTheme t) {
             side: BorderSide(color: glow.withValues(alpha: 0.6)),
           ),
         ),
-        extensions: [IconTint(glow, cs.secondary)],
+        extensions: [IconTint(glow, cs.secondary), LogoFilter.phosphor(glow)],
       );
   }
 }
