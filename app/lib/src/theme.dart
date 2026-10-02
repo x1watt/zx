@@ -230,7 +230,7 @@ class ClassicDesktop extends ThemeExtension<ClassicDesktop> {
 }
 
 /// One bit: black on white, inverted selection, square frames, rounded
-/// push buttons.
+/// push buttons, the pixel font at the sizes where it is sharp.
 ThemeData _classicTheme() {
   const ink = Colors.black;
   const paper = Colors.white;
@@ -266,10 +266,22 @@ ThemeData _classicTheme() {
     surfaceTint: Colors.transparent,
   );
   final base = buildTheme(Brightness.light, monochrome: true);
-  final text = base.textTheme.apply(
+  // The pixel font is crisp only where its pixels fall on screen pixels:
+  // one of them is 1/11 of the font size, so 11 and 22. It is used there
+  // (window titles, headings); the text in between is Roboto, which reads
+  // well at any size.
+  TextStyle? pixel(TextStyle? s, double size) => s?.copyWith(
     fontFamily: kClassicFont,
-    bodyColor: ink,
-    displayColor: ink,
+    fontSize: size,
+    fontWeight: FontWeight.w400,
+    letterSpacing: 0,
+    height: 1.2,
+  );
+  final plain = base.textTheme.apply(bodyColor: ink, displayColor: ink);
+  final text = plain.copyWith(
+    headlineSmall: pixel(plain.headlineSmall, 22),
+    titleLarge: pixel(plain.titleLarge, 22),
+    titleSmall: pixel(plain.titleSmall, 11),
   );
   const frame = BorderSide(color: ink);
   const square = RoundedRectangleBorder(side: frame);
@@ -306,7 +318,7 @@ ThemeData _classicTheme() {
       elevation: 0,
       scrolledUnderElevation: 0,
       shape: const Border(bottom: frame),
-      titleTextStyle: text.titleMedium,
+      titleTextStyle: text.titleLarge,
     ),
     filledButtonTheme: FilledButtonThemeData(style: push),
     outlinedButtonTheme: OutlinedButtonThemeData(style: push),
