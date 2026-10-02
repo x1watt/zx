@@ -699,3 +699,34 @@ the codecs alone, in memory. `tool/zcm_bench.dart` measures the zcm levels
 `-lstm cells,layers,horizon`, `-nodec`, `-nodict`, `-nodetect`; it prints
 the peak RSS of the process); run memory-heavy levels inside a cgroup
 (`systemd-run --user --scope -p MemoryMax=3G -p MemorySwapMax=0`).
+
+## 6. The web version
+
+Measured with `tool/web_check/run_e2e.sh` (headless Chromium, the engine
+and the server on this machine), docs/architecture.md section 20.
+
+- The engine is 2.1 MB of WebAssembly (`dart compile wasm -O2`), 0.8 MB
+  gzipped, loaded once by the worker; the UI is Flutter's own build.
+- Remote archives: a .zx of 6.36 MB (300 incompressible files in solid
+  blocks) is listed with 2 range requests and 594 KB (the pinned head of
+  64 KiB and tail of 128 KiB, in 256 KiB blocks); reading one file
+  fetches its block (here the rest of the file, in one request: the
+  blocks are large), and extracting all 300 files then needs no other
+  request. Runs of missing blocks are fetched in one request, and the
+  readahead doubles on sequential reads up to 4 MiB, so a long read is a
+  few large requests, not one per block. The block cache of a URL holds
+  64 MiB (least recently used), with the head and tail pinned.
+- Uploaded files are read in 1 MiB blocks with `FileReaderSync` (8 MiB of
+  cache per file): nothing is copied whole, so a file of several GB opens
+  like a small one.
+- On the UI thread: the JSON parse of a listing (the browser's
+  JSON.parse) and the `ZxItem` objects made from it, and the check of a
+  README's links. The README parse runs in the engine. Not measured yet
+  on listings of 100,000 items.
+- Not measured yet: the engine's codec speed against the native AOT
+  build. The engine is single threaded (no SharedArrayBuffer on GitHub
+  Pages), so .zx blocks decode one at a time.
+- `readBytes` of a whole file (Download) holds the file in the engine's
+  memory and once more as a Blob: a download is bounded by the memory of
+  the tab.
+

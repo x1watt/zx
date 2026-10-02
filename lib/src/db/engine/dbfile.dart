@@ -3,24 +3,68 @@
 // pages (keyed by their place in the file, so they are shared by every
 // snapshot and stay valid across commits).
 
-import 'dart:io';
 import 'dart:typed_data';
+
+import '../../host/io.dart';
 
 import '../../format/zx/zx_blocks.dart';
 import '../../format/zx/zx_crypto.dart';
 import '../../format/zx/zx_format.dart';
 import '../../format/zx/zx_reader.dart';
-import '../../io/streams.dart' show SevenZipException;
+import '../../io/streams.dart'
+    show
+        ClosableInStream,
+        FileInStream,
+        SeekableInStream,
+        SevenZipException,
+        hostFiles;
 import '../storage_api.dart';
 import 'cache.dart';
 import 'delta.dart';
 import 'page.dart';
 
+/// Opens the archive file [path] for [DbFile]: reads go straight to the
+/// file (no read cache, the length asked each time), because the store
+/// appends its commits to the same file and reads them back. A host's
+/// files ([hostFiles], the web engine) are read only and do not change.
+ClosableInStream dbOpenInput(String path) {
+  final h = hostFiles;
+  return h != null ? h.open(path) : _RafInput(File(path).openSync());
+}
+
+/// The stream ZxArchiveReader parses [input] with: over a file, a cached
+/// [FileInStream] on the same handle (the reader makes many small reads).
+SeekableInStream dbReaderInput(ClosableInStream input) =>
+    input is _RafInput ? FileInStream(input.raf) : input;
+
+class _RafInput implements ClosableInStream {
+  final RandomAccessFile raf;
+  _RafInput(this.raf);
+
+  @override
+  int get length => raf.lengthSync();
+
+  @override
+  int get position => raf.positionSync();
+
+  @override
+  set position(int p) => raf.setPositionSync(p);
+
+  @override
+  int read(Uint8List buf, int off, int len) =>
+      raf.readIntoSync(buf, off, off + len);
+
+  @override
+  void close() => raf.closeSync();
+}
+
 /// One opened archive file (a store opens it again when another process
 /// replaces it, for example after a vacuum).
 class DbFile {
   final String path;
-  final RandomAccessFile raf;
+
+  /// The archive file (read only: commits write through their own handle).
+  final ClosableInStream input;
   final ZxHeader header;
   final ZxKeys? keys;
 
@@ -53,7 +97,7 @@ class DbFile {
     return f;
   }
 
-  DbFile(this.path, this.raf, this.header, this.keys,
+  DbFile(this.path, this.input, this.header, this.keys,
       {int pageCacheBytes = 64 << 20, int blockCacheBytes = 16 << 20})
       : blocks = LruCache<Uint8List>(blockCacheBytes, (b) => b.length + 64),
         pages = LruCache<Node>(pageCacheBytes, (n) => n.memory),
@@ -69,10 +113,10 @@ class DbFile {
 
   Uint8List readAt(int off, int len) {
     final b = Uint8List(len);
-    raf.setPositionSync(off);
+    input.position = off;
     var n = 0;
     while (n < len) {
-      final k = raf.readIntoSync(b, n, len);
+      final k = input.read(b, n, len - n);
       if (k <= 0) {
         throw const ZxDbException(
             'unexpected end of the archive', ZxDbError.corrupt);
@@ -82,7 +126,7 @@ class DbFile {
     return b;
   }
 
-  int get length => raf.lengthSync();
+  int get length => input.length;
 
   /// Reads and decodes the Index at [loc] (as ZxArchiveReader.readIndex).
   ZxIndex readIndex(ZxIndexLoc loc, {bool resolve = true}) {
@@ -193,8 +237,8 @@ class DbFile {
 
   void close() {
     try {
-      raf.closeSync();
-    } on FileSystemException {
+      input.close();
+    } on Object {
       // ignore
     }
   }

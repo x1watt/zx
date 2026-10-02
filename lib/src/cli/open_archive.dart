@@ -4,7 +4,7 @@
 // (COpenCallbackImp: the volume and password callback) and
 // UI/Common/DefaultName.cpp of the LZMA SDK.
 
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../common/method_props.dart';
@@ -413,7 +413,7 @@ class Arc {
   int arcStreamOffset = 0;
 
   /// The file stream the archive was opened from (closed by [close]).
-  FileInStream? fileStream;
+  ClosableInStream? fileStream;
 
   /// A tar inside a compressor (arc_compound.dart): the format index of
   /// the compressor, -1 otherwise.
@@ -1319,7 +1319,7 @@ class Arc {
     } else if (op.stream == null) {
       path = filePath;
       try {
-        final f = FileInStream.open(resolvePath(path));
+        final f = openInputFile(resolvePath(path));
         fileStream = f;
         op.stream = f;
       } on FileSystemException catch (e) {
@@ -1473,7 +1473,7 @@ class OpenCallbackImp extends ArchiveOpenCallback {
   final List<String> fileNames = [];
   final List<bool> fileNamesWasUsed = [];
   final List<int> fileSizes = [];
-  final List<FileInStream> _openedStreams = [];
+  final List<ClosableInStream> _openedStreams = [];
 
   /// Init2: returns an HRESULT.
   int init2(String folderPrefix, String fileName) {
@@ -1484,6 +1484,17 @@ class OpenCallbackImp extends ArchiveOpenCallback {
     passwordWasAsked = false;
     _folderPrefix = folderPrefix;
     final path = _folderPrefix + fileName;
+    final host = hostFiles;
+    if (host != null) {
+      final size = host.sizeOf(path);
+      if (size == null) return hresultFromErrno(Errno.enoent);
+      _fileInfo
+        ..name = fileName
+        ..size = size
+        ..isDir = false
+        ..mTime = FiTime.fromDateTime(DateTime.utc(1980));
+      return HRes.sOk;
+    }
     try {
       final st = FileStat.statSync(path);
       if (st.type == FileSystemEntityType.notFound) {
@@ -1521,7 +1532,10 @@ class OpenCallbackImp extends ArchiveOpenCallback {
   @override
   String? get archivePath => _subArchiveMode
       ? null
-      : File(_folderPrefix + _fileInfo.name).absolute.path;
+      : hostFiles != null
+          // the host's paths are absolute already
+          ? _folderPrefix + _fileInfo.name
+          : File(_folderPrefix + _fileInfo.name).absolute.path;
 
   // COpenCallbackImp::GetStream
   @override
@@ -1538,6 +1552,22 @@ class OpenCallbackImp extends ArchiveOpenCallback {
       if (name.indexOf('?', startPos) >= 0) return null;
     }
     final fullPath = _folderPrefix + name;
+    final host = hostFiles;
+    if (host != null) {
+      final size = host.sizeOf(fullPath);
+      if (size == null) return null;
+      final ClosableInStream s;
+      try {
+        s = host.open(fullPath);
+      } on FileSystemException catch (e) {
+        throw SystemException(hresultOfFileSystemException(e));
+      }
+      _openedStreams.add(s);
+      fileSizes.add(size);
+      fileNames.add(name);
+      fileNamesWasUsed.add(true);
+      return s;
+    }
     FileStat st;
     try {
       st = FileStat.statSync(fullPath);

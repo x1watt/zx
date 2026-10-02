@@ -16,6 +16,7 @@ import 'package:path/path.dart' as p;
 import 'package:zx/src/db/zxdb.dart';
 import 'package:zx/zx.dart';
 import 'package:zx_app/src/app.dart';
+import 'package:zx_app/src/db_native.dart';
 import 'package:zx_app/src/db_session.dart';
 import 'package:zx_app/src/services.dart';
 import 'package:zx_app/src/ui/browser_page.dart';
@@ -468,7 +469,7 @@ void main() {
   test('the async connection (worker isolate)', () async {
     expect(await ZxDatabaseAsync.hasDatabase(plainArchive), isFalse);
     expect(await ZxDatabaseAsync.hasDatabase(dbArchive), isTrue);
-    final s = DbSession(dbArchive, readOnlyWhy: 'test');
+    final s = DbSession(dbArchive, readOnlyWhy: 'test', opener: openAsyncDb);
     await s.start();
     expect(s.available, isTrue);
     expect(await s.count('items'), 250);

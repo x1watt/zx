@@ -223,7 +223,7 @@ void main() {
     test('a generation signed by a stranger', () {
       final f = r.lastFooter;
       final s = r.lastSeal!.seal;
-      final forged = ZxSeal.build(
+      final forged = zxSealBuild(
           archiveId: r.header.archiveId,
           generation: s.generation,
           dataStart: s.dataStart,
@@ -245,7 +245,7 @@ void main() {
     test('roles changed by a forged seal', () {
       final f = r.lastFooter;
       final s = r.lastSeal!.seal;
-      final forged = ZxSeal.build(
+      final forged = zxSealBuild(
           archiveId: r.header.archiveId,
           generation: s.generation,
           dataStart: s.dataStart,

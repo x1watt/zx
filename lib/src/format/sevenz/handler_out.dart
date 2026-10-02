@@ -3,7 +3,7 @@
 // SDK. The generic HandlerOut.cpp part (CMultiMethodProps, ParseSizeString,
 // CHandlerTimeOptions) is in ../handler_out.dart.
 
-import 'dart:io';
+import '../../host/io.dart';
 
 import '../../codec/codec.dart';
 import '../../common/method_props.dart';

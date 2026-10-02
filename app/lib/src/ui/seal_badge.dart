@@ -4,7 +4,7 @@
 // isolate, no password needed) and kept per archive handle.
 
 import 'package:flutter/material.dart';
-import 'package:zx/zx.dart';
+import 'package:zx/zx_client.dart';
 
 /// The seals of each archive handle shown (an archive opened again after
 /// a change is a new handle, so it is checked again).

@@ -5,7 +5,7 @@
 // for the license and the third party notices.
 
 import 'dart:convert';
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:math';
 import 'dart:typed_data';
 

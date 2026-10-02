@@ -16,7 +16,7 @@
 //   * the speed of each level comes from measurements on this machine type
 //     (docs/performance.md), scaled by a calibration run when one is made.
 
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import 'zcm.dart';

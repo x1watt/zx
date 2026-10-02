@@ -1,7 +1,7 @@
 // The extract group commands (e, x, t): UI/Common/Extract.cpp of the LZMA
 // SDK (DecompressArchive, Extract).
 
-import 'dart:io';
+import '../host/io.dart';
 
 import '../format/archive_types.dart';
 import 'archive_extract_callback.dart';

@@ -1,10 +1,21 @@
-# Publishes site/ to GitHub Pages (https://x1watt.github.io/zx).
+# Publishes site/ to GitHub Pages (https://x1watt.github.io/zx), with the
+# web version of the app under online/ (https://x1watt.github.io/zx/online/):
+# tool/build_web.sh builds it, and the browser test of the engine
+# (tool/web_check/run_e2e.sh) must pass before anything is published.
 name: pages
 
 on:
   push:
     branches: [main, master]
-    paths: ['site/**', '.github/workflows/pages.yml']
+    paths:
+      - 'site/**'
+      - 'app/**'
+      - 'lib/**'
+      - 'web_engine/**'
+      - 'tool/build_web.sh'
+      - 'tool/web_check/**'
+      - 'pubspec.yaml'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
@@ -17,16 +28,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Packages
+        run: |
+          dart pub get
+          (cd app && flutter pub get)
+      - name: The web gates
+        run: dart test test/web_safety_test.dart test/web
+      - name: The engine in a browser
+        run: tool/web_check/run_e2e.sh "$RUNNER_TEMP/e2e"
+      - name: Build the web version
+        run: CI=1 tool/build_web.sh --base-href /zx/online/
+      - name: Assemble the site
+        run: |
+          mkdir _site
+          cp -r site/. _site/
+          cp -r app/build/web _site/online
+          du -sh _site _site/online _site/online/engine
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
   deploy:
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
       - id: deployment
         uses: actions/deploy-pages@v4

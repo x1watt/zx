@@ -26,6 +26,7 @@ import 'eval.dart';
 import 'functions.dart';
 import 'parser.dart';
 import 'planner.dart';
+import 'sql_result.dart';
 import 'value.dart';
 import 'vtab.dart';
 
@@ -36,45 +37,8 @@ export 'functions.dart'
         ZxAggregateFunction,
         ZxAggregateState,
         ZxFunctionContext;
-export 'datetime.dart' show zxFormatDatetimeNs;
+export 'sql_result.dart';
 export 'vtab.dart';
-
-/// Result of [ZxSql.execute].
-class ZxSqlResult {
-  final List<String> columns;
-  final List<List<Object?>> rows;
-
-  /// Rows inserted, updated or deleted by the (last) statement.
-  final int changes;
-  final int lastInsertRowid;
-
-  /// Per column, the declared type of the column it reads when the result
-  /// column is a column reference (also through views and subqueries),
-  /// else null; empty when unknown (statements other than SELECT). UIs use
-  /// it to show DATETIME values (ns since 1970 UTC) as dates: see
-  /// [isDatetime] and [zxFormatDatetimeNs].
-  final List<String?> types;
-  const ZxSqlResult(
-      this.columns, this.rows, this.changes, this.lastInsertRowid,
-      {this.types = const []});
-
-  /// True when column [i] holds DATETIME values (ns since 1970 UTC).
-  bool isDatetime(int i) => zxIsDatetimeType(i < types.length ? types[i] : null);
-
-  bool get isEmpty => rows.isEmpty;
-
-  /// Rows as maps from column name to value.
-  List<Map<String, Object?>> get maps => [
-        for (final r in rows)
-          {for (var i = 0; i < columns.length; i++) columns[i]: r[i]}
-      ];
-
-  /// The first column of the first row (or null).
-  Object? get scalar => rows.isEmpty || rows[0].isEmpty ? null : rows[0][0];
-
-  @override
-  String toString() => 'ZxSqlResult($columns, $rows, changes: $changes)';
-}
 
 /// Streaming result of a query.
 class ZxSqlCursor {
@@ -995,8 +959,4 @@ Expr renameInExpr(Expr e, String from, String to) {
   return e;
 }
 
-/// True for the declared types whose values are ns since 1970 UTC
-/// (DATETIME, TIMESTAMP).
-bool zxIsDatetimeType(String? type) =>
-    type != null && kindOfType(type) == ZxColumnKind.datetime;
 

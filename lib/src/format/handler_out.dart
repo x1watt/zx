@@ -5,7 +5,7 @@
 // handlers build on it; the 7z specific COutHandler stays in
 // sevenz/handler_out.dart.
 
-import 'dart:io';
+import '../host/io.dart';
 
 import '../common/method_props.dart';
 

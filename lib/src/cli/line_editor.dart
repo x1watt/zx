@@ -7,7 +7,7 @@
 // screen is written through a callback, so it works with the CLI's
 // synchronous streams.
 
-import 'dart:io';
+import '../host/io.dart';
 
 class LineEditor {
   /// Reads one byte, -1 at the end of the input.

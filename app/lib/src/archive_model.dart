@@ -6,7 +6,7 @@
 import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
-import 'package:zx/zx.dart';
+import 'package:zx/zx_client.dart';
 
 enum SortColumn { name, size, packed, ratio, modified, method, encrypted, crc }
 
@@ -188,6 +188,7 @@ class ArchiveModel extends ChangeNotifier {
       _selectedSize += size;
     }
   }
+
   bool get canBack => _back.isNotEmpty;
   bool get canForward => _forward.isNotEmpty;
   bool get canUp => _dir.isNotEmpty;

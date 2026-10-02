@@ -25,12 +25,17 @@ Read it together with `docs/performance.md`.
    background isolate. The in memory helpers (`xzCompress`, `sevenZipCompressBytes`...)
    run where they are called, and say so.
 4. **Pure Dart.** No FFI, no plugins, no dependencies at run time, so the
-   package builds for every native Flutter target unchanged.
+   package builds for every native Flutter target unchanged, and for the
+   browser with dart2wasm (section 20).
 
 ## 2. Rules for every file
 
 1. Pure Dart, `dart:io`, `dart:isolate` and `dart:typed_data` only (and
-   `dart:convert` for text), no packages at run time.
+   `dart:convert` for text), no packages at run time. `dart:io` is
+   imported through `lib/src/host/io.dart` (section 20).
+   `dart:js_interop` only in `lib/src/web/**` and
+   `lib/src/host/*_web.dart`, with bindings written by hand (no
+   `package:web`).
 2. Keep the C/C++ function name in a short comment above each Dart
    function (`// LzmaDec_DecodeReal`). Same algorithms, same constants,
    same bit exact output where the C code is deterministic.
@@ -44,7 +49,8 @@ Read it together with `docs/performance.md`.
    (section 17; `db/zxdb.dart` is synchronous but gives a Stream of
    changes and commits a group commit by a Timer) (and the isolate
    based API of the vendored zpaq engine, `lib/src/zpaq`, section 14,
-   which zx does not call).
+   which zx does not call), and the web engine and its client in
+   `lib/src/web` (section 20).
    Streams are the interfaces in `lib/src/io/streams.dart`. Errors are
    `SevenZipException` (`InvalidArgException` for bad switches).
 5. Comments and docs: plain English, US keyboard characters only. No em or
@@ -184,11 +190,23 @@ Read it together with `docs/performance.md`.
   holds `ZxCompression` (`ZxOptions.compression`, turned into the zx
   switches of section 15) and `zxEstimate`, which `ZxArchive.estimate`
   runs with `Isolate.run`.
+- `lib/src/zx_types.dart`, `lib/src/api_types.dart`,
+  `format/zx/zx_seal_types.dart`, `db/sql/sql_result.dart`: the types a
+  caller of the API holds (items, listings, results, progress, seals, SQL
+  results), apart from the code that makes them, so that they compile
+  with dart2js (section 20). The files that made them export them, so
+  nothing changed for the callers.
+- `lib/src/host/`: the `dart:io` of the library (section 20).
+- `lib/src/web/`: the web engine and its client (section 20).
 - `lib/zx.dart`: the exports: the API, and the synchronous building blocks
   (reader, writer, streams, codecs) for callers that run them in their own
   isolates.
+- `lib/zx_client.dart`: the part of the API a user interface holds, for
+  the native platforms and the browser alike; `lib/zx_web.dart`: the web
+  version's own calls (section 20).
 - `app/`: the desktop archive manager (Flutter, package `zx_app`), a user
-  of `ZxArchive` only (section 11).
+  of `ZxArchive` only (section 11), and its web version
+  (`app/lib/main_web.dart`, section 20).
 
 ## 4. Coder shapes
 
@@ -570,9 +588,10 @@ input differences, never by reading or disassembling their code.
   of every version (`allVersions`), since a handle at version N lists
   only the versions up to N.
 - The database of a .zx archive (section 17): `DbSession`
-  (`app/lib/src/db_session.dart`) checks for one with
-  `ZxDatabaseAsync.hasDatabase` (a background isolate) when a .zx
-  archive is shown, and keeps a `ZxDatabaseAsync` (worker isolate) open
+  (`app/lib/src/db_session.dart`) checks for one through its opener
+  (`db_native.dart`: `ZxDatabaseAsync.hasDatabase` in a background
+  isolate; the engine worker on the web) when a .zx archive is shown,
+  and keeps a `ZxDatabaseAsync` (worker isolate) open
   for the Data view, the metadata of the preview and the Properties, and
   the similar files and SHA-256 searches; the opener is behind
   `AppServices.dbOpener` for the tests. A session is made per archive
@@ -1215,4 +1234,88 @@ signed it.
   property `Seal` (`l -slt`) and opens with `-mverify=strict` as of the
   last generation whose seal checks.
 - Not supported: volume sets (refused when sealing).
+
+## 20. The web version
+
+The read-only archive manager at https://x1watt.github.io/zx/online/
+(docs/app.md, "The web version"): archives are opened from the user's
+files, from a URL, or from a library kept in the browser.
+
+- **Two compilers.** The engine (the library) can not be compiled with
+  dart2js: it needs 64-bit integers (literals above 2^53, `Int64List`,
+  `getUint64`, 64-bit multiplies in xxHash, zstd, PPMd and .zx). dart2wasm
+  compiles it. `flutter build web --wasm` also makes a dart2js build of the
+  UI for browsers without WebAssembly GC, so the UI must not import the
+  engine: it holds `package:zx/zx_client.dart` (and `zx_web.dart`) only,
+  and talks to the engine in a Web Worker. `test/web_safety_test.dart`
+  walks the import graphs (the web branch of conditional imports) and
+  compiles the client with dart2js.
+- **`dart:io` in the browser.** dart2wasm compiles code that imports
+  `dart:io`; its classes throw `UnsupportedError` when used. Every library
+  file imports `host/io.dart`, which exports `dart:io`, except in a
+  browser build (`dart.library.js_interop`), where `Platform` is replaced
+  by constants (`host/platform_web.dart`: '/' separators, not Windows, one
+  processor). The read path reaches files only through
+  `openInputFile` and the `HostFiles` hook of `io/streams.dart`
+  (`ArchiveLink`, the .zx reader and its volumes, `zxCheckSealsOfFile`,
+  the zxdb store and `ZxArchiveView`), so the engine serves its own paths.
+  A nested archive that would need a temporary copy (an item of a 7z or
+  rar opened as an archive) is refused in the browser; a compressed tar
+  is read in one pass.
+- **The engine** (`lib/src/web/engine.dart`, `web_engine/zx_engine.dart`,
+  started by `web_engine/zx_engine_worker.js` in a module worker). Its
+  sources are paths: `/upload/N/NAME` (a File the page got from the file
+  dialog or a drop, read with `FileReaderSync` through `BlobInStream`:
+  random access to any size without a copy), `/url/N/NAME`
+  (`HttpRangeInStream` over synchronous `XMLHttpRequest`s with a Range
+  header, allowed in workers) and `/opfs/NAME` (the library: files in the
+  origin private file system, written with a synchronous access handle,
+  read as Blobs). Each source keeps one stream with its block cache;
+  every reader gets its own position over it. The operations are the
+  worker functions of the native API (`workerOpen`, `workerReadBytesRaw`,
+  `workerProbe`, `workerExtract`) with `WebOps`, a `ZxOps` that posts
+  progress (at most every 100 ms) and password questions to the UI and
+  awaits the answer, plus the read-only `ZxDatabase` calls and the README
+  parse. Handles of open archives (their base and chain, as the native
+  `ZxArchive` keeps them) stay in the engine; the UI holds a number.
+- **The protocol** (`engine_client.dart`, `wire.dart`): requests
+  `{id, op, args}`, answers `{id, ok, json[, bytes]}`, events
+  `{id, event: progress | ask}`. Values are JSON text, parsed by the
+  browser; the listing goes in columns (a list per field, absent when
+  empty); bytes go as a transferred ArrayBuffer. A cancelled request
+  drops its answer; the engine finishes what it runs (it is one thread).
+- **The web `ZxArchive`** (`zx_api_web.dart`) has the read members of the
+  native one with the same signatures, so `FileList`, `PreviewPane`,
+  `ReadmeView`, `SealBadge` and `DataView` of the app work unchanged.
+  Writing, extracting to a folder and `extractToTemp` throw
+  `SevenZipError.unsupported`; `capabilities` is empty.
+- **URLs.** Before a URL is read, the engine fetches its first byte with
+  a Range header (a single range is a CORS-safelisted request header, so
+  there is no preflight): 206 makes it a range source (the size from
+  Content-Range, else from a HEAD request; Content-Length is always
+  readable), 200 means the server ignores ranges (the UI offers to
+  download it whole into the library), a failed request is "blocked" (no
+  CORS headers: GitHub release assets, most download sites). Each range
+  answer is checked: status 206, length, the total of Content-Range and
+  the ETag when exposed, no Content-Encoding.
+- **No COOP/COEP.** GitHub Pages can not send them, and a page isolated
+  with them could not read files of other sites without CORP headers.
+  So no SharedArrayBuffer: one engine thread, and Flutter's renderer
+  without threads.
+- **The app** (`app/lib/main_web.dart`, `app/lib/src/web/`): the page
+  (`web_home.dart`: library, addresses, Open files, drop, Open address,
+  `?url=`), the archive pane (`web_archive.dart`), the browser services
+  (`web_services.dart`: file input, drops, localStorage for the
+  addresses, downloads, `webDbOpener`). Shared files reach the outside
+  through `services_base.dart` (interfaces) and `ui/save_text.dart`
+  (conditional: a file, or a download). `app/web/` is the page shell.
+- **Building and testing.** `tool/build_web.sh` (through the build lock
+  locally) builds the UI and the engine into `app/build/web`;
+  `.github/workflows/pages.yml` runs the gates, the browser test and the
+  build, and publishes it under `online/` of the site.
+  `tool/web_check/run_e2e.sh` runs the engine and the dart2js client in
+  headless Chromium against `serve.mjs` (byte ranges with and without
+  exposed headers, a server without ranges, one without CORS, 404) on
+  fixtures from `make_fixtures.dart`; `test/web/` tests the range stream
+  (over a fake transport) and the wire format on the VM.
 

@@ -4,7 +4,7 @@
 // (found by their Header in the folder of the file and in search folders),
 // and the blocks.
 
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import '../../crypto/sha256.dart';
@@ -85,7 +85,7 @@ class ZxVolumes {
   SeekableInStream stream(int v) {
     final vol = _vols[v] ?? _find(v);
     if (vol == null) throw ZxMissingVolumeException(v, nameOf(v));
-    return vol.stream ??= FileInStream.open(vol.path!);
+    return vol.stream ??= openInputFile(vol.path!);
   }
 
   _Vol? _find(int v) {
@@ -131,7 +131,7 @@ class ZxVolumes {
   void close() {
     for (final v in _vols.values) {
       final s = v.stream;
-      if (v.owned && s is FileInStream) {
+      if (v.owned && s is ClosableInStream) {
         try {
           s.close();
         } on FileSystemException {
@@ -308,7 +308,7 @@ class ZxArchiveReader {
     final f = lastFooter;
     if (f.sealSize == 0) return null;
     return _lastSeal ??= ZxLastSeal(
-        ZxSeal.parse(readRaw(f.indexOffset + f.indexSize, f.sealSize),
+        zxSealParse(readRaw(f.indexOffset + f.indexSize, f.sealSize),
             header.archiveId),
         validEnd);
   }

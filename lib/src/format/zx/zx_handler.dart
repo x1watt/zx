@@ -14,7 +14,7 @@
 // generations only.
 
 import 'dart:convert';
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import '../../common/method_props.dart';
@@ -643,23 +643,26 @@ class ZxHandler {
   Object? _timelineProp(int index, int propId) {
     if (index < 0 || index >= _timeline.length) return null;
     final v = _timeline[index];
+    // one result variable and one return: dart2wasm (Dart 3.13) otherwise
+    // emits an invalid return of a boxed int here
+    Object? r;
     switch (propId) {
       case Kpid.path:
-        return v.path;
+        r = v.path;
       case Kpid.isDir:
-        return v.entry.isDir;
+        r = v.entry.isDir;
       case Kpid.size:
-        return v.entry.isDir ? null : v.size;
+        if (!v.entry.isDir) r = v.size;
       case Kpid.mTime:
         // the date of the generation that wrote this version
-        return _ft(v.time);
+        r = _ft(v.time);
       case Kpid.sha256:
         final h = v.sha256;
-        return h == null ? null : zxHex(h);
+        if (h != null) r = zxHex(h);
       case ZxKpid.version:
-        return v.generation;
+        r = v.generation;
       case ZxKpid.deletedIn:
-        return v.deleted ? v.endGeneration : null;
+        if (v.deleted) r = v.endGeneration;
       case Kpid.comment:
         final sb = StringBuffer('generation ${v.generation}');
         if (v.endGeneration != null) {
@@ -667,11 +670,11 @@ class ZxHandler {
               ? ', deleted in generation ${v.endGeneration}'
               : ', replaced in generation ${v.endGeneration}');
         }
-        return sb.toString();
+        r = sb.toString();
       case Kpid.attrib:
-        return _attrib(v.entry);
+        r = _attrib(v.entry);
     }
-    return null;
+    return r;
   }
 
   Object? _generationProp(int index, int propId) {

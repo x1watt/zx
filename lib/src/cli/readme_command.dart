@@ -4,7 +4,7 @@
 //
 //   zx readme [options] ARCHIVE [FOLDER]
 
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../format/archive_types.dart';

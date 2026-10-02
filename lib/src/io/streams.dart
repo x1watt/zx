@@ -6,7 +6,7 @@
 // (see lib/src/api.dart), where blocking file IO is fine and much faster than
 // awaiting a future per chunk.
 
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 /// Thrown for corrupt input, unsupported methods, wrong passwords and IO
@@ -290,8 +290,35 @@ class ConcatInStream implements InStream {
   }
 }
 
+/// A random access input that holds a resource (a file) until closed.
+abstract class ClosableInStream implements SeekableInStream {
+  void close();
+}
+
+/// The files of a host without dart:io files (the web engine, which
+/// serves uploads, browser storage and URLs under its own paths). null:
+/// the files of dart:io.
+abstract interface class HostFiles {
+  /// The size of the file at [path], or null when there is none.
+  int? sizeOf(String path);
+
+  /// The file at [path] for reading; throws [FileSystemException] when it
+  /// can not be opened.
+  ClosableInStream open(String path);
+}
+
+/// The host's files, when they are not dart:io's (see [HostFiles]).
+HostFiles? hostFiles;
+
+/// Opens the file at [path] for reading: through [hostFiles] when set,
+/// else as a [FileInStream].
+ClosableInStream openInputFile(String path) {
+  final h = hostFiles;
+  return h != null ? h.open(path) : FileInStream.open(path);
+}
+
 /// Buffered random access file input.
-class FileInStream implements SeekableInStream {
+class FileInStream implements ClosableInStream {
   final RandomAccessFile raf;
   final int _length;
   int _pos = 0;
@@ -340,6 +367,7 @@ class FileInStream implements SeekableInStream {
   int get length => _length;
 
   /// Closes the file; a second close does nothing.
+  @override
   void close() {
     if (_closed) return;
     _closed = true;

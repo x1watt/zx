@@ -6,7 +6,7 @@
 // but the benchmark threads are always 1 (Dart isolates would not share
 // the buffers the way the C threads do).
 
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../codec/lzma/lzma_coder.dart';

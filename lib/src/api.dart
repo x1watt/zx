@@ -3,9 +3,11 @@
 // it in background isolates, so the caller's isolate (the UI isolate of a
 // Flutter app) only sends requests and receives results and progress.
 
+export 'api_types.dart';
+
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'host/io.dart';
 import 'dart:isolate';
 import 'dart:typed_data';
 
@@ -15,77 +17,12 @@ import 'format/sevenz/sevenz.dart';
 import 'format/split.dart';
 import 'format/xz/xz_handler.dart';
 import 'io/streams.dart';
+import 'api_types.dart';
 import 'parallel.dart';
 import 'pool.dart';
 
 // ---------------------------------------------------------------------------
 // Public types
-
-/// Progress of a background operation, delivered on the calling isolate at
-/// most every 100 ms, plus the last event.
-class SevenZipProgress {
-  /// Bytes processed so far (unpacked bytes for extraction and for
-  /// compression).
-  final int doneBytes;
-
-  /// Total bytes of the operation, 0 when unknown.
-  final int totalBytes;
-
-  /// The item being processed, when there is one.
-  final String? currentFile;
-
-  const SevenZipProgress(this.doneBytes, this.totalBytes, [this.currentFile]);
-
-  /// 0.0 to 1.0, or null when the total is unknown.
-  double? get fraction =>
-      totalBytes > 0 ? (doneBytes / totalBytes).clamp(0.0, 1.0) : null;
-
-  @override
-  String toString() => 'SevenZipProgress($doneBytes of $totalBytes'
-      '${currentFile == null ? '' : ', $currentFile'})';
-}
-
-/// Cancels background operations. Pass it to any number of operations;
-/// [cancel] stops all of them.
-///
-/// A cancelled operation completes with a [SevenZipException] of kind
-/// [SevenZipError.cancelled]. Its isolates are killed and the files it was
-/// writing (the new archive, the file being extracted) are deleted; files
-/// already extracted stay, and an archive being updated is left as it was.
-class SevenZipCancelToken {
-  bool _cancelled = false;
-  final List<void Function()> _listeners = [];
-
-  bool get isCancelled => _cancelled;
-
-  void cancel() {
-    if (_cancelled) return;
-    _cancelled = true;
-    for (final l in List.of(_listeners)) {
-      l();
-    }
-  }
-
-  /// Calls [listener] when [cancel] is called (for the operations of
-  /// `zx_api.dart`). Remove it with [removeCancelListener].
-  void addCancelListener(void Function() listener) => _listeners.add(listener);
-
-  void removeCancelListener(void Function() listener) =>
-      _listeners.remove(listener);
-}
-
-/// A file or a directory (with everything below it) to add to an archive.
-class SevenZipSource {
-  /// Path on disk.
-  final String path;
-
-  /// Name inside the archive. Defaults to the last component of [path],
-  /// as 7-Zip stores `7z a arc.7z /some/dir` under `dir/`. Use an empty
-  /// string to store the contents of a directory at the top level.
-  final String? storedAs;
-
-  const SevenZipSource(this.path, {this.storedAs});
-}
 
 /// What to do when a file to extract already exists.
 enum SevenZipOverwrite {
@@ -1272,7 +1209,7 @@ Future<R> _run<R>(_Body body,
     killAll();
   }
 
-  cancel?._listeners.add(onCancel);
+  cancel?.addCancelListener(onCancel);
   try {
     final iso = await Isolate.spawn(
         _isolateMain, (port.sendPort, body, onProgress != null),
@@ -1281,12 +1218,12 @@ Future<R> _run<R>(_Body body,
     if (cancelled) iso.kill(priority: Isolate.immediate);
   } catch (_) {
     port.close();
-    cancel?._listeners.remove(onCancel);
+    cancel?.removeCancelListener(onCancel);
     rethrow;
   }
   try {
     return await done.future;
   } finally {
-    cancel?._listeners.remove(onCancel);
+    cancel?.removeCancelListener(onCancel);
   }
 }

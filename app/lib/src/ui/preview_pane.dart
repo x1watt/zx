@@ -7,7 +7,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:zx/zx.dart';
+import 'package:zx/zx_client.dart';
 
 import '../archive_model.dart';
 import '../db_session.dart';

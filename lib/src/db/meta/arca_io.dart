@@ -29,7 +29,7 @@
 // still would not come out identical keeps its text ("$raw").
 
 import 'dart:convert';
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import '../system/archive_view.dart';

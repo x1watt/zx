@@ -25,7 +25,7 @@
 // format and the size of one of its parents is not opened again (a
 // cycle).
 
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../format/archive_types.dart';

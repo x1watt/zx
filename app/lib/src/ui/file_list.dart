@@ -4,12 +4,12 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:zx/zx.dart';
+import 'package:zx/zx_client.dart';
 
 import '../archive_model.dart';
 import 'format_utils.dart';
 import 'transfer.dart';
-import 'views.dart' show DragSourceItem, FolderDropTarget;
+import 'drag.dart';
 
 const double kRowHeight = 26;
 

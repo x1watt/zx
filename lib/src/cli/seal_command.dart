@@ -4,7 +4,7 @@
 //
 //   zx seal [options] ARCHIVE
 
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../common/method_props.dart';

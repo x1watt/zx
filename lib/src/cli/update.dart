@@ -2,7 +2,7 @@
 // LZMA SDK (CArchivePath, CUpdateOptions, CRenamePair, Compress,
 // EnumerateInArchiveItems, UpdateArchive) with UI/Common/TempFiles.cpp.
 
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../common/method_props.dart' show InvalidArgException;

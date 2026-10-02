@@ -7,21 +7,15 @@ import 'package:file_selector/file_selector.dart' as fs;
 
 import 'package:zx/zx.dart' show ZxArchive;
 
+export 'services_base.dart';
+
+import 'db_native.dart';
 import 'db_session.dart';
+import 'services_base.dart';
 import 'dialogs/zx_compression.dart' show Estimator;
 import 'integration.dart';
 import 'platform/places.dart';
 import 'settings.dart';
-
-/// Opens files and folders with the programs of the desktop.
-abstract class Launcher {
-  Future<void> openFile(String path);
-  Future<void> openFolder(String path);
-
-  /// Opens a web address (http, https or mailto) in the browser or mail
-  /// program; false when that is not possible here.
-  Future<bool> openUrl(String url);
-}
 
 /// xdg-open on Linux, open on macOS, start on Windows.
 class SystemLauncher implements Launcher {
@@ -53,21 +47,6 @@ class SystemLauncher implements Launcher {
       await Process.start('xdg-open', [path], mode: ProcessStartMode.detached);
     }
   }
-}
-
-/// The file and folder dialogs.
-abstract class FilePicker {
-  /// An archive to open.
-  Future<String?> openArchive({String? initialDirectory});
-
-  /// Files to add.
-  Future<List<String>> pickFiles({String? initialDirectory});
-
-  /// A folder (to add, or to extract to).
-  Future<String?> pickFolder({String? initialDirectory, String? title});
-
-  /// Where to save a file (an export).
-  Future<String?> saveFile({String? initialDirectory, String? suggestedName});
 }
 
 class SystemFilePicker implements FilePicker {

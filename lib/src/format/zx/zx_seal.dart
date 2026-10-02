@@ -24,15 +24,16 @@
 // root = SHA-256("zx/seal/1" || archive_id || the Seal's records before
 // the signature); the signature is BIP-340 over root.
 
-import 'dart:io';
+export 'zx_seal_types.dart';
+
 import 'dart:typed_data';
 
-import '../../crypto/nip19.dart';
 import '../../crypto/schnorr.dart';
 import '../../crypto/sha256.dart';
 import '../../io/streams.dart';
 import '../../util/crc32c.dart';
 import 'zx_format.dart';
+import 'zx_seal_types.dart';
 import 'zx_reader.dart' show ZxArchiveReader;
 import 'zx_writer.dart' show ZxSink;
 
@@ -46,102 +47,6 @@ abstract final class _SealRec {
   static const signature = 0x0A;
 }
 
-/// Who may sign the generations of an archive.
-enum ZxWriteRule {
-  /// Only the admin.
-  admin,
-
-  /// The admin and the maintainers.
-  maintainers,
-}
-
-/// The roles of a sealed archive, carried in every Seal.
-class ZxPolicy {
-  /// The x-only public key of the admin.
-  final Uint8List admin;
-  final List<Uint8List> maintainers;
-  final ZxWriteRule rule;
-
-  /// Raised by each change.
-  final int seq;
-
-  /// False when the admin switched sealing off with this generation.
-  final bool active;
-
-  ZxPolicy(this.admin,
-      {List<Uint8List>? maintainers,
-      this.rule = ZxWriteRule.maintainers,
-      this.seq = 0,
-      this.active = true})
-      : maintainers = maintainers ?? const [];
-
-  bool isMaintainer(List<int> pk) {
-    for (final m in maintainers) {
-      if (_eq(m, pk)) return true;
-    }
-    return false;
-  }
-
-  /// True when [pk] may sign a generation under this policy.
-  bool allows(List<int> pk) =>
-      _eq(admin, pk) || (rule == ZxWriteRule.maintainers && isMaintainer(pk));
-
-  ZxPolicy copyWith(
-          {Uint8List? admin,
-          List<Uint8List>? maintainers,
-          ZxWriteRule? rule,
-          int? seq,
-          bool? active}) =>
-      ZxPolicy(admin ?? this.admin,
-          maintainers: maintainers ?? this.maintainers,
-          rule: rule ?? this.rule,
-          seq: seq ?? this.seq,
-          active: active ?? this.active);
-
-  Uint8List encode() {
-    final w = ZxBytes(64 + 32 * maintainers.length);
-    w.vint(seq);
-    w.u8(active ? 0 : 1);
-    w.u8(rule.index);
-    w.bytes(admin);
-    w.vint(maintainers.length);
-    for (final m in maintainers) {
-      w.bytes(m);
-    }
-    return w.toBytes();
-  }
-
-  static ZxPolicy decode(Uint8List b) {
-    final r = ZxRead(b);
-    final seq = r.vint();
-    final state = r.u8();
-    final rule = r.u8();
-    if (state > 1 || rule > 1) zxDamaged('bad seal policy');
-    final admin = Uint8List.fromList(r.bytes(32));
-    final n = r.count(32);
-    final ms = [for (var i = 0; i < n; i++) Uint8List.fromList(r.bytes(32))];
-    return ZxPolicy(admin,
-        maintainers: ms,
-        rule: ZxWriteRule.values[rule],
-        seq: seq,
-        active: state == 0);
-  }
-
-  /// Same roles, rule and state (the sequence aside).
-  bool sameAs(ZxPolicy o) {
-    if (!_eq(admin, o.admin) ||
-        rule != o.rule ||
-        active != o.active ||
-        maintainers.length != o.maintainers.length) {
-      return false;
-    }
-    for (var i = 0; i < maintainers.length; i++) {
-      if (!_eq(maintainers[i], o.maintainers[i])) return false;
-    }
-    return true;
-  }
-}
-
 bool _eq(List<int> a, List<int> b) {
   if (a.length != b.length) return false;
   for (var i = 0; i < a.length; i++) {
@@ -152,150 +57,124 @@ bool _eq(List<int> a, List<int> b) {
 
 final Uint8List _zero32 = Uint8List(32);
 
-/// A parsed Seal.
-class ZxSeal {
-  final int generation;
-  final int dataStart;
-  final Uint8List dataHash;
-  final Uint8List indexHash;
+Uint8List zxPolicyEncode(ZxPolicy p) {
+  final w = ZxBytes(64 + 32 * p.maintainers.length);
+  w.vint(p.seq);
+  w.u8(p.active ? 0 : 1);
+  w.u8(p.rule.index);
+  w.bytes(p.admin);
+  w.vint(p.maintainers.length);
+  for (final m in p.maintainers) {
+    w.bytes(m);
+  }
+  return w.toBytes();
+}
 
-  /// The root of the previous generation's Seal; null for an activation.
-  final Uint8List? prevRoot;
+ZxPolicy zxPolicyDecode(Uint8List b) {
+  final r = ZxRead(b);
+  final seq = r.vint();
+  final state = r.u8();
+  final rule = r.u8();
+  if (state > 1 || rule > 1) zxDamaged('bad seal policy');
+  final admin = Uint8List.fromList(r.bytes(32));
+  final n = r.count(32);
+  final ms = [for (var i = 0; i < n; i++) Uint8List.fromList(r.bytes(32))];
+  return ZxPolicy(admin,
+      maintainers: ms,
+      rule: ZxWriteRule.values[rule],
+      seq: seq,
+      active: state == 0);
+}
 
-  /// For an activation: SHA-256 of the bytes before [dataStart].
-  final Uint8List? prefixHash;
-  final ZxPolicy policy;
-
-  /// A new admin's signature accepting the role (see [zxAcceptMessage]).
-  final Uint8List? accept;
-
-  /// The signer and the signature; null for an unsigned (pending) Seal.
-  final Uint8List? signer;
-  final Uint8List? signature;
-
-  /// root = SHA-256("zx/seal/1" || archive_id || body).
-  final Uint8List root;
-
-  ZxSeal._(
-      this.generation,
-      this.dataStart,
-      this.dataHash,
-      this.indexHash,
-      this.prevRoot,
-      this.prefixHash,
-      this.policy,
-      this.accept,
-      this.signer,
-      this.signature,
-      this.root);
-
-  bool get isGenesis => prevRoot == null;
-  bool get isSigned => signature != null;
-
-  /// True when the signature verifies.
-  bool get signatureValid =>
-      signature != null && schnorrVerify(signer!, root, signature!);
-
-  /// Builds the bytes of a Seal; signs it when [signerSecret] is given.
-  static Uint8List build(
-      {required Uint8List archiveId,
-      required int generation,
-      required int dataStart,
-      required Uint8List dataHash,
-      required Uint8List indexHash,
-      Uint8List? prevRoot,
-      Uint8List? prefixHash,
-      required ZxPolicy policy,
-      Uint8List? accept,
-      Uint8List? signerSecret}) {
-    final body = ZxBytes(256);
-    body.vint(1); // version
-    body.rec(_SealRec.chain, (w) {
-      w.vint(generation);
-      w.vint(dataStart);
-      w.bytes(dataHash);
-      w.bytes(indexHash);
-      w.bytes(prevRoot ?? _zero32);
+/// Builds the bytes of a Seal ([ZxSeal]); signs it when [signerSecret] is given.
+Uint8List zxSealBuild(
+    {required Uint8List archiveId,
+    required int generation,
+    required int dataStart,
+    required Uint8List dataHash,
+    required Uint8List indexHash,
+    Uint8List? prevRoot,
+    Uint8List? prefixHash,
+    required ZxPolicy policy,
+    Uint8List? accept,
+    Uint8List? signerSecret}) {
+  final body = ZxBytes(256);
+  body.vint(1); // version
+  body.rec(_SealRec.chain, (w) {
+    w.vint(generation);
+    w.vint(dataStart);
+    w.bytes(dataHash);
+    w.bytes(indexHash);
+    w.bytes(prevRoot ?? _zero32);
+  });
+  if (prevRoot == null) {
+    body.rec(_SealRec.genesis, (w) => w.bytes(prefixHash ?? _zero32));
+  }
+  body.record(_SealRec.policy, zxPolicyEncode(policy));
+  if (accept != null) body.record(_SealRec.accept, accept);
+  final root = zxSealRoot(archiveId, body.view());
+  final w = ZxBytes(body.length + 120);
+  w.u32(zxSealMagic);
+  w.bytes(body.view());
+  if (signerSecret != null) {
+    final pk = publicKeyOf(signerSecret);
+    final sig = schnorrSign(signerSecret, root);
+    w.rec(_SealRec.signature, (r) {
+      r.bytes(pk);
+      r.bytes(sig);
     });
-    if (prevRoot == null) {
-      body.rec(_SealRec.genesis, (w) => w.bytes(prefixHash ?? _zero32));
-    }
-    body.record(_SealRec.policy, policy.encode());
-    if (accept != null) body.record(_SealRec.accept, accept);
-    final root = zxSealRoot(archiveId, body.view());
-    final w = ZxBytes(body.length + 120);
-    w.u32(zxSealMagic);
-    w.bytes(body.view());
-    if (signerSecret != null) {
-      final pk = publicKeyOf(signerSecret);
-      final sig = schnorrSign(signerSecret, root);
-      w.rec(_SealRec.signature, (r) {
-        r.bytes(pk);
-        r.bytes(sig);
-      });
-    }
-    w.u32(Crc32c.of(w.view()));
-    return w.toBytes();
   }
+  w.u32(Crc32c.of(w.view()));
+  return w.toBytes();
+}
 
-  /// Parses the Seal [b] of the archive [archiveId].
-  static ZxSeal parse(Uint8List b, Uint8List archiveId) {
-    if (b.length < 12 || getUint32LE(b, 0) != zxSealMagic) {
-      zxDamaged('not a seal');
-    }
-    final crcPos = b.length - 4;
-    if (Crc32c.of(b, 0, crcPos) != getUint32LE(b, crcPos)) {
-      zxDamaged('seal CRC mismatch');
-    }
-    final r = ZxRead(b, 4, crcPos);
-    final version = r.vint();
-    if (version != 1) zxDamaged('seal version $version');
-    int? generation, dataStart;
-    Uint8List? dataHash, indexHash, prev, prefix, accept, signer, sig;
-    ZxPolicy? policy;
-    var bodyEnd = crcPos;
-    while (!r.atEnd) {
-      final at = r.pos;
-      final type = r.vint();
-      final len = r.vint();
-      final p = ZxRead(b, r.pos, r.pos + len);
-      r.bytes(len);
-      switch (type) {
-        case _SealRec.chain:
-          generation = p.vint();
-          dataStart = p.vint();
-          dataHash = Uint8List.fromList(p.bytes(32));
-          indexHash = Uint8List.fromList(p.bytes(32));
-          prev = Uint8List.fromList(p.bytes(32));
-        case _SealRec.genesis:
-          prefix = Uint8List.fromList(p.bytes(32));
-        case _SealRec.policy:
-          policy = ZxPolicy.decode(Uint8List.sublistView(b, p.pos, p.end));
-        case _SealRec.accept:
-          accept = Uint8List.fromList(p.bytes(64));
-        case _SealRec.signature:
-          bodyEnd = at;
-          signer = Uint8List.fromList(p.bytes(32));
-          sig = Uint8List.fromList(p.bytes(64));
-        default:
-          if (type & 1 != 0) zxDamaged('unknown critical seal record $type');
-      }
-    }
-    if (generation == null || policy == null) zxDamaged('incomplete seal');
-    final root = zxSealRoot(archiveId, Uint8List.sublistView(b, 4, bodyEnd));
-    return ZxSeal._(
-        generation,
-        dataStart!,
-        dataHash!,
-        indexHash!,
-        prefix != null ? null : prev,
-        prefix,
-        policy,
-        accept,
-        signer,
-        sig,
-        root);
+/// Parses the Seal [b] of the archive [archiveId].
+ZxSeal zxSealParse(Uint8List b, Uint8List archiveId) {
+  if (b.length < 12 || getUint32LE(b, 0) != zxSealMagic) {
+    zxDamaged('not a seal');
   }
+  final crcPos = b.length - 4;
+  if (Crc32c.of(b, 0, crcPos) != getUint32LE(b, crcPos)) {
+    zxDamaged('seal CRC mismatch');
+  }
+  final r = ZxRead(b, 4, crcPos);
+  final version = r.vint();
+  if (version != 1) zxDamaged('seal version $version');
+  int? generation, dataStart;
+  Uint8List? dataHash, indexHash, prev, prefix, accept, signer, sig;
+  ZxPolicy? policy;
+  var bodyEnd = crcPos;
+  while (!r.atEnd) {
+    final at = r.pos;
+    final type = r.vint();
+    final len = r.vint();
+    final p = ZxRead(b, r.pos, r.pos + len);
+    r.bytes(len);
+    switch (type) {
+      case _SealRec.chain:
+        generation = p.vint();
+        dataStart = p.vint();
+        dataHash = Uint8List.fromList(p.bytes(32));
+        indexHash = Uint8List.fromList(p.bytes(32));
+        prev = Uint8List.fromList(p.bytes(32));
+      case _SealRec.genesis:
+        prefix = Uint8List.fromList(p.bytes(32));
+      case _SealRec.policy:
+        policy = zxPolicyDecode(Uint8List.sublistView(b, p.pos, p.end));
+      case _SealRec.accept:
+        accept = Uint8List.fromList(p.bytes(64));
+      case _SealRec.signature:
+        bodyEnd = at;
+        signer = Uint8List.fromList(p.bytes(32));
+        sig = Uint8List.fromList(p.bytes(64));
+      default:
+        if (type & 1 != 0) zxDamaged('unknown critical seal record $type');
+    }
+  }
+  if (generation == null || policy == null) zxDamaged('incomplete seal');
+  final root = zxSealRoot(archiveId, Uint8List.sublistView(b, 4, bodyEnd));
+  return ZxSeal(generation, dataStart!, dataHash!, indexHash!,
+      prefix != null ? null : prev, prefix, policy, accept, signer, sig, root);
 }
 
 Uint8List _tagged(String tag, List<Uint8List> parts) {
@@ -672,7 +551,7 @@ class ZxSealPlan {
 
   /// The Seal bytes of generation [generation], whose Index hashed to
   /// [indexHash].
-  Uint8List build(int generation, Uint8List indexHash) => ZxSeal.build(
+  Uint8List build(int generation, Uint8List indexHash) => zxSealBuild(
       archiveId: archiveId,
       generation: generation,
       dataStart: dataStart,
@@ -742,49 +621,6 @@ class ZxSealSink implements ZxSink {
 // ---------------------------------------------------------------------------
 // Reading and checking
 
-/// The state of one generation's seal.
-enum ZxSealState {
-  /// No seal, sealing not active.
-  plain,
-
-  /// Signed by an allowed key, and its chain checks.
-  sealed,
-
-  /// Not signed (written without a key) while sealing is active; covered
-  /// when a later generation is sealed.
-  pending,
-
-  /// A hash, signature, chain or role does not check, or the seal is
-  /// missing while sealing is active.
-  broken,
-}
-
-/// The seal of one generation, as checked.
-class ZxGenerationSeal {
-  /// Its number (-1 when not known: a plain generation read without its
-  /// Index).
-  int generation;
-
-  /// The end of its Footer.
-  final int footerEnd;
-  final ZxSeal? seal;
-  ZxSealState state;
-
-  /// The role of the signer under the policy in force (admin, maintainer).
-  String? role;
-
-  /// What does not check.
-  String? problem;
-
-  /// A pending generation that a later sealed one covers.
-  bool covered = false;
-
-  /// The policy in force after this generation.
-  ZxPolicy? get policy => seal?.policy;
-
-  ZxGenerationSeal(this.generation, this.footerEnd, this.seal, this.state);
-}
-
 /// Reads [len] bytes at [off] of the archive file.
 typedef ZxReadAt = Uint8List Function(int off, int len);
 
@@ -799,7 +635,7 @@ typedef ZxReadAt = Uint8List Function(int off, int len);
   final sealStart = f.indexOffset + f.indexSize;
   if (sealStart + f.sealSize != footerEnd - zxFooterSize) return null;
   if (f.sealSize == 0) return (f, null);
-  return (f, ZxSeal.parse(readAt(sealStart, f.sealSize), archiveId));
+  return (f, zxSealParse(readAt(sealStart, f.sealSize), archiveId));
 }
 
 /// Checks the seals of an archive from its last generation back to its
@@ -1061,58 +897,12 @@ int zxLastFooterEnd(ZxReadAt readAt, int length, int headerSize) {
   return -1;
 }
 
-String _short(Uint8List pk) => npubEncode(pk);
-
-/// One line about the seals of an archive (the last generation first),
-/// or null when it has none.
-String? zxSealSummary(List<ZxGenerationSeal> gens) {
-  if (gens.isEmpty || gens.every((g) => g.state == ZxSealState.plain)) {
-    return null;
-  }
-  final broken = [
-    for (final g in gens)
-      if (g.state == ZxSealState.broken) g
-  ];
-  if (broken.isNotEmpty) {
-    final g = broken.last;
-    return 'BROKEN at generation ${g.generation}: ${g.problem}';
-  }
-  final last = gens.last;
-  final sealed = [
-    for (final g in gens)
-      if (g.state == ZxSealState.sealed) g
-  ];
-  final admin = last.policy?.admin ?? sealed.lastOrNull?.policy?.admin;
-  final sb = StringBuffer();
-  if (last.state == ZxSealState.plain) {
-    sb.write('switched off');
-    if (sealed.isNotEmpty) {
-      sb.write(' after generation ${sealed.last.generation}');
-    }
-    return sb.toString();
-  }
-  if (last.state == ZxSealState.sealed) {
-    sb.write('sealed by ${_short(last.seal!.signer!)} (${last.role ?? '?'})'
-        ' at generation ${last.generation}');
-  } else {
-    final p =
-        gens.reversed.takeWhile((g) => g.state == ZxSealState.pending).length;
-    sb.write('$p pending generation${p == 1 ? '' : 's'} (not signed)');
-    if (sealed.isNotEmpty) {
-      sb.write(', last sealed generation ${sealed.last.generation}');
-    }
-  }
-  if (admin != null) sb.write('; admin ${_short(admin)}');
-  return sb.toString();
-}
-
 /// The seals of the single-file archive at [path] (see [zxCheckSeals]),
 /// read without the password: only the Header, the Footers, the Seals and
 /// (with [full]) the stored bytes are read. Empty for a volume set.
 List<ZxGenerationSeal> zxCheckSealsOfFile(String path, {bool full = false}) {
-  final raf = File(path).openSync();
+  final s = openInputFile(path);
   try {
-    final s = FileInStream(raf);
     final header = ZxArchiveReader.readHeader(s);
     if (header == null) {
       throw const SevenZipException(
@@ -1126,6 +916,6 @@ List<ZxGenerationSeal> zxCheckSealsOfFile(String path, {bool full = false}) {
     }
     return zxCheckSeals(readAt, header.archiveId, end, -1, full: full);
   } finally {
-    raf.closeSync();
+    s.close();
   }
 }

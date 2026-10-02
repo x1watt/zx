@@ -1,5 +1,13 @@
 ## Unreleased
 
+- **zx in the browser** (https://x1watt.github.io/zx/online/, docs/app.md
+  "The web version"): the app, read only, with the library compiled to
+  WebAssembly in a worker. Archives from the user's files (read in place,
+  not uploaded), from an address (only the needed byte ranges are
+  fetched when the server allows it, else a download into the library on
+  request), or from a library in the browser's storage.
+- A wrong password for a .zx archive with encrypted names is asked again
+  (it failed at once).
 - **Two programs**: `zx`, the command line, and `zx-gui`, the app (the
   app's executable was `zx_app`); on Android the app is `zx.apk`,
   attached to each release and signed with the release key (release

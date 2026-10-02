@@ -4,7 +4,7 @@
 // order (leaves are written as they fill); index b-trees from records
 // sorted by the caller. Large payloads spill to overflow pages.
 
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import 'sqlite_format.dart';

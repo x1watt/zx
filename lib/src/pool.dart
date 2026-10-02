@@ -3,7 +3,7 @@
 
 import 'dart:async';
 import 'dart:collection';
-import 'dart:io';
+import 'host/io.dart';
 import 'dart:isolate';
 
 /// Default number of worker isolates: half of the processors on a computer

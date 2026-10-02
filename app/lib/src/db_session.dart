@@ -1,6 +1,7 @@
 // The database of the open .zx archive (zxdb, docs/zxdb-design.md): the
-// connection runs ZxDatabase in a worker isolate (ZxDatabaseAsync), so
-// every query, commit and page decoding happens off the UI isolate. This
+// connection (db_native.dart: ZxDatabase in a worker isolate; on the web
+// the engine worker) runs every query, commit and page decoding off the UI
+// isolate. This
 // file holds the session state of the Data view, the catalog listing and
 // the queries of the file metadata, the similar files and the SHA-256
 // search, and the CSV and JSON export of results.
@@ -8,7 +9,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:zx/zx.dart';
+import 'package:zx/zx_client.dart';
 
 /// The database calls the app needs (a fake in the tests).
 abstract class DbConnection {
@@ -31,48 +32,6 @@ typedef DbOpener = Future<DbConnection?> Function(
   bool readOnly,
   bool create,
 });
-
-/// A [DbConnection] over ZxDatabaseAsync.
-class AsyncDbConnection implements DbConnection {
-  final ZxDatabaseAsync db;
-  AsyncDbConnection(this.db);
-
-  @override
-  Future<ZxSqlResult> execute(String sql, [Object? params]) =>
-      db.execute(sql, params);
-
-  @override
-  Future<List<String>> kvStores() => db.kvStores();
-
-  @override
-  Future<List<String>> seriesNames() => db.seriesNames();
-
-  @override
-  Future<void> resetSql() => db.resetSql();
-
-  @override
-  Future<void> close() => db.close();
-}
-
-/// The default [DbOpener]: checks for a database in a background isolate,
-/// then opens it in a worker isolate.
-Future<DbConnection?> openAsyncDb(
-  String path, {
-  String? password,
-  bool readOnly = false,
-  bool create = false,
-}) async {
-  if (!create && !await ZxDatabaseAsync.hasDatabase(path, password: password)) {
-    return null;
-  }
-  final db = await ZxDatabaseAsync.open(
-    path,
-    password: password,
-    readOnly: readOnly,
-    create: create,
-  );
-  return AsyncDbConnection(db);
-}
 
 /// The system tables every database session has (docs/zxdb-sql.md).
 const kSystemTables = [
@@ -178,7 +137,7 @@ class DbSession extends ChangeNotifier {
     this.password,
     this.readOnlyWhy,
     this.asOfGeneration,
-    this.opener = openAsyncDb,
+    required this.opener,
   });
 
   bool get readOnly => readOnlyWhy != null;

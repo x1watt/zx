@@ -42,7 +42,7 @@ class ZxArchiveView {
   /// Opens the archive at [path] (the last volume of a set is found as zx
   /// does). Null when the file is not a .zx archive.
   static ZxArchiveView? open(String path, {String? password}) {
-    final s = FileInStream.open(path);
+    final s = openInputFile(path);
     try {
       final r = ZxArchiveReader.open(
           s, ZxOpenParams(path: path, password: () => password));

@@ -18,7 +18,7 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'host/io.dart';
 import 'dart:isolate';
 import 'dart:typed_data';
 
@@ -221,6 +221,12 @@ String zxNormalizePath(String p) {
   return parts.join('/');
 }
 
+// the folder for the decoded inner archive of a compound one (x.tar.gz in
+// a nested chain); none in the web engine, which reads it in one pass
+String? _tempBase() => hostFiles != null
+    ? null
+    : '${Directory.systemTemp.path}${Platform.pathSeparator}';
+
 bool _isUnder(String name, String dir) =>
     dir.isEmpty ||
     name == dir ||
@@ -234,51 +240,20 @@ bool _isUnder(String name, String dir) =>
 typedef ZxBody = Future<Object?> Function(ZxOps ops);
 
 /// The worker side of one operation: throttled progress, questions for the
-/// caller's isolate, the files it writes (deleted if the operation is
-/// cancelled or fails) and its temporary folders.
-class ZxOps {
-  final SendPort _port;
-  final bool _wantProgress;
-  final Stopwatch _sw = Stopwatch()..start();
-  int _last = -1000;
-  late final RawReceivePort _replies;
-  final Map<int, Completer<Object?>> _pending = {};
-  int _nextId = 0;
+/// caller, the files it writes (deleted if the operation is cancelled or
+/// fails) and its temporary folders. [ZxIsolateOps] talks to the caller's
+/// isolate; the web engine has its own (lib/src/web).
+abstract class ZxOps {
+  void progress(int done, int total, {String? file, bool force = false});
 
-  ZxOps(this._port, this._wantProgress) {
-    _replies = RawReceivePort((Object? m) {
-      if (m case (final int id, final Object? answer)) {
-        _pending.remove(id)?.complete(answer);
-      }
-    });
-    _port.send(('reply', _replies.sendPort));
-  }
-
-  void close() => _replies.close();
-
-  void progress(int done, int total, {String? file, bool force = false}) {
-    if (!_wantProgress) return;
-    final t = _sw.elapsedMilliseconds;
-    if (force || t - _last >= 100) {
-      _last = t;
-      _port.send(('p', SevenZipProgress(done, total, file)));
-    }
-  }
-
-  /// Asks the caller's isolate ([ZxPasswordRequest], [ZxOverwriteRequest]).
-  Future<Object?> ask(Object request) {
-    final id = _nextId++;
-    final c = Completer<Object?>();
-    _pending[id] = c;
-    _port.send(('ask', id, request));
-    return c.future;
-  }
+  /// Asks the caller ([ZxPasswordRequest], [ZxOverwriteRequest]).
+  Future<Object?> ask(Object request);
 
   /// Registers [path] for deletion if the operation does not finish.
-  void registerFile(String path) => _port.send(('f+', path));
-  void unregisterFile(String path) => _port.send(('f-', path));
-  void registerDir(String path) => _port.send(('d+', path));
-  void unregisterDir(String path) => _port.send(('d-', path));
+  void registerFile(String path);
+  void unregisterFile(String path);
+  void registerDir(String path);
+  void unregisterDir(String path);
 
   /// The temporary name of [path] while it is written.
   String partFor(String path) {
@@ -308,9 +283,59 @@ class ZxOps {
   }
 }
 
+/// [ZxOps] of an operation running in its own isolate.
+class ZxIsolateOps extends ZxOps {
+  final SendPort _port;
+  final bool _wantProgress;
+  final Stopwatch _sw = Stopwatch()..start();
+  int _last = -1000;
+  late final RawReceivePort _replies;
+  final Map<int, Completer<Object?>> _pending = {};
+  int _nextId = 0;
+
+  ZxIsolateOps(this._port, this._wantProgress) {
+    _replies = RawReceivePort((Object? m) {
+      if (m case (final int id, final Object? answer)) {
+        _pending.remove(id)?.complete(answer);
+      }
+    });
+    _port.send(('reply', _replies.sendPort));
+  }
+
+  void close() => _replies.close();
+
+  @override
+  void progress(int done, int total, {String? file, bool force = false}) {
+    if (!_wantProgress) return;
+    final t = _sw.elapsedMilliseconds;
+    if (force || t - _last >= 100) {
+      _last = t;
+      _port.send(('p', SevenZipProgress(done, total, file)));
+    }
+  }
+
+  @override
+  Future<Object?> ask(Object request) {
+    final id = _nextId++;
+    final c = Completer<Object?>();
+    _pending[id] = c;
+    _port.send(('ask', id, request));
+    return c.future;
+  }
+
+  @override
+  void registerFile(String path) => _port.send(('f+', path));
+  @override
+  void unregisterFile(String path) => _port.send(('f-', path));
+  @override
+  void registerDir(String path) => _port.send(('d+', path));
+  @override
+  void unregisterDir(String path) => _port.send(('d-', path));
+}
+
 Future<void> zxIsolateMain((SendPort, ZxBody, bool) args) async {
   final (port, body, wantProgress) = args;
-  final ops = ZxOps(port, wantProgress);
+  final ops = ZxIsolateOps(port, wantProgress);
   // the temporary folders of the .zx block workers are deleted if the
   // operation is cancelled
   syncPoolRegisterDir = ops.registerDir;
@@ -479,8 +504,7 @@ _Opened _openSync(Codecs codecs, String path, String? password,
         throw _NoStream(k - 1);
       }
       op.stream = s;
-      op.compoundTempDir ??=
-          '${Directory.systemTemp.path}${Platform.pathSeparator}';
+      op.compoundTempDir ??= _tempBase();
     }
     if (k == chain.length && nest != null) {
       op
@@ -495,6 +519,16 @@ _Opened _openSync(Codecs codecs, String path, String? password,
       link.close();
       closeAll();
       throw _hresError(e.errorCode, path);
+    } on SevenZipException catch (e) {
+      link.close();
+      closeAll();
+      // a handler that checks the password itself (.zx with encrypted
+      // names): asked again like the others
+      if (e.kind == SevenZipError.wrongPassword &&
+          (ui.asked || link.passwordWasAsked)) {
+        throw const _WrongPassword();
+      }
+      rethrow;
     } catch (_) {
       link.close();
       closeAll();
@@ -885,6 +919,14 @@ Future<(String, String)> _itemToTempFile(Codecs codecs, String base,
     var name = extractFileNameFromPath(o.arc.getItemPath(index));
     if (kIsWin) name = getCorrectFsFileName(name);
     if (name.isEmpty || name == '.' || name == '..') name = 'item';
+    if (hostFiles != null) {
+      // the web engine has no temporary folder
+      throw SevenZipException(
+          '${o.arc.getItemPath(index)}: this nested archive can only be '
+          'opened from a temporary copy, which the browser version does not '
+          'make',
+          SevenZipError.unsupported);
+    }
     final dir = Directory.systemTemp.createTempSync('zx_nest_').path;
     ops.registerDir(dir);
     final path = _join(dir, name);
@@ -1461,6 +1503,14 @@ Future<Object?> workerExtract(ZxExtractRequest r, ZxOps ops) async {
 
 /// [ZxArchive.readBytes].
 Future<Object?> workerReadBytes(ZxExtractRequest r, ZxOps ops) async {
+  final (data, pw) = await workerReadBytesRaw(r, ops);
+  return (TransferableTypedData.fromList([data]), pw);
+}
+
+/// [workerReadBytes] without the isolate transfer: (the bytes, the
+/// password).
+Future<(Uint8List, String?)> workerReadBytesRaw(
+    ZxExtractRequest r, ZxOps ops) async {
   _zxSearchDirs = r.searchDirs;
   final (ex, pw) = await _extractAll(r, ops);
   final data = ex.mem?.data.takeBytes() ?? Uint8List(0);
@@ -1473,7 +1523,7 @@ Future<Object?> workerReadBytes(ZxExtractRequest r, ZxOps ops) async {
     throw SevenZipException(
         'Item not found in the archive', SevenZipError.unsupported);
   }
-  return (TransferableTypedData.fromList([data]), pw);
+  return (data, pw);
 }
 
 /// [ZxArchive.probeNested]: (the format name of the item, or null; the
@@ -1518,8 +1568,7 @@ Future<Object?> workerProbe(ZxExtractRequest r, ZxOps ops) async {
         ..stdInMode = false
         ..filePath = extractFileNameFromPath(o.arc.getItemPath(index))
         ..stream = s
-        ..compoundTempDir =
-            '${Directory.systemTemp.path}${Platform.pathSeparator}';
+        ..compoundTempDir = _tempBase();
       try {
         final res = link.openStrict(op, _OpenUi(pw), null);
         if (res == HRes.sOk) {

@@ -10,10 +10,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
-import 'package:zx/zx.dart';
+import 'package:zx/zx_client.dart';
 
 import '../db_session.dart';
-import '../services.dart';
+import '../services_base.dart';
+import 'save_text.dart';
 import 'format_utils.dart';
 
 const _pageSize = 100;
@@ -35,7 +36,7 @@ Future<String?> exportRows(
   );
   if (path == null) return null;
   final text = await compute(json ? rowsToJson : rowsToCsv, rows);
-  await File(path).writeAsString(text);
+  await saveText(path, text);
   return path;
 }
 

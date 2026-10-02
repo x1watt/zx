@@ -35,6 +35,29 @@ background isolates: the window never freezes).
   confirmations, the README panel, and the desktop integration switches
   below.
 
+### The web version
+
+https://x1watt.github.io/zx/online/ is the app in the browser, read only:
+browse, preview, READMEs, seals, test, the Data view of a .zx database
+(read-only SQL) and Download of selected files. Archives are opened
+
+- from this computer (Open files, or drop them on the page): the page
+  reads them where they are, in blocks, nothing is uploaded; Keep in
+  library copies one into the browser's storage;
+- from an address (Open address, or `online/?url=ADDRESS` as a link):
+  when the server answers range requests to other sites (CORS), only the
+  parts the archive needs are fetched, so listing a large archive reads
+  its start and its end; when it sends only whole files, the app offers
+  to download the archive into the library; when it does not allow other
+  sites at all (GitHub release downloads, for one), the app says so;
+- from the library (the sidebar), which stays in this browser.
+
+It needs WebAssembly with garbage collection and module workers (Chrome
+and Edge 119, Firefox 120, Safari 18.2 or newer). Writing archives,
+extracting to folders and nested archives that need a temporary copy (an
+archive inside a 7z or rar) are for the desktop app. How it works:
+docs/architecture.md section 20.
+
 ### Installing on Linux
 
 The normal install is the Debian package (Ubuntu, Debian and their

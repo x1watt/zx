@@ -3,7 +3,7 @@
 // POSIX build (symbolic links with -snl are stored as their target path).
 
 import 'dart:convert';
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../format/archive_types.dart';

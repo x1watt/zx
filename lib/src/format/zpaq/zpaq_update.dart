@@ -22,7 +22,7 @@
 // (UpdateItems is synchronous and can not wait for worker isolates).
 
 import 'dart:convert';
-import 'dart:io' show Platform;
+import '../../host/io.dart' show Platform;
 import 'dart:typed_data';
 
 import '../../io/streams.dart';

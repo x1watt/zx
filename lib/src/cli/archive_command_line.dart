@@ -2,7 +2,7 @@
 // the LZMA SDK (CArcCmdLineParser::Parse1 / Parse2 with every switch of the
 // console program).
 
-import 'dart:io';
+import '../host/io.dart';
 
 import 'archive_extract_callback.dart';
 import 'command_line_parser.dart';

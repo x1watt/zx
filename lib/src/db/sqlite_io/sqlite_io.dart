@@ -5,7 +5,7 @@
 // work on the file format directly (sqlite_reader.dart,
 // sqlite_writer.dart); the SQLite library is not needed.
 
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import '../sql/catalog.dart';

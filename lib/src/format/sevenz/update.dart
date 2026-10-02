@@ -6,7 +6,7 @@
 // items (grouped by filter type, sorted, and split into solid blocks by the
 // -ms limits), then writes the header.
 
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import '../../codec/codec.dart';

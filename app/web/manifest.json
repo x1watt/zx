@@ -1,0 +1,15 @@
+{
+  "name": "zx online",
+  "short_name": "zx",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#2F62D6",
+  "description": "Open archives in the browser, read only.",
+  "orientation": "any",
+  "prefer_related_applications": false,
+  "icons": [
+    {"src": "icons/Icon-256.png", "sizes": "256x256", "type": "image/png"},
+    {"src": "icons/Icon-512.png", "sizes": "512x512", "type": "image/png"}
+  ]
+}

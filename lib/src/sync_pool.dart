@@ -18,7 +18,7 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'host/io.dart';
 import 'dart:isolate';
 import 'dart:typed_data';
 

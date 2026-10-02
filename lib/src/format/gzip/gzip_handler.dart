@@ -23,7 +23,7 @@
 // deflate data is zlib's at the level (-mx, default 5 as in 7-Zip).
 
 import 'dart:convert';
-import 'dart:io' show Platform;
+import '../../host/io.dart' show Platform;
 import 'dart:typed_data';
 
 import '../../codec/codec.dart';

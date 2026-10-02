@@ -11,7 +11,7 @@
 // budget (zx_memory.dart).
 
 import 'dart:convert';
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import '../../crypto/sha256.dart';

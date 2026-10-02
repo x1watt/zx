@@ -15,7 +15,7 @@
 // attribute call of 7-Zip, it never stops the operation.
 
 import 'dart:convert';
-import 'dart:io';
+import '../host/io.dart';
 
 import '../format/archive_types.dart' show FileAttrib;
 import 'common.dart';

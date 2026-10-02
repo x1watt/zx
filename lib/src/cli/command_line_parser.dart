@@ -3,7 +3,7 @@
 // SDK.
 
 import 'dart:convert';
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import 'platform.dart';

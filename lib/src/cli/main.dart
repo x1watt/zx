@@ -3,7 +3,7 @@
 // (the exception handlers and exit codes) of the LZMA SDK, 7zr variant.
 
 import 'dart:async';
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:isolate';
 import 'dart:typed_data';
 

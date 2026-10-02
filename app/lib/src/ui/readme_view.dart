@@ -10,7 +10,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:zx/zx.dart';
+import 'package:zx/zx_client.dart';
 
 import 'format_utils.dart';
 

@@ -23,7 +23,7 @@
 // This is behavior of the port, not of 7-Zip; `-tgzip`, `-tbzip2`, `-txz`
 // and `-tlzma` keep 7-Zip's single level view.
 
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../common/method_props.dart';

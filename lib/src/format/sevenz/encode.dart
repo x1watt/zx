@@ -11,7 +11,7 @@
 // buffered and appended after it, as in CEncoder::Encode1.
 
 import 'dart:collection';
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import '../../codec/codec.dart';

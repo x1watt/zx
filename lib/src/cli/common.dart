@@ -4,7 +4,7 @@
 // catches (CSystemException, CMessagePathException, NExitCode::EEnum,
 // UString / AString / const char * throws).
 
-import 'dart:io';
+import '../host/io.dart';
 
 import 'platform.dart';
 

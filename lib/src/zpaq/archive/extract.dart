@@ -5,7 +5,7 @@
 // for the license and the third party notices.
 
 import 'dart:async';
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import '../core/decompresser.dart';

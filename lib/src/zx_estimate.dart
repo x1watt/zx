@@ -10,7 +10,7 @@
 // speed of this machine (against the nominal speeds) and the ratio the
 // output sizes are scaled from.
 
-import 'dart:io';
+import 'host/io.dart';
 import 'dart:typed_data';
 
 import 'cli/zx_zcm_auto.dart';

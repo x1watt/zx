@@ -3,7 +3,7 @@
 // extract commands, HashHexToString) with the hashers of 7zr (CrcReg.cpp,
 // Sha256Reg.cpp, XzCrc64Reg.cpp).
 
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../common/method_props.dart';

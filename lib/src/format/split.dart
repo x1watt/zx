@@ -4,7 +4,7 @@
 // CPP/7zip/Common/MultiOutStream.cpp (CMultiOutStream: the -v switch output,
 // name.7z.001, name.7z.002 ...) of the LZMA SDK 26.01.
 
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../io/streams.dart';

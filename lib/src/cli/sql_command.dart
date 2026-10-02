@@ -8,7 +8,7 @@
 // with line editing on a terminal).
 
 import 'dart:convert';
-import 'dart:io';
+import '../host/io.dart';
 
 import '../db/zxdb.dart';
 import 'globals.dart';

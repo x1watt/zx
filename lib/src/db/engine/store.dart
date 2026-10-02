@@ -14,7 +14,7 @@
 
 import 'dart:collection';
 import 'dart:convert';
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import '../../codec/lzma/lzma2_dec.dart' show lzma2DictSizeFromProp;
@@ -162,7 +162,8 @@ class ZxDbFoldResult {
   final int bytesIn;
   final int bytesOut;
   final int? generation;
-  const ZxDbFoldResult(this.pages, this.bytesIn, this.bytesOut, this.generation);
+  const ZxDbFoldResult(
+      this.pages, this.bytesIn, this.bytesOut, this.generation);
 }
 
 /// A tree of the catalog: its number (the tag of its pages), its base
@@ -339,7 +340,7 @@ class ZxDbStore implements ZxStore {
       ZxDbStoreOptions? options}) {
     final s = ZxDbStore._(path, options ?? ZxDbStoreOptions(), readOnly,
         password == null || password.isEmpty ? null : password);
-    if (!File(path).existsSync()) {
+    if (_statOf(path) == null) {
       if (!create || readOnly) {
         throw ZxDbException('no archive at $path', ZxDbError.notFound);
       }
@@ -383,12 +384,14 @@ class ZxDbStore implements ZxStore {
 
   // opens (or opens again) the file and reads its last generation
   void _openFile({DbFile? reuse}) {
-    final raf = reuse?.raf ?? File(path).openSync();
+    final input = reuse?.input ?? dbOpenInput(path);
     try {
-      final st = FileStat.statSync(path);
+      final st = _statOf(path) ??
+          (throw ZxDbException(
+              'the archive $path is gone', ZxDbError.notFound));
       final ZxArchiveReader? r;
       try {
-        r = ZxArchiveReader.open(FileInStream(raf),
+        r = ZxArchiveReader.open(dbReaderInput(input),
             ZxOpenParams(path: path, password: () => _password));
       } on ZxNeedPasswordException {
         throw const ZxDbException(
@@ -420,7 +423,7 @@ class ZxDbStore implements ZxStore {
         throw const ZxDbException('wrong password', ZxDbError.generic);
       }
       final file = reuse ??
-          DbFile(path, raf, r.header, keys,
+          DbFile(path, input, r.header, keys,
               pageCacheBytes: options.pageCacheBytes,
               blockCacheBytes: options.blockCacheBytes);
       file.addChains(r.lastIndex.chains);
@@ -430,10 +433,10 @@ class ZxDbStore implements ZxStore {
       _indexes.clear();
       _head = _Head(r.lastIndex, r.lastIndexLoc, r.validEnd, gens,
           DbView(file, r.lastIndex.database), r.lastSeal);
-      _statSize = st.size;
-      _statTime = st.modified;
+      _statSize = st.$1;
+      _statTime = st.$2;
     } catch (_) {
-      if (reuse == null) raf.closeSync();
+      if (reuse == null) input.close();
       rethrow;
     }
   }
@@ -452,17 +455,16 @@ class ZxDbStore implements ZxStore {
     _sinceCheck
       ..reset()
       ..start();
-    final st = FileStat.statSync(path);
-    if (st.type == FileSystemEntityType.notFound) {
-      throw ZxDbException('the archive $path is gone', ZxDbError.notFound);
-    }
-    if (st.size == _statSize && st.modified == _statTime) return;
-    final same = _file.length == st.size;
-    if (same && st.size > _head.end && !_footerAtEnd(st.size)) {
+    final st = _statOf(path) ??
+        (throw ZxDbException('the archive $path is gone', ZxDbError.notFound));
+    final (size, modified) = st;
+    if (size == _statSize && modified == _statTime) return;
+    final same = _file.length == size;
+    if (same && size > _head.end && !_footerAtEnd(size)) {
       // pages of a transaction in progress (spilled), or a partial
       // commit: the last generation is the same
-      _statSize = st.size;
-      _statTime = st.modified;
+      _statSize = size;
+      _statTime = modified;
       return;
     }
     if (same) {
@@ -542,8 +544,7 @@ class ZxDbStore implements ZxStore {
         idx = _file.readIndex(p);
       }
       if (idx.generation?.number != g.number) {
-        throw ZxDbException(
-            'the Index of generation ${g.number} is not found',
+        throw ZxDbException('the Index of generation ${g.number} is not found',
             ZxDbError.corrupt);
       }
     }
@@ -738,8 +739,7 @@ class ZxDbStore implements ZxStore {
   /// Appends a generation whose database root is made by [build] (which
   /// writes the page blocks through the [_GenWriter] it gets). Called
   /// with the writer lock held.
-  int _appendGeneration(
-      String? comment, ZxDbRoot Function(_GenWriter w) build,
+  int _appendGeneration(String? comment, ZxDbRoot Function(_GenWriter w) build,
       {_GenWriter? writer}) {
     final head = _head;
     final w = writer ?? _openWriter();
@@ -767,8 +767,8 @@ class ZxDbStore implements ZxStore {
       idx.generation = gen;
       idx.generations = [...head.gens, gen];
       var mr = last.minReaderVersion ?? (0, 5, 0);
-      final (cv, exp) = zxChainRequirements(
-          [for (final c in idx.chains.values) ...c.coders]);
+      final (cv, exp) =
+          zxChainRequirements([for (final c in idx.chains.values) ...c.coders]);
       final need = exp ? zxVersion : cv;
       if (zxCompareVersions(need, mr) > 0) mr = need;
       idx.minReaderVersion = mr;
@@ -809,7 +809,7 @@ class ZxDbStore implements ZxStore {
       ZxLastSeal? seal;
       if (sealBytes != null) {
         w.writeRaw(sealBytes);
-        seal = ZxLastSeal(ZxSeal.parse(sealBytes, _file.header.archiveId),
+        seal = ZxLastSeal(zxSealParse(sealBytes, _file.header.archiveId),
             w.pos + zxFooterSize);
       }
       w.writeRaw(
@@ -841,9 +841,8 @@ class ZxDbStore implements ZxStore {
     for (final id in freed) {
       (byMap[id >> ZxDbRoot.mapPageLog2] ??= []).add(-id);
     }
-    final count = nextPageId <= 1
-        ? 0
-        : ((nextPageId - 1) >> ZxDbRoot.mapPageLog2) + 1;
+    final count =
+        nextPageId <= 1 ? 0 : ((nextPageId - 1) >> ZxDbRoot.mapPageLog2) + 1;
     final maps = List<ZxDbLoc?>.filled(count, null);
     if (base != null) {
       for (var k = 0; k < base.maps.length && k < count; k++) {
@@ -888,8 +887,7 @@ class ZxDbStore implements ZxStore {
     }
     if (cur.isNotEmpty) groups.add(cur);
     for (final g in groups) {
-      final placed =
-          w.writeGroup([for (final p in g) p.$2], zxDbFastChain, 0);
+      final placed = w.writeGroup([for (final p in g) p.$2], zxDbFastChain, 0);
       for (var i = 0; i < g.length; i++) {
         maps[g[i].$1] = placed[i];
       }
@@ -1203,8 +1201,7 @@ class ZxDbStore implements ZxStore {
       final ls = _head.seal?.seal;
       if (ls != null && ls.policy.active) {
         final key = options.signer;
-        if (key == null ||
-            zxHex(publicKeyOf(key)) != zxHex(ls.policy.admin)) {
+        if (key == null || zxHex(publicKeyOf(key)) != zxHex(ls.policy.admin)) {
           throw const ZxDbException(
               'vacuum rewrites the history of a sealed archive: it needs '
               'the admin key to seal it again',
@@ -1395,8 +1392,8 @@ class _GenWriter {
   }
 
   /// Codes [pages] with [specs] here and writes them as one block.
-  List<ZxDbLoc> writeGroup(List<Uint8List> pages, List<ZxCoderSpec> specs,
-      int tag,
+  List<ZxDbLoc> writeGroup(
+      List<Uint8List> pages, List<ZxCoderSpec> specs, int tag,
       {bool unfolded = false}) {
     final enc = zxEncodeBlock(encodeArg(pages, specs));
     return placeEncoded(enc, [for (final p in pages) p.length], tag, unfolded);
@@ -1710,10 +1707,9 @@ class _DbTxn implements ZxWriteTxn, PageWriter, BlobStore, RunFilters {
 
   // ---- shared overflow values
 
-  _TxnTree get _blobTree =>
-      (tree(zxDbBlobTree) ??
+  _TxnTree get _blobTree => (tree(zxDbBlobTree) ??
           createTree(zxDbBlobTree, const TreeOptions(compression: 'fast')))
-          as _TxnTree;
+      as _TxnTree;
 
   static Uint8List _pageKey(int id) {
     final k = Uint8List(9);
@@ -1752,7 +1748,8 @@ class _DbTxn implements ZxWriteTxn, PageWriter, BlobStore, RunFilters {
     return o;
   }
 
-  static Uint8List _blobRecord(int refs, int len, List<int> ids, Uint8List sha) {
+  static Uint8List _blobRecord(
+      int refs, int len, List<int> ids, Uint8List sha) {
     final w = ZxBytes(16 + 5 * ids.length + 32);
     w.vint(refs);
     w.vint(len);
@@ -2021,7 +2018,8 @@ class _DbTxn implements ZxWriteTxn, PageWriter, BlobStore, RunFilters {
     for (final id in ids) {
       if (out.isNotEmpty && out[out.length - 2] + out[out.length - 1] == id) {
         out[out.length - 1]++;
-      } else if (out.isEmpty || out[out.length - 2] + out[out.length - 1] < id) {
+      } else if (out.isEmpty ||
+          out[out.length - 2] + out[out.length - 1] < id) {
         out
           ..add(id)
           ..add(1);
@@ -2085,8 +2083,8 @@ class _TxnTree implements ZxWritableTree, ZxLengthEstimate {
   int get length {
     if (!lsm) return _writer?.count ?? meta.count;
     if (!meta.countExact) {
-      meta.count = deltaExactCount(
-          txn, _root, meta.baseCount, meta.runs, _mem, _check);
+      meta.count =
+          deltaExactCount(txn, _root, meta.baseCount, meta.runs, _mem, _check);
       meta.countExact = true;
       txn.changed.add(meta.name);
     }
@@ -2094,8 +2092,7 @@ class _TxnTree implements ZxWritableTree, ZxLengthEstimate {
   }
 
   @override
-  int get estimatedLength =>
-      lsm ? meta.count : (_writer?.count ?? meta.count);
+  int get estimatedLength => lsm ? meta.count : (_writer?.count ?? meta.count);
 
   @override
   Uint8List? get(Uint8List key) {
@@ -2155,8 +2152,8 @@ class _TxnTree implements ZxWritableTree, ZxLengthEstimate {
           mods: () => _mods, from: from, to: to, reverse: reverse);
     }
     return MergeCursor(
-        (f, t) => deltaSources(() => txn, _check, _root, meta.runs, _mem, f,
-            t, reverse),
+        (f, t) => deltaSources(
+            () => txn, _check, _root, meta.runs, _mem, f, t, reverse),
         _check,
         mods: () => _mods,
         from: from,
@@ -2446,4 +2443,18 @@ class _TxnTree implements ZxWritableTree, ZxLengthEstimate {
     txn.changed.add(meta.name);
     txn._touched = true;
   }
+}
+
+/// The size and modification time of the archive file, null when there is
+/// none. The files of a host ([hostFiles], the web engine) do not change
+/// while they are open: their time is fixed.
+(int, DateTime)? _statOf(String path) {
+  final h = hostFiles;
+  if (h != null) {
+    final n = h.sizeOf(path);
+    return n == null ? null : (n, DateTime.utc(1980));
+  }
+  final st = FileStat.statSync(path);
+  if (st.type == FileSystemEntityType.notFound) return null;
+  return (st.size, st.modified);
 }

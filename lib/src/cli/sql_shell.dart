@@ -11,7 +11,7 @@
 // callbacks and is fed lines, so tests drive it directly.
 
 import 'dart:convert';
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../db/meta/arca_io.dart';

@@ -7,7 +7,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:zx/zx.dart' show ZxDbException;
+import 'package:zx/zx_client.dart' show ZxDbException;
 
 import '../db_session.dart';
 import '../ui/format_utils.dart';

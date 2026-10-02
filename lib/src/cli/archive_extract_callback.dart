@@ -4,7 +4,7 @@
 // calculation for -scrc), POSIX build.
 
 import 'dart:convert';
-import 'dart:io';
+import '../host/io.dart';
 import 'dart:typed_data';
 
 import '../format/archive_types.dart';

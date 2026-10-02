@@ -5,7 +5,7 @@
 // format, WITHOUT ROWID tables (stored as index b-trees) and the UTF-8,
 // UTF-16le and UTF-16be text encodings. Freelist pages are never visited.
 
-import 'dart:io';
+import '../../host/io.dart';
 import 'dart:typed_data';
 
 import '../sql/ast.dart';

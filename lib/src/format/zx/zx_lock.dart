@@ -15,7 +15,7 @@
 // other isolates of that process then wait until the process ends. Stale
 // markers of dead processes are removed.
 
-import 'dart:io';
+import '../../host/io.dart';
 
 import '../../io/streams.dart';
 

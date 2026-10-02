@@ -3,7 +3,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:zx/zx.dart';
+import 'package:zx/zx_client.dart';
 
 /// The monospaced text of the preview and of the details of an archive.
 const kMonoStyle = TextStyle(

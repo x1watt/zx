@@ -9,7 +9,7 @@
 // Windows branches at run time where the SDK selects them at compile time.
 
 import 'dart:convert';
-import 'dart:io';
+import '../host/io.dart';
 
 /// _WIN32 of the SDK build.
 final bool kIsWin = Platform.isWindows;
