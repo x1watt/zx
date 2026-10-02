@@ -847,31 +847,36 @@ class _WebHomeState extends State<WebHome> {
       body: Stack(
         children: [
           if (classic)
-            DecoratedBox(
-              decoration: const BoxDecoration(image: kDesktopPattern),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 14, 14),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (wide) ...[
-                      SizedBox(
-                        width: 250,
-                        child: ClassicWindow(
-                          title: 'Library',
-                          child: _sidebar(context),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                    ],
-                    Expanded(
+            const Positioned.fill(
+              child: RepaintBoundary(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(image: kDesktopPattern),
+                ),
+              ),
+            ),
+          if (classic)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 14, 14),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (wide) ...[
+                    SizedBox(
+                      width: 250,
                       child: ClassicWindow(
-                        title: _source?.name ?? 'zx',
-                        child: body,
+                        title: 'Library',
+                        child: _sidebar(context),
                       ),
                     ),
+                    const SizedBox(width: 14),
                   ],
-                ),
+                  Expanded(
+                    child: ClassicWindow(
+                      title: _source?.name ?? 'zx',
+                      child: body,
+                    ),
+                  ),
+                ],
               ),
             )
           else

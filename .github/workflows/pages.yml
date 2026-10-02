@@ -56,6 +56,8 @@ jobs:
           cp -r app/build/web _site/online
           tool/web_404.sh _site/online/index.html _site/404.html
           du -sh _site _site/online _site/online/engine
+      - name: Nothing loaded from other hosts
+        run: tool/web_check/no_external.sh _site "$RUNNER_TEMP/noext"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

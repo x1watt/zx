@@ -729,4 +729,8 @@ and the server on this machine), docs/architecture.md section 20.
 - `readBytes` of a whole file (Download) holds the file in the engine's
   memory and once more as a Blob: a download is bounded by the memory of
   the tab.
+- The 80s theme's desktop pattern: a 2 pixel tile repeated over the page
+  was one image draw per 4 pixels, painted again with every change of
+  the page (seconds per frame). It is a 128 pixel tile in a layer of its
+  own (RepaintBoundary), painted once.
 

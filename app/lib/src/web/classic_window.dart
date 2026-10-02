@@ -5,7 +5,9 @@
 
 import 'package:flutter/material.dart';
 
-/// The gray desktop: a 2 by 2 black and white checker, repeated.
+/// The gray desktop: a black and white checker. The image is 128 pixels
+/// square (a 2 pixel one meant a draw call per 4 pixels of the page); the
+/// page puts it in its own layer (RepaintBoundary), so it is drawn once.
 const kDesktopPattern = DecorationImage(
   image: AssetImage('assets/icon/desk-pattern.png'),
   repeat: ImageRepeat.repeat,

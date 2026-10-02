@@ -8,4 +8,13 @@ if ('serviceWorker' in navigator) {
     rs.forEach(function (r) { r.unregister(); });
   });
 }
-_flutter.loader.load();
+// Everything comes from this site: CanvasKit is built in
+// (--no-web-resources-cdn, tool/build_web.sh), and the fonts for
+// characters the bundled ones lack are looked up here, not on Google's
+// servers (there are none here: such characters show as boxes).
+_flutter.loader.load({
+  config: {
+    canvasKitBaseUrl: 'canvaskit/',
+    fontFallbackBaseUrl: 'assets/fonts/fallback/',
+  },
+});

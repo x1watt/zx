@@ -25,7 +25,7 @@ else
   exit 1
 fi
 
-(cd app && "${run[@]}" build web --release --wasm \
+(cd app && "${run[@]}" build web --release --wasm --no-web-resources-cdn \
   --base-href "$base" -t lib/main_web.dart)
 
 out=app/build/web

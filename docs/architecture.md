@@ -1317,6 +1317,16 @@ files, from a URL, or from a library kept in the browser.
   (`setUrlStrategy(null)`), so only the page writes its address. No
   service worker (`app/web/flutter_bootstrap.js`): a deploy is seen at
   the next load.
+- **Nothing from other hosts.** The page loads only files of the site,
+  so it works offline (from a copy of the site) and tells no other server
+  who reads it: CanvasKit and skwasm are built in
+  (`--no-web-resources-cdn`), the fonts are assets (Roboto, Share Tech
+  Mono, Pixelify Sans; SIL OFL, licenses in `app/assets/fonts`), and the
+  font fallback for characters they lack points at the site
+  (`app/web/flutter_bootstrap.js`; such characters show as boxes). The
+  only other requests are the archive addresses the reader gives.
+  `tool/web_check/no_external.sh` fails the Pages build when the page or
+  its workers request another host.
 - **Building and testing.** `tool/build_web.sh` (through the build lock
   locally) builds the UI and the engine into `app/build/web`;
   `.github/workflows/pages.yml` runs the gates, the browser test and the

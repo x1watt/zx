@@ -10,6 +10,8 @@
   pasted after the page's) open an archive at a folder or file in a
   theme; Share link copies the link of the current view. Themes: Dark,
   Light, Green and Orange (phosphor), 80s (the early Macintosh desktop).
+  Everything is served by the site (renderer, fonts): no request to
+  other hosts but the archive addresses the reader gives.
 - A wrong password for a .zx archive with encrypted names is asked again
   (it failed at once).
 - **Two programs**: `zx`, the command line, and `zx-gui`, the app (the

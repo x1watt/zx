@@ -68,6 +68,11 @@ flutter:
   assets:
     - assets/icon/
   fonts:
+    # the text of the app, bundled so that the web version loads no font
+    # from elsewhere (SIL Open Font License, assets/fonts/Roboto-OFL.txt)
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto.ttf
     # the retro themes of the web version (SIL Open Font License,
     # assets/fonts/ShareTechMono-OFL.txt)
     - family: ShareTechMono
