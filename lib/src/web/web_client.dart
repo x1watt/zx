@@ -4,11 +4,15 @@
 // archive. Typed wrappers over ZxEngine.call; dart2js-safe.
 
 import 'dart:js_interop';
+import 'dart:typed_data';
 
 import '../db/sql/sql_result.dart';
 import '../zx_types.dart';
 import 'engine_client.dart';
+import 'web_compression.dart';
 import 'wire.dart';
+
+export 'web_compression.dart';
 
 /// How the archive at a URL can be read (see the engine's probe).
 enum ZxUrlAccess {
@@ -133,6 +137,44 @@ extension ZxWebSources on ZxEngine {
   /// Asks the browser to keep the library under storage pressure.
   Future<bool> persistLibrary() async =>
       (await call('library.persist')).json as bool;
+
+  /// Creates a new .zx archive of the uploaded sources at [paths] (see
+  /// [addFiles]) straight into the library as [name] (or a free variant
+  /// of it); [paths]' own file names become the archive's items. Returns
+  /// the library entry and any warnings (memory or time notices).
+  Future<({ZxLibraryEntry entry, List<String> warnings})> createZxArchive({
+    required String name,
+    required List<String> paths,
+    required ZxWebCompression compression,
+    bool solid = true,
+    String? password,
+    void Function(ZxProgress)? onProgress,
+    ZxCancelToken? cancel,
+  }) async {
+    final r = await call('library.create',
+        args: {
+          'name': name,
+          'paths': paths,
+          'compression': compression.toWire(),
+          'solid': solid,
+          'password': (password == null || password.isEmpty) ? null : password,
+        },
+        onProgress: onProgress,
+        cancel: cancel);
+    final m = r.json as Map;
+    return (
+      entry: ZxLibraryEntry._of(m['entry']),
+      warnings: [for (final w in m['warnings'] as List) w as String],
+    );
+  }
+
+  /// The bytes of the whole library archive [name] (for downloading the
+  /// archive itself, not one item of it).
+  Future<Uint8List> readLibraryFile(String name,
+          {ZxCancelToken? cancel}) async =>
+      (await call('library.read', args: {'name': name}, cancel: cancel))
+          .bytes ??
+      Uint8List(0);
 
   // ---- databases (read only)
 

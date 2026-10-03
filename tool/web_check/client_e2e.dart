@@ -224,6 +224,42 @@ Future<void> run() async {
     }
   }
 
+  // create: a new .zx archive from two uploads, straight into the
+  // library, password protected, then read back and downloaded
+  if (engine.hasLibrary) {
+    try {
+      final p1 = await upload('t.zx');
+      final p2 = await upload('t.7z');
+      final r = await engine.call('library.create', args: {
+        'name': 'created.zx',
+        'paths': [p1, p2],
+        'compression': {'auto': false, 'chain': 'store'},
+        'solid': true,
+        'password': 'secret123',
+      });
+      final m = r.json as Map;
+      final entry = (m['entry'] as Map).cast<String, Object?>();
+      check('create: no warnings', (m['warnings'] as List).isEmpty,
+          m['warnings']);
+      final p =
+          (await engine.call('library.open', args: {'name': entry['name']}))
+              .json as String;
+      final a = await ZxArchive.open(p, password: 'secret123');
+      final files = a.items.where((i) => !i.isDir).toList();
+      check('create: items', files.length == 2,
+          files.map((i) => i.path).toList());
+      await a.close();
+      final bytes =
+          (await engine.call('library.read', args: {'name': entry['name']}))
+              .bytes!;
+      check('create: download size matches', bytes.length == entry['size'],
+          '${bytes.length} vs ${entry['size']}');
+      await engine.call('library.remove', args: {'name': entry['name']});
+    } catch (e) {
+      check('create', false, e);
+    }
+  }
+
   // nested: the .7z inside a .zip, read in place (stored item)
   // (covered by the native tests; here one open through the engine)
   try {

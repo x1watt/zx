@@ -82,6 +82,9 @@ void listenForDrops(
 /// The name of a File of the page.
 String fileName(JSObject file) => (file['name'] as JSString).toDart;
 
+/// The size of a File of the page.
+int fileSize(JSObject file) => (file['size'] as JSNumber).toDartInt;
+
 /// The address of the page itself (its base element, ".../zx/online/").
 String pageBase() => (_document['baseURI'] as JSString).toDart;
 

@@ -3,7 +3,9 @@
 // they are, nothing is uploaded anywhere), from a URL (read with range
 // requests when the server allows it, else downloaded whole into the
 // library on request), or from the library kept in the browser's storage.
-// Archives are read only here. docs/app.md "The web version".
+// New archive creates a .zx archive from picked files straight into the
+// library (lib/src/web/zx_web_create.dart), then opens it; archives of
+// every other format stay read only here. docs/app.md "The web version".
 
 import 'dart:async';
 import 'dart:js_interop';
@@ -17,7 +19,9 @@ import '../archive_model.dart';
 import '../db_session.dart';
 import '../theme.dart';
 import '../ui/format_utils.dart';
+import '../ui/save_text.dart';
 import 'classic_window.dart';
+import 'new_archive_dialog.dart';
 import 'theme_choice.dart';
 import 'web_archive.dart';
 import 'web_services.dart';
@@ -366,6 +370,53 @@ class _WebHomeState extends State<WebHome> {
     if (files != null && files.length > 0) await _openFiles(files);
   }
 
+  String _stem(String name) {
+    final dot = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(0, dot) : name;
+  }
+
+  /// Picks files, collects the new archive's settings, writes it into the
+  /// library and opens it there (docs/app.md "The web version").
+  Future<void> _newArchive() async {
+    final e = _engine;
+    if (e == null || !e.hasLibrary) return;
+    final picked = await pickFiles();
+    if (picked == null || picked.length == 0 || !mounted) return;
+    final list = picked.toDart;
+    final totalBytes = list.fold<int>(0, (a, f) => a + fileSize(f));
+    final r = await showNewArchiveDialog(
+      context,
+      fileCount: list.length,
+      totalBytes: totalBytes,
+      suggestedName: list.length == 1 ? _stem(fileName(list.first)) : 'archive',
+    );
+    if (r == null || !mounted) return;
+    final paths = await _run('Reading', (_) => e.addFiles(picked));
+    if (paths == null) return;
+    try {
+      final res = await _run(
+        'Creating ${r.name}',
+        (cancel) => e.createZxArchive(
+          name: r.name,
+          paths: paths,
+          compression: r.compression,
+          solid: r.solid,
+          password: r.password,
+          onProgress: _onProgress,
+          cancel: cancel,
+        ),
+      );
+      if (res == null) return;
+      await _loadLibrary();
+      await _openLibrary(res.entry.name);
+      if (res.warnings.isNotEmpty) _snack(res.warnings.join('\n'));
+    } finally {
+      await e.forget(
+        paths.first.substring(0, paths.first.lastIndexOf('/') + 1),
+      );
+    }
+  }
+
   Future<void> _openUrl(String url, {String? path}) async {
     final e = _engine;
     if (e == null) return;
@@ -534,6 +585,19 @@ class _WebHomeState extends State<WebHome> {
     await e.persistLibrary().catchError((Object _) => false);
     await _loadLibrary();
     _snack('${entry.name} is in the library of this browser.');
+  }
+
+  /// Downloads the whole open archive (a library entry) as a file.
+  Future<void> _downloadArchive() async {
+    final e = _engine;
+    final s = _source;
+    if (e == null || s == null || s.kind != _Kind.library) return;
+    final bytes = await _run(
+      'Downloading ${s.name}',
+      (cancel) => e.readLibraryFile(s.name, cancel: cancel),
+    );
+    if (bytes == null) return;
+    await saveBytes(s.name, bytes);
   }
 
   Future<void> _remove(ZxLibraryEntry entry) async {
@@ -721,6 +785,13 @@ class _WebHomeState extends State<WebHome> {
                     icon: const Icon(Icons.link_rounded),
                     label: const Text('Open address'),
                   ),
+                  if (_engine?.hasLibrary ?? false)
+                    OutlinedButton.icon(
+                      key: const Key('web-new-welcome'),
+                      onPressed: _newArchive,
+                      icon: const Icon(Icons.create_new_folder_outlined),
+                      label: const Text('New archive'),
+                    ),
                 ],
               ),
             ],
@@ -763,6 +834,13 @@ class _WebHomeState extends State<WebHome> {
                   'Keep in library',
                   busy == null ? _keep : null,
                 ),
+              if (_source?.kind == _Kind.library)
+                WebAction(
+                  const Key('web-download-archive'),
+                  Icons.download_rounded,
+                  'Download archive',
+                  busy == null ? _downloadArchive : null,
+                ),
               if (_source?.url != null)
                 WebAction(
                   const Key('web-share'),
@@ -804,6 +882,14 @@ class _WebHomeState extends State<WebHome> {
             tooltip: 'Open address',
             onPressed: _engine == null ? null : _askUrl,
             icon: const Icon(Icons.link_rounded),
+          ),
+          IconButton(
+            key: const Key('web-new'),
+            tooltip: (_engine?.hasLibrary ?? false)
+                ? 'New archive'
+                : 'This browser has no storage for a new archive',
+            onPressed: (_engine?.hasLibrary ?? false) ? _newArchive : null,
+            icon: const Icon(Icons.create_new_folder_outlined),
           ),
           PopupMenuButton<WebTheme>(
             key: const Key('web-theme'),

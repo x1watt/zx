@@ -19,6 +19,7 @@ import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 
 import '../api_types.dart' show SevenZipProgress;
+import '../cli/common.dart' show dateTimeToFileTime;
 import '../cli/open_archive.dart' show cliCurrentDirectory;
 import '../cli/nest.dart' show NestNodeSpec;
 import '../db/zxdb.dart';
@@ -34,6 +35,7 @@ import 'library.dart';
 import 'range_stream.dart';
 import 'url_source.dart';
 import 'wire.dart';
+import 'zx_web_create.dart';
 
 // ---------------------------------------------------------------------------
 // Sources
@@ -82,6 +84,19 @@ class _Files implements HostFiles {
       throw SevenZipException('$path is not open', SevenZipError.io);
     }
     return _View(s.stream);
+  }
+}
+
+/// The modification time of an uploaded file's blob (FILETIME ticks), or
+/// null when it is not a File (or has no lastModified, unlikely).
+int? _mTimeOf(JSBlob? blob) {
+  if (blob == null) return null;
+  try {
+    return dateTimeToFileTime(DateTime.fromMillisecondsSinceEpoch(
+        (blob as JSFileWithTime).lastModified,
+        isUtc: true));
+  } on Object {
+    return null;
   }
 }
 
@@ -361,6 +376,40 @@ class Engine {
 
       case 'library.persist':
         return ((await jsStorage.persist().toDart).toDart, null);
+
+      case 'library.create':
+        final name = await library.freeName(args['name'] as String);
+        final paths = (args['paths'] as List).cast<String>();
+        final itemNames = sanitizeArchiveItemNames([
+          for (final p in paths) p.substring(p.lastIndexOf('/') + 1),
+        ]);
+        final items = [
+          for (var i = 0; i < paths.length; i++)
+            ZxWebSource(
+              itemNames[i],
+              _files.sources[paths[i]]!.stream.length,
+              _mTimeOf(_files.sources[paths[i]]!.blob),
+              () => _files.open(paths[i]),
+            ),
+        ];
+        final compression =
+            compressionFromWire((args['compression'] as Map).cast());
+        final warnings = <String>[];
+        final entry = await library.writeStream(name, (out) {
+          warnings.addAll(buildZxArchive(
+            out,
+            items,
+            compression: compression,
+            solid: args['solid'] as bool? ?? true,
+            password: args['password'] as String?,
+            onProgress: (d, t, f) => ops.progress(d, t, file: f),
+          ));
+        });
+        return ({'entry': entry.toJson(), 'warnings': warnings}, null);
+
+      case 'library.read':
+        final f = await library.file(args['name'] as String);
+        return (null, readAll(BlobInStream(f)));
 
       case 'open':
         final path = args['path'] as String;

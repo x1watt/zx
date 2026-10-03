@@ -8,7 +8,7 @@ import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 
-import '../io/streams.dart' show SevenZipException, SevenZipError;
+import '../io/streams.dart' show OutStream, SevenZipException, SevenZipError;
 import 'js_bindings.dart';
 
 class LibraryEntry {
@@ -32,6 +32,21 @@ String libraryName(String name) {
   if (n.isEmpty || n == '.' || n == '..') n = 'archive';
   if (n.length > 200) n = n.substring(n.length - 200);
   return n;
+}
+
+/// Adapts [_write]'s synchronous write callback as a plain OutStream.
+class _OpfsOutStream implements OutStream {
+  final void Function(Uint8List) _write;
+  _OpfsOutStream(this._write);
+
+  @override
+  void write(Uint8List buf, int off, int len) =>
+      _write(off == 0 && len == buf.length
+          ? buf
+          : Uint8List.sublistView(buf, off, off + len));
+
+  @override
+  void flush() {}
 }
 
 class Library {
@@ -153,6 +168,13 @@ class Library {
       }
     });
   }
+
+  /// Writes a new file [name], calling [body] once with a plain (non
+  /// seekable) OutStream over it: a new .zx generation's writer treats it
+  /// as a stream, which also turns its dedup off (zx_web_create.dart).
+  Future<LibraryEntry> writeStream(
+          String name, void Function(OutStream out) body) =>
+      _write(name, (write) async => body(_OpfsOutStream(write)));
 
   /// Downloads [url] whole into the library as [name] (for a server
   /// without range requests).

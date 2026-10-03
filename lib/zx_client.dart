@@ -24,3 +24,8 @@ export 'src/crypto/nip19.dart'
 export 'src/crypto/sha256.dart' show Sha256;
 export 'src/util/tlsh.dart' show Tlsh, tlshDistance;
 export 'src/version.dart' show zxVersionString;
+
+// Pure Dart (no dart:js_interop): the web "New archive" dialog's
+// compression choice, usable without pulling in the engine worker's
+// client (zx_web.dart).
+export 'src/web/web_compression.dart';

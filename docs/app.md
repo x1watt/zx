@@ -42,9 +42,10 @@ background isolates: the window never freezes).
 
 ### The web version
 
-https://x1watt.github.io/zx/online/ is the app in the browser, read only:
-browse, preview, READMEs, seals, test, the Data view of a .zx database
-(read-only SQL) and Download of selected files. Archives are opened
+https://x1watt.github.io/zx/online/ is the app in the browser: browse,
+preview, READMEs, seals, test, the Data view of a .zx database (read-only
+SQL), Download of selected files, and New archive, which creates a .zx
+archive. Archives (other than a new one) are opened
 
 - from this computer (Open files, or drop them on the page): the page
   reads them where they are, in blocks, nothing is uploaded; Keep in
@@ -56,6 +57,15 @@ browse, preview, READMEs, seals, test, the Data view of a .zx database
   to download the archive into the library; when it does not allow other
   sites at all (GitHub release downloads, for one), the app says so;
 - from the library (the sidebar), which stays in this browser.
+
+New archive picks files (a flat selection; folders are for the desktop
+app) and asks for a name, Auto or Manual compression, solid and a
+password, like the desktop New archive dialog; the archive is written
+straight into the library (so there is no size limit of the tab's
+memory) and opened there, and Download archive offers it as a file. It
+is the one write path of the web version (lib/src/web/zx_web_create.dart):
+no dedup spill file, no extra threads, nothing else touches a real
+filesystem.
 
 Links open archives: paste the archive's address after the page's,
 
@@ -82,9 +92,10 @@ pinstriped title bars on a gray pattern, a bitmap-style font). The
 browser remembers the choice; a link's theme applies to that visit only.
 
 It needs WebAssembly with garbage collection and module workers (Chrome
-and Edge 119, Firefox 120, Safari 18.2 or newer). Writing archives,
-extracting to folders and nested archives that need a temporary copy (an
-archive inside a 7z or rar) are for the desktop app. How it works:
+and Edge 119, Firefox 120, Safari 18.2 or newer). Adding to an existing
+archive, extracting to folders and nested archives that need a temporary
+copy (an archive inside a 7z or rar) are for the desktop app; creating a
+new .zx archive is the exception (New archive, above). How it works:
 docs/architecture.md section 20.
 
 ### Installing on Linux

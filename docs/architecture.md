@@ -1237,9 +1237,10 @@ signed it.
 
 ## 20. The web version
 
-The read-only archive manager at https://x1watt.github.io/zx/online/
-(docs/app.md, "The web version"): archives are opened from the user's
-files, from a URL, or from a library kept in the browser.
+The archive manager at https://x1watt.github.io/zx/online/ (docs/app.md,
+"The web version"): archives are opened from the user's files, from a
+URL, or from a library kept in the browser; read only, except for New
+archive, which creates a .zx archive (see the bullet below).
 
 - **Two compilers.** The engine (the library) can not be compiled with
   dart2js: it needs 64-bit integers (literals above 2^53, `Int64List`,
@@ -1289,6 +1290,23 @@ files, from a URL, or from a library kept in the browser.
   `ReadmeView`, `SealBadge` and `DataView` of the app work unchanged.
   Writing, extracting to a folder and `extractToTemp` throw
   `SevenZipError.unsupported`; `capabilities` is empty.
+- **Creating a .zx archive** (`lib/src/web/zx_web_create.dart`,
+  `library.create`/`library.read` of the engine) is the one write path:
+  it never goes through `ZxArchive.create`/`add` (tied to `Isolate.spawn`
+  and `dart:io` paths, `zx_api.dart`/`zx_worker.dart`), but drives
+  `ZxArc.updateItems(OutStream, ...)` directly, dart:io free at that
+  layer (`zx_handler.dart`), with a new `OutStream` over an OPFS sync
+  access handle (`Library.writeStream`, not seekable). A non-seekable
+  sink makes the generation "streamed" (`zx_handler.dart`), which turns
+  dedup off too, so the writer's one disk dependency (the dedup spill
+  file) is never reached; threads are clamped to 1 (already the default:
+  `platform_web.dart`'s `numberOfProcessors` is 1). Options (level,
+  method, solid, a password) cross the wire as plain fields
+  (`ZxWebCompression`, pure Dart, no `dart:js_interop`, so the dialog
+  that builds them is a normal VM-testable widget); the engine turns them
+  into a real `ZxCompression`/`ZxWriteOptions` the same way the CLI does
+  (`ZxArc.setProperties`, `zx_zcm_auto.dart`). `tool/web_check/
+  client_e2e.dart` exercises the real OPFS write in a browser.
 - **URLs.** Before a URL is read, the engine fetches its first byte with
   a Range header (a single range is a CORS-safelisted request header, so
   there is no preflight): 206 makes it a range source (the size from
@@ -1304,11 +1322,15 @@ files, from a URL, or from a library kept in the browser.
   without threads.
 - **The app** (`app/lib/main_web.dart`, `app/lib/src/web/`): the page
   (`web_home.dart`: library, addresses, Open files, drop, Open address,
-  `?url=`), the archive pane (`web_archive.dart`), the browser services
-  (`web_services.dart`: file input, drops, localStorage for the
-  addresses, downloads, `webDbOpener`). Shared files reach the outside
-  through `services_base.dart` (interfaces) and `ui/save_text.dart`
-  (conditional: a file, or a download). `app/web/` is the page shell.
+  `?url=`, New archive), the archive pane (`web_archive.dart`), the
+  browser services (`web_services.dart`: file input, drops, localStorage
+  for the addresses, downloads, `webDbOpener`), and the New archive
+  dialog (`new_archive_dialog.dart`, built only against
+  `zx_client.dart`/`zx_web.dart`-safe types: desktop's compression
+  dialogs import `package:zx/zx.dart`, which `main_web.dart`'s graph may
+  not reach). Shared files reach the outside through `services_base.dart`
+  (interfaces) and `ui/save_text.dart` (conditional: a file, or a
+  download). `app/web/` is the page shell.
 - **Links.** `online/ADDRESS#path=...&theme=...` has no file on GitHub
   Pages, which serves the site's `404.html`: `tool/web_404.sh` makes it
   from the page of the app (same base element, plus a script sending

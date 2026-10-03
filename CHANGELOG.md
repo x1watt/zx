@@ -1,10 +1,10 @@
 ## Unreleased
 
 - **zx in the browser** (https://x1watt.github.io/zx/online/, docs/app.md
-  "The web version"): the app, read only, with the library compiled to
-  WebAssembly in a worker. Archives from the user's files (read in place,
-  not uploaded), from an address (only the needed byte ranges are
-  fetched when the server allows it, else a download into the library on
+  "The web version"): the app, with the library compiled to WebAssembly
+  in a worker. Archives from the user's files (read in place, not
+  uploaded), from an address (only the needed byte ranges are fetched
+  when the server allows it, else a download into the library on
   request), or from a library in the browser's storage.
   Links (`online/ADDRESS#path=PATH&theme=NAME`, the archive's address
   pasted after the page's) open an archive at a folder or file in a
@@ -12,6 +12,15 @@
   Light, Green and Orange (phosphor), 80s (the early Macintosh desktop).
   Everything is served by the site (renderer, fonts): no request to
   other hosts but the archive addresses the reader gives.
+- **New archive in the browser**: picks files, asks for a name,
+  compression (Auto or Manual), solid and a password, like the desktop
+  dialog, and writes the .zx archive straight into the browser's library
+  (no size limit of the tab's memory), opening it there; Download
+  archive offers it as a file. The one write path of the web version
+  (lib/src/web/zx_web_create.dart): it drives the writer directly over a
+  non-seekable OPFS stream instead of the native, disk-bound create/add,
+  which also turns dedup off automatically and keeps everything to one
+  thread.
 - A wrong password for a .zx archive with encrypted names is asked again
   (it failed at once).
 - **Two programs**: `zx`, the command line, and `zx-gui`, the app (the
