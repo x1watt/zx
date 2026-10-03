@@ -18,6 +18,9 @@ class CompressionSettings {
   bool solid = true;
   bool zipAes = true;
 
+  /// .zx: the NOSTR key (nsec) that seals the new generation.
+  String signKey = '';
+
   /// The .zx compression (Auto or Manual) and its estimate.
   final ZxCompressionState zx;
 
@@ -43,6 +46,7 @@ class CompressionSettings {
         solid: solid,
         compression: c,
         dedup: zx.prefs.dedup,
+        signKey: signKey.trim().isEmpty ? null : signKey.trim(),
       );
     }
     if (method != null && f.methods.contains(method)) {
@@ -86,6 +90,10 @@ class CompressionForm extends StatefulWidget {
   final bool canEncrypt;
   final bool canEncryptNames;
 
+  /// A new archive (the sign key becomes its admin) rather than an update
+  /// of one that may already be sealed.
+  final bool isNewArchive;
+
   /// The files to add (the .zx estimate), changed in place by the dialog.
   final List<String> sources;
   final Estimator estimator;
@@ -95,6 +103,7 @@ class CompressionForm extends StatefulWidget {
     required this.settings,
     this.canEncrypt = true,
     this.canEncryptNames = true,
+    this.isNewArchive = true,
     this.sources = const [],
     this.estimator = ZxArchive.estimate,
   });
@@ -106,10 +115,13 @@ class CompressionForm extends StatefulWidget {
 class _CompressionFormState extends State<CompressionForm> {
   bool _show = false;
   late final _pw = TextEditingController(text: widget.settings.password);
+  bool _showSignKey = false;
+  late final _signKey = TextEditingController(text: widget.settings.signKey);
 
   @override
   void dispose() {
     _pw.dispose();
+    _signKey.dispose();
     super.dispose();
   }
 
@@ -171,6 +183,33 @@ class _CompressionFormState extends State<CompressionForm> {
                 ),
             ],
           ),
+        if (f.id == 'zx') ...[
+          const SizedBox(height: 8),
+          Text('Seal', style: t.labelLarge),
+          const SizedBox(height: 6),
+          TextField(
+            key: const Key('opt-sign-key'),
+            controller: _signKey,
+            obscureText: !_showSignKey,
+            onChanged: (v) => setState(() => s.signKey = v),
+            decoration: InputDecoration(
+              labelText: 'Sign with a NOSTR key (nsec; empty: not sealed)',
+              isDense: true,
+              helperText: _signKeyHelp(s.signKey),
+              helperMaxLines: 2,
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                tooltip: _showSignKey ? 'Hide key' : 'Show key',
+                icon: Icon(
+                  _showSignKey
+                      ? Icons.visibility_off_outlined
+                      : Icons.visibility_outlined,
+                ),
+                onPressed: () => setState(() => _showSignKey = !_showSignKey),
+              ),
+            ),
+          ),
+        ],
         if (f.solid)
           CheckboxListTile(
             key: const Key('opt-solid'),
@@ -255,6 +294,23 @@ class _CompressionFormState extends State<CompressionForm> {
 
   Widget _maybeTooltip(String? message, Widget child) =>
       message == null ? child : Tooltip(message: message, child: child);
+
+  String _signKeyHelp(String key) {
+    final t = key.trim();
+    if (t.isEmpty) {
+      return widget.isNewArchive
+          ? 'Signed generations (docs: zx-format.md, Seals), optional.'
+          : 'Signs this update when the archive is already sealed.';
+    }
+    try {
+      final npub = npubEncode(publicKeyOf(parseSecretKey(t)));
+      return widget.isNewArchive
+          ? 'Becomes the admin: $npub'
+          : 'Signs as: $npub';
+    } on FormatException catch (e) {
+      return 'Not a valid key: ${e.message}';
+    }
+  }
 
   Widget _labeled(String label, Widget child) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,

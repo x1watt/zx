@@ -12,9 +12,20 @@ class SealCache {
   static final Expando<Future<List<ZxGenerationSeal>>> _pending = Expando();
   static final Expando<List<ZxGenerationSeal>> _done = Expando();
 
-  /// The seals of [a], checked once (empty for other formats).
+  // the numVersions a cached check was for: a write (add, sign...) keeps
+  // the same handle, so a later generation invalidates it here instead of
+  // needing every writer to know about this cache.
+  static final Expando<int> _version = Expando();
+
+  /// The seals of [a], checked once per generation (empty for other
+  /// formats).
   static Future<List<ZxGenerationSeal>> of(ZxArchive a) {
     if (a.format != 'zx') return Future.value(const []);
+    if (_version[a] != a.numVersions) {
+      _pending[a] = null;
+      _done[a] = null;
+      _version[a] = a.numVersions;
+    }
     return _pending[a] ??= a.seals().then((s) {
       _done[a] = s;
       return s;

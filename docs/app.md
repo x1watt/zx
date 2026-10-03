@@ -30,7 +30,12 @@ background isolates: the window never freezes).
 - A sealed .zx archive (signed generations) shows its state in the
   status bar (Sealed, Not signed, Seal broken); a click lists who signed
   each version and runs the full check. The version list marks each
-  version, and the README panel names the admin.
+  version, and the README panel names the admin. Archive > Seal... signs
+  with a NOSTR key (nsec), activates sealing on a plain archive, adds and
+  removes maintainers, sets who may sign, hands over the admin role, and
+  computes a candidate admin's acceptance signature without sharing its
+  key; the Add and New archive dialogs also take a key to seal what they
+  write.
 - Settings: theme (system, light, dark), default format and level,
   confirmations, the README panel, and the desktop integration switches
   below.

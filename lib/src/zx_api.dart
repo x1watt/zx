@@ -25,7 +25,12 @@ import 'readme/readme.dart';
 import 'readme/readme_links.dart' show checkReadme;
 import 'util/tlsh.dart' show tlshDistance;
 import 'format/zx/zx_seal.dart'
-    show ZxGenerationSeal, ZxSealState, ZxWriteRule, zxCheckSealsOfFile;
+    show
+        ZxGenerationSeal,
+        ZxSealState,
+        ZxWriteRule,
+        zxCheckSealsOfFile,
+        zxAcceptanceOfFile;
 import 'zx_estimate.dart';
 import 'zx_worker.dart';
 
@@ -761,6 +766,19 @@ class ZxArchive {
         cancel: cancel, onPassword: onPassword);
     _set(l);
     return gen;
+  }
+
+  /// .zx: what [key] (an nsec or 64 hex digits) must sign to accept the
+  /// admin role at this archive's next generation: its npub, the
+  /// generation, and the signature (hex, for [sign]'s [newAdmin] and
+  /// [sign]'s acceptance argument). A candidate admin runs this on its own
+  /// device and hands the result to the current admin: [key] is used only
+  /// to sign, never leaves this call. No password is needed.
+  Future<({String npub, int generation, String signature})> acceptanceFor(
+      String key) async {
+    _needZx('seals');
+    final p = path;
+    return Isolate.run(() => zxAcceptanceOfFile(p, key));
   }
 
   /// .zx: every version of the file at [path] across the generations,

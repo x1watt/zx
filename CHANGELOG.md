@@ -25,6 +25,11 @@
 - **Signed generations** (docs/zx-format.md section 17): .zx versions
   signed with NOSTR keys by an admin and maintainers, checked by anyone
   without the password (`zx seal`, `-msign`); the Footer is 40 bytes.
+  The app (docs/app.md): the status bar badge and its dialog (who signed,
+  full check) read it with no password; Archive > Seal... writes it
+  (sign, activate, maintainers, who may sign, admin handover and its
+  acceptance signature), and the Add and New archive dialogs take a key
+  to seal what they write.
 - **Archive READMEs** (docs/readme.md): a README.md in an archive describes
   it; `zx readme`, and the app shows it below the items.
 - **The app is a file explorer** (app/README.md "Using it",

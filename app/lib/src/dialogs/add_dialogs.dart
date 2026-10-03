@@ -242,6 +242,7 @@ class _AddDialogState extends State<_AddDialog> {
                 settings: _settings,
                 canEncrypt: widget.caps.canEncrypt,
                 canEncryptNames: false,
+                isNewArchive: false,
                 sources: widget.sources,
                 estimator: widget.estimator,
               ),

@@ -28,6 +28,7 @@ export 'zx_seal_types.dart';
 
 import 'dart:typed_data';
 
+import '../../crypto/nip19.dart' show npubEncode, parseSecretKey;
 import '../../crypto/schnorr.dart';
 import '../../crypto/sha256.dart';
 import '../../io/streams.dart';
@@ -918,4 +919,60 @@ List<ZxGenerationSeal> zxCheckSealsOfFile(String path, {bool full = false}) {
   } finally {
     s.close();
   }
+}
+
+/// What [key] (an nsec or 64 hex digits) must sign to accept the admin
+/// role at the next generation of the archive at [path]: its npub, the
+/// generation, and the signature (hex). The current admin writes it with
+/// `sign`'s new admin and acceptance (docs/zx-format.md "Seals", 17.3),
+/// so a candidate admin can hand this over without sharing its key. Reads
+/// only the Header, Footers and Seals; no password is needed.
+({String npub, int generation, String signature}) zxAcceptanceOfFile(
+    String path, String key) {
+  Uint8List secret;
+  try {
+    secret = parseSecretKey(key);
+  } on FormatException catch (e) {
+    throw SevenZipException(
+        'zx: bad key: ${e.message}', SevenZipError.unsupported);
+  }
+  if (!isValidSecretKey(secret)) {
+    throw const SevenZipException(
+        'zx: bad key: out of range', SevenZipError.unsupported);
+  }
+  final s = openInputFile(path);
+  late final ZxHeader header;
+  late final List<ZxGenerationSeal> gens;
+  try {
+    final h = ZxArchiveReader.readHeader(s);
+    if (h == null) {
+      throw const SevenZipException(
+          'not a .zx archive', SevenZipError.isNotArc);
+    }
+    if (h.multiVolume) {
+      throw const SevenZipException(
+          'a volume set has no seals', SevenZipError.unsupported);
+    }
+    header = h;
+    final readAt = zxReadAtStream(s);
+    final end = zxLastFooterEnd(readAt, s.length, header.size);
+    if (end < 0) {
+      throw const SevenZipException('no valid Footer', SevenZipError.headers);
+    }
+    gens = zxCheckSeals(readAt, header.archiveId, end, -1);
+  } finally {
+    s.close();
+  }
+  final last = gens.isEmpty ? null : gens.last;
+  if (last == null || last.generation < 0 || last.seal == null) {
+    throw const SevenZipException(
+        'zx: the archive is not sealed', SevenZipError.unsupported);
+  }
+  final next = last.generation + 1;
+  final sig = zxAcceptSignature(secret, header.archiveId, next);
+  return (
+    npub: npubEncode(publicKeyOf(secret)),
+    generation: next,
+    signature: zxHex(sig),
+  );
 }

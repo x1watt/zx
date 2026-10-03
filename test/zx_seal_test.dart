@@ -372,6 +372,38 @@ void main() {
     }
   });
 
+  test('the API: acceptanceFor, admin handover', () async {
+    final tmp = Directory.systemTemp.createTempSync('zx_accept_api_');
+    try {
+      final src = File('${tmp.path}/a.txt')..writeAsStringSync('hello\n');
+      final p = '${tmp.path}/a.zx';
+      final adminKey = nsecEncode(admin);
+      final newAdminKey = nsecEncode(admin2);
+      final a = await api.ZxArchive.create(p, [api.ZxSource(src.path)],
+          options: api.ZxOptions(signKey: adminKey));
+      // the new admin computes its acceptance without the current admin
+      final acc = await a.acceptanceFor(newAdminKey);
+      expect(acc.npub, npubEncode(publicKeyOf(admin2)));
+      expect(acc.generation, 2);
+      // the current admin hands over the role with that signature alone
+      final g = await a.sign(adminKey,
+          newAdmin: npubEncode(publicKeyOf(admin2)), acceptance: acc.signature);
+      expect(g, 2);
+      final s = await a.seals(full: true);
+      expect(states(s), [ZxSealState.sealed, ZxSealState.sealed]);
+      expect(s.last.policy!.admin, publicKeyOf(admin2));
+      await a.close();
+      // an archive that was never sealed has no generation to accept
+      final plain = '${tmp.path}/plain.zx';
+      final b = await api.ZxArchive.create(plain, [api.ZxSource(src.path)]);
+      await expectLater(
+          b.acceptanceFor(newAdminKey), throwsA(isA<SevenZipException>()));
+      await b.close();
+    } finally {
+      tmp.deleteSync(recursive: true);
+    }
+  });
+
   test('zx seal and -msign', () async {
     final tmp = Directory.systemTemp.createTempSync('zx_seal_cli_');
     try {

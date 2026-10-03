@@ -23,6 +23,7 @@ import '../dialogs/fs_dialogs.dart';
 import '../dialogs/extract_dialog.dart';
 import '../dialogs/progress.dart';
 import '../dialogs/properties_dialog.dart';
+import '../dialogs/seal_dialog.dart';
 import '../formats.dart';
 import '../platform/android_access.dart';
 import '../platform/android_channel.dart';
@@ -1254,6 +1255,44 @@ class BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  /// .zx: signs, activates, or changes the roles of the archive's seal
+  /// (docs/zx-format.md "Seals"): the badge in the status bar shows the
+  /// result (ui/seal_badge.dart).
+  Future<void> manageSeal() async {
+    final m = _model;
+    if (m == null) return;
+    final archive = m.root.archive;
+    final seals = await SealCache.of(archive);
+    if (!mounted) return;
+    final r = await showManageSealDialog(
+      context,
+      archive: archive,
+      seals: seals,
+    );
+    if (r == null || !mounted) return;
+    final gen = await _guard('Seal', () {
+      return runWithProgress(
+        context,
+        'Sealing ${p.basename(archive.path)}',
+        (pr) => archive.sign(
+          r.key,
+          activate: r.activate,
+          deactivate: r.deactivate,
+          addMaintainers: r.addMaintainers,
+          removeMaintainers: r.removeMaintainers,
+          rule: r.rule,
+          newAdmin: r.newAdmin,
+          newAdminKey: r.newAdminKey,
+          acceptance: r.acceptance,
+          cancel: pr.cancel,
+        ),
+      );
+    });
+    if (gen == null || !mounted) return;
+    m.refresh();
+    _snack('Sealed generation $gen');
+  }
+
   Future<void> delete() async {
     final m = _model;
     if (m == null || _whyNot('delete') != null) return;
@@ -2194,6 +2233,8 @@ class BrowserPageState extends State<BrowserPage> {
         ),
         if (_whyNot('add') == null)
           item('Add files...', () => add(), icon: Icons.add_box_outlined),
+        if (zx && m.root.archive.capabilities.canAdd)
+          item('Seal...', manageSeal, icon: Icons.verified_outlined),
         item('Test', test, icon: Icons.fact_check_outlined),
         item(
           'Archive info and comment',
@@ -2944,7 +2985,13 @@ class BrowserPageState extends State<BrowserPage> {
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        SealBadge(archive: m.root.archive),
+                        SealBadge(
+                          key: ValueKey(
+                            '${m.root.archive.path}#'
+                            '${m.root.archive.numVersions}',
+                          ),
+                          archive: m.root.archive,
+                        ),
                         ?_versionPicker(m),
                       ],
                     ),
