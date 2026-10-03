@@ -128,4 +128,110 @@ void main() {
     expect(seals!.last.policy!.maintainers.single, publicKeyOf(maint));
     await tester.runAsync(() => a.close());
   });
+
+  testWidgets('Seal... removes a maintainer', (tester) async {
+    final a = (await tester.runAsync(
+      () => ZxArchive.create(
+        p.join(tmp.path, 'withmaint.zx'),
+        [ZxSource(tree)],
+        options: ZxOptions(signKey: nsecEncode(admin)),
+        overwrite: true,
+      ),
+    ))!;
+    // sets up a maintainer directly through the engine: the UI test below
+    // only has to prove it can remove one, not add it again
+    await tester.runAsync(
+      () => a.sign(
+        nsecEncode(admin),
+        addMaintainers: [npubEncode(publicKeyOf(maint))],
+      ),
+    );
+    final s = testServices(tmp.path);
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final key = GlobalKey<BrowserPageState>();
+    await tester.pumpWidget(ZxApp(services: s, browserKey: key));
+    await tester.pump();
+    final st = key.currentState!;
+    st.showArchive(a);
+    await tester.pump();
+    await settle(tester, find.byKey(const Key('seal-badge')));
+
+    unawaited(st.manageSeal());
+    await settle(tester, find.byKey(const Key('manage-seal-dialog')));
+    final maintTile = find.byKey(
+      Key('seal-maintainer-${npubEncode(publicKeyOf(maint))}'),
+    );
+    expect(maintTile, findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const Key('seal-key')),
+      nsecEncode(admin),
+    );
+    await tester.tap(
+      find.descendant(of: maintTile, matching: find.byIcon(Icons.close)),
+    );
+    await tester.pump();
+    expect(maintTile, findsNothing);
+    expect(find.text('none'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('seal-submit')));
+    await tester.pump();
+    await settle(tester, find.text('Sealed generation 3'));
+
+    final seals = await tester.runAsync(() => a.seals());
+    expect(seals!.last.policy!.maintainers, isEmpty);
+    await tester.runAsync(() => a.close());
+  });
+
+  testWidgets('Seal... hands over the admin role to a key it holds', (
+    tester,
+  ) async {
+    final newAdmin = Uint8List.fromList(List.generate(32, (i) => i + 111));
+    final a = (await tester.runAsync(
+      () => ZxArchive.create(
+        p.join(tmp.path, 'handover.zx'),
+        [ZxSource(tree)],
+        options: ZxOptions(signKey: nsecEncode(admin)),
+        overwrite: true,
+      ),
+    ))!;
+    final s = testServices(tmp.path);
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final key = GlobalKey<BrowserPageState>();
+    await tester.pumpWidget(ZxApp(services: s, browserKey: key));
+    await tester.pump();
+    final st = key.currentState!;
+    st.showArchive(a);
+    await tester.pump();
+    await settle(tester, find.byKey(const Key('seal-badge')));
+
+    unawaited(st.manageSeal());
+    await settle(tester, find.byKey(const Key('manage-seal-dialog')));
+    // the admin section only shows while sealing is active
+    expect(find.byKey(const Key('seal-new-admin')), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const Key('seal-key')),
+      nsecEncode(admin),
+    );
+    await tester.enterText(
+      find.byKey(const Key('seal-new-admin')),
+      npubEncode(publicKeyOf(newAdmin)),
+    );
+    await tester.enterText(
+      find.byKey(const Key('seal-new-admin-key')),
+      nsecEncode(newAdmin),
+    );
+    await tester.tap(find.byKey(const Key('seal-submit')));
+    await tester.pump();
+    await settle(tester, find.text('Sealed generation 2'));
+
+    final seals = await tester.runAsync(() => a.seals(full: true));
+    expect(seals!.last.policy!.admin, publicKeyOf(newAdmin));
+    await tester.runAsync(() => a.close());
+  });
 }
