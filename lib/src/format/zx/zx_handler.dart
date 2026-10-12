@@ -26,6 +26,7 @@ import '../../pool.dart' show defaultThreads;
 import '../../sync_pool.dart';
 import '../../util/tlsh.dart';
 import '../archive_types.dart';
+import '../item_streams.dart' show SubInStream;
 import '../handler_out.dart' show getRamSize, parseSizeString;
 import 'zx_blocks.dart';
 import 'zx_codecs.dart';
@@ -35,6 +36,7 @@ import 'zx_format.dart';
 import 'zx_lock.dart';
 import 'zx_reader.dart';
 import 'zx_seal.dart';
+import 'zx_sfx.dart';
 import 'zx_writer.dart';
 
 /// POSIX file type bits.
@@ -277,6 +279,19 @@ class ZxHandler {
 
   ZxArchiveReader? get reader => _r;
 
+  // Where the archive starts in the file opened (a self-extracting
+  // archive: after the stub), 0 for a plain .zx file.
+  int _sfxStart = 0;
+
+  /// Whether the file opened is a self-extracting archive (x.zx.sfx): it
+  /// can be read, not updated.
+  bool get isSelfExtracting => _sfxStart > 0;
+
+  static SevenZipException _sfxNotUpdatable() => const SevenZipException(
+      'zx: a self-extracting archive can not be updated: extract it and '
+      'create it again (zx a -sfx)',
+      SevenZipError.unsupported);
+
   /// The path of the file opened (for volumes and in place updates).
   String? get archivePath => _archivePath;
 
@@ -295,6 +310,12 @@ class ZxHandler {
     close();
     _archivePath = path;
     _password = password;
+    // a self-extracting archive (x.zx.sfx): the archive after the stub
+    final whole = stream;
+    _sfxStart = zxSfxArchiveStart(stream) ?? 0;
+    if (_sfxStart > 0) {
+      stream = SubInStream(stream, _sfxStart, stream.length - _sfxStart);
+    }
     ZxArchiveReader? r;
     try {
       r = ZxArchiveReader.open(
@@ -322,7 +343,7 @@ class ZxHandler {
     if (options.verifyStrict && options.generation == null) _strict(r);
     // the file opened (a volume of a set counts alone, as ArchiveLink
     // compares it with the file)
-    _phySize = stream.length;
+    _phySize = whole.length;
     _totalSize = _phySize;
     if (r.header.multiVolume) {
       _totalSize = 0;
@@ -1684,6 +1705,7 @@ class ZxHandler {
       String? newPassword,
       void Function(String path)? onFile,
       void Function()? releaseInput}) {
+    if (_sfxStart > 0) throw _sfxNotUpdatable();
     final o = _withPassword(options.write, newPassword);
     if (volumeSizes.isNotEmpty) o.volumeSizes = volumeSizes;
     final r = _r;
@@ -2079,6 +2101,7 @@ class ZxHandler {
       void Function(String path)? onFile}) {
     final r = _r;
     if (r == null) throw StateError('not open');
+    if (_sfxStart > 0) throw _sfxNotUpdatable();
     final lock = zxLockForUpdate(path, r);
     try {
       return _compact(path, r, keep,

@@ -14,6 +14,8 @@ import 'arc_handlers.dart';
 import 'arc_tar.dart';
 import 'arc_zx.dart';
 import '../format/zx/zx_format.dart' show ZxHeader;
+import '../format/zx/zx_reader.dart' show ZxArchiveReader, ZxOpenParams;
+import '../format/zx/zx_sfx.dart';
 import 'archive_extract_callback.dart' show censorNodeCheckPath2, StdOutFileStream;
 import 'common.dart';
 import 'enum_dir_items.dart';
@@ -22,6 +24,7 @@ import 'globals.dart';
 import 'load_codecs.dart';
 import 'open_archive.dart';
 import 'update_callback.dart';
+import 'update_callback_console.dart' show UpdateCallbackConsole;
 import 'update_pair.dart';
 import 'wildcard.dart';
 import 'platform.dart';
@@ -907,6 +910,12 @@ void updateArchive(
   }
 
   if (options.sfxMode) {
+    // not in 7-Zip: -sfx makes a self-extracting .zx archive
+    _updateZxSfx(codecs, types, cmdArcPath2, censor, options, errorInfo,
+        openCallback, callback);
+    return;
+  }
+  if (options.sfxMode) {
     options.methodMode.properties.add(const MapEntry('rsfx', ''));
     if (options.sfxModule.isEmpty) {
       errorInfo.message = 'SFX file is not specified';
@@ -1339,4 +1348,103 @@ String _compoundTempDir(UpdateOptions options, String arcPath) {
   dir = resolvePath(dir);
   if (dir.isNotEmpty && !endsWithPathSepar(dir)) dir += kDirSep;
   return dir;
+}
+
+// Not in 7-Zip: `a -sfx[ARCHES] x.zx.sfx files`: writes a .zx archive into
+// a temporary file next to the target (the usual update), checks that the
+// decoder of the self-extracting archives reads it (zx_sfx.dart), then
+// writes the stub, the engines of ARCHES (a list separated by commas,
+// "all", or by default x86_64 and aarch64), the decoder and the archive.
+void _updateZxSfx(
+    Codecs codecs,
+    List<OpenType> types,
+    String cmdArcPath,
+    Censor censor,
+    UpdateOptions options,
+    UpdateErrorInfo errorInfo,
+    OpenCallbackUI openCallback,
+    UpdateCallbackUI2 callback) {
+  final zi = codecs.findFormatForArchiveType('zx');
+  if (types.length > 1 ||
+      (types.isNotEmpty && types[0].formatIndex != zi) ||
+      options.stdOutMode ||
+      options.volumesSizes.isNotEmpty) {
+    throw const StringException(
+        'self-extracting archives (-sfx) are single .zx files (-tzx)');
+  }
+  final m = options.sfxModule.toLowerCase();
+  final arches = m.isEmpty
+      ? zxSfxDefaultArches
+      : (m == 'all' ? zxSfxArches : m.split(','));
+  for (final a in arches) {
+    if (!zxSfxArches.contains(a)) {
+      throw StringException(
+          '-sfx: unknown CPU "$a" (${zxSfxArches.join(', ')} or all)');
+    }
+  }
+  var target = cmdArcPath;
+  if (!target.toLowerCase().endsWith('.sfx')) {
+    target = target.toLowerCase().endsWith('.zx')
+        ? '$target.sfx'
+        : '$target.zx.sfx';
+  }
+  final targetFile = File(resolvePath(target));
+  if (targetFile.existsSync()) {
+    throw StringException('$target exists: a self-extracting archive can '
+        'not be updated, write a new one');
+  }
+  final temp = '$target.$pid.tmp.zx';
+  final tempFile = File(resolvePath(temp));
+  options.sfxMode = false;
+  for (final uc in options.commands) {
+    if (uc.userArchivePath == cmdArcPath) uc.userArchivePath = temp;
+  }
+  try {
+    updateArchive(codecs, types, temp, censor, options, errorInfo,
+        openCallback, callback, true);
+    if (!tempFile.existsSync()) return; // nothing was written
+    final raf = tempFile.openSync();
+    try {
+      final input = FileInStream(raf);
+      final pw = callback is UpdateCallbackConsole ? callback.password : '';
+      final r = ZxArchiveReader.open(
+          input, ZxOpenParams(password: () => pw.isEmpty ? null : pw));
+      if (r == null) throw const StringException('-sfx: no .zx archive');
+      final why = zxSfxCheck(r, (off, len) {
+        final b = Uint8List(len);
+        raf.setPositionSync(off);
+        raf.readIntoSync(b);
+        return b;
+      });
+      if (why != null) throw StringException('-sfx: $why');
+    } finally {
+      raf.closeSync();
+    }
+    final out = targetFile.openSync(mode: FileMode.writeOnly);
+    try {
+      out.writeFromSync(zxSfxPrefix(arches));
+      final inp = tempFile.openSync();
+      try {
+        final buf = Uint8List(1 << 20);
+        for (;;) {
+          final n = inp.readIntoSync(buf);
+          if (n == 0) break;
+          out.writeFromSync(buf, 0, n);
+        }
+      } finally {
+        inp.closeSync();
+      }
+    } catch (_) {
+      out.closeSync();
+      targetFile.deleteSync();
+      rethrow;
+    }
+    out.closeSync();
+    if (!kIsWin) {
+      final mode = umaskMask() & 0x1FF;
+      Process.runSync('chmod', [mode.toRadixString(8), targetFile.path]);
+    }
+  } finally {
+    if (tempFile.existsSync()) tempFile.deleteSync();
+  }
 }

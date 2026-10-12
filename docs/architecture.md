@@ -1002,7 +1002,8 @@ does not apply to it.
   `zx_worker.dart` does the same for `ZxArchive`. A new archive is still
   written as `name.zx-part` by `ZxArchive` and renamed at the end.
   Compaction writes `name.zx-compact` and renames it over the archive.
-- **Detection.** The magic at offset 0 (a signature); the Split handler
+- **Detection.** The magic at offset 0 (a signature), or the stub of a
+  self-extracting archive (section 16.1); the Split handler
   refuses a file that starts with it, so `x.zx.001` opens as .zx, and
   `update.dart` turns the Split type of such a name into zx.
 - **Hot loops.** TLSH (`Tlsh.update`) keeps its window and checksum in
@@ -1057,6 +1058,67 @@ does not apply to it.
   one pass reader does not, but gives every version). The fallback of a
   locked archive and the Windows sharing rules are simulated in the tests,
   not run on Windows.
+
+### 16.1 Self-extracting archives (x.zx.sfx)
+
+`zx a -sfx` writes a .zx archive behind a POSIX sh stub that extracts it
+on Linux without zx (docs/cli.md). zx stays pure Dart: the program the
+archive carries is C, built in advance by `tool/build_sfx.sh` and stored
+in zx as data (`lib/src/format/zx/zx_sfx_payload.dart`, generated).
+
+- **Layout** (`zx_sfx.dart`): the stub (4 KiB, starting with
+  `zxSfxMarker`), one engine per CPU at a multiple of 4 KiB (so that the
+  stub cuts it out with `dd` and 4 KiB blocks), the decoder, the archive
+  unchanged. The stub picks the engine with `uname -m`, copies it into a
+  temporary folder where a program may run (it checks with `engine -v`)
+  and starts it on the decoder and the archive at their offsets in the
+  file itself.
+- **The engine** (`native/sfx/engine`): wasm3 0.5.0 (MIT, vendored
+  without its WASI and API files) and a few host functions (module "zx":
+  open, pread, write, mkdir, symlink, link, chmod, utime, unlink, kind,
+  password, argv, exit; `decoder/host.h`), static with musl through zig,
+  97 to 125 KB each for x86_64, aarch64, riscv64 and 32-bit arm.
+- **The decoder** (`native/sfx/decoder`, one wasm32 file for every CPU,
+  433 KB): `zx_sfx.c` (the reader and extractor: Header, last Footer,
+  Index, blocks, extents, sparse files, hard and symbolic links, the
+  checks, encryption; paths with `..` or a leading `/` refused, symbolic
+  links created after the files and never followed while writing),
+  `zx_crypto.c` (CRC-32C, xxHash64, SHA-256, HMAC, scrypt, AES-256-CTR,
+  written from their specifications), the LZMA SDK decoders (LzmaDec,
+  Lzma2Dec, Bra, Bra86, Delta; public domain), and the C port of zcm's
+  decoder (`zc_*.c`). The same sources build natively (`make -C
+  native/sfx native`, `host_native.c`) for the tests.
+- **The zcm port** must decode the streams of the Dart encoder bit for
+  bit. It is a literal translation, file by file (`zc_models.c` is
+  `zcm_models.dart`...), under the rules at the top of `zc.h`: a Dart
+  `int` is an `int64_t` and the code is compiled with `-fwrapv` (Dart
+  wraps), `-ffp-contract=off` (no fused multiply-add) and without libm
+  (the doubles of the LSTM and the audio and image predictors only use
+  + - * / and zcm_math.dart's functions, ported in `zc_core.c`); typed
+  lists are arrays of the same element type, so stores truncate alike;
+  Dart's `%` is `dmod`. Each model was checked against the Dart one by
+  hashing every mixer input of every bit on text, x86 code, binary,
+  images and audio. The models gated by `zcmExperiment` (SparseMatch,
+  SparseBit, LinearPrediction, Chart, Nest, Xml) are never built by the
+  codec and are not ported. The dictionary of the text transform is
+  stored as a raw LZMA stream (`zc_dict_words.c`,
+  `tool/zcm_gen_sfx_dict.dart`): zcm level 1 packs it 19 KB smaller but
+  takes seconds to unpack in the interpreter.
+- **zx reads them.** `isArcZx` accepts the stub's marker;
+  `ZxHandler.open` finds the archive from the last Footer
+  (`zxSfxArchiveStart`) and reads it through a `SubInStream`, so the
+  offsets of the archive stay relative to its start. Updates and
+  compaction are refused (`isSelfExtracting`), and `ZxArchive` reports
+  no update capability for them.
+- **Writing** (`update.dart`, `_updateZxSfx`): the usual update into
+  `NAME.zx.sfx.PID.tmp.zx`, then `zxSfxCheck` (the chains, the check
+  types of the block headers, no volumes, database, streamed file, zcm
+  model above 2 GiB), then the prefix and the archive into `NAME.zx.sfx`,
+  made executable.
+- **A change to zcm** (a model, a constant, the stream) must be made in
+  the C port too, then `tool/build_sfx.sh` run again; `test/zx_sfx_test.dart`
+  decodes zcm archives through the real stub when the payload is built,
+  so a model that differs fails there.
 
 ## 17. zxdb: the database in a .zx archive (zx extension)
 

@@ -497,6 +497,36 @@ Findings:
   a quarter each, and PPMd at level 9 a quarter. Peak RSS stays below 190
   MiB on these inputs.
 
+### Self-extracting archives (x.zx.sfx)
+
+The decoder of a .zx.sfx is the C port of the reader and of zcm, run by
+wasm3, an interpreter (docs/architecture.md, section 16.1). Same machine,
+222 KB of input (two Markdown files and 150 KB of `/usr/bin/gcc`), `-t`,
+the wasm decoder in the x86_64 engine against the same C built natively
+(gcc -O2):
+
+| Archive | Interpreted | Native C | Peak memory (interpreted) |
+|---|---|---|---|
+| LZMA2 (1 MB of mixed files) | 0.2 s | | |
+| zcm level 1 | 2.0 s (110 KB/s) | 0.33 s | 16 MB |
+| zcm level 2 | 10.6 s (21 KB/s) | 0.65 s | 20 MB |
+| zcm level 6 | 155 s (1.4 KB/s) | 9.0 s | 95 MB |
+| zcm level 9 | 672 s (0.33 KB/s) | 39 s | 511 MB |
+
+- The interpreter costs 15 to 20 times the native speed on zcm. Building
+  the engine with -O2 or -O3 instead of -Os, or with 64-bit value slots,
+  changed nothing measurable. A static native x86_64 decoder would be 23
+  times faster but takes 582 KB, which with the other parts would pass
+  the 1 MB the overhead is kept under.
+- The dictionary of the text transform is LZMA (155 KB): packed with zcm
+  level 1 it was 19 KB smaller but took 4 s to unpack before every
+  extraction of zcm text.
+- Under qemu-user (aarch64, riscv64, arm) the 1 MB LZMA2 archive takes
+  2.0 to 3.4 s.
+- Sizes: engines 97 KB (x86_64), 108 KB (aarch64), 103 KB (riscv64),
+  125 KB (arm); decoder 433 KB; stub 4 KB. Default overhead (x86_64 and
+  aarch64) 646 KB, all four engines 879 KB.
+
 ### zxdb (the database in a .zx archive)
 
 `tool/zxdb_bench.dart` (AOT, `durable: false`, 16 KiB pages, 128 MiB page

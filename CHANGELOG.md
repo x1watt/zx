@@ -1,5 +1,14 @@
 ## Unreleased
 
+- **Self-extracting archives** (docs/cli.md, `-sfx`): `zx a -sfx NAME
+  files` writes `NAME.zx.sfx`, which `sh NAME.zx.sfx` extracts (`-o`,
+  `-l`, `-t`, `-p`, `-y`) on a Linux machine without zx, on x86_64,
+  aarch64, riscv64 or 32-bit arm, for less than 1 MB of overhead: a sh
+  stub, an engine per CPU (wasm3) and one decoder in WebAssembly, the C
+  port of the zx reader and of zcm's decoder (every level, bit for bit
+  with the Dart encoder), LZMA and LZMA2, the branch filters and Delta,
+  with encryption. zx opens the archive after the stub too (list,
+  extract, test, the app); it can not be updated.
 - **zx in the browser** (https://x1watt.github.io/zx/online/, docs/app.md
   "The web version"): the app, with the library compiled to WebAssembly
   in a worker. Archives from the user's files (read in place, not

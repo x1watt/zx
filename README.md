@@ -79,6 +79,10 @@ SELECT path, distance FROM similar('report-final.pdf', 20);
 - **A format that never goes stale**: `.zx` names its codecs per block
   and states the oldest zx that can read it.
 - **Volumes across several disks**, encryption, parallel blocks.
+- **Self-extracting archives**: `zx a -sfx backup files` writes
+  `backup.zx.sfx`, which `sh backup.zx.sfx` extracts on any Linux machine
+  without zx (x86_64, arm64, riscv64, arm), zcm included, for less than
+  1 MB of overhead.
 - **Signed with NOSTR keys**: an admin and maintainers (npubs) sign each
   version; anyone can check, without the password, that nothing was
   changed after them (`zx seal`, `-msign`; docs/zx-format.md section 17).
@@ -87,7 +91,9 @@ SELECT path, distance FROM similar('report-final.pdf', 20);
   from the archive itself; links out are allowed, fetching is not
   ([docs/readme.md](docs/readme.md), `zx readme -check`).
 - **A file explorer** for desktop and Android that walks into archives.
-- **Pure Dart**: no native code, runs wherever Dart runs.
+- **Pure Dart**: no native code, runs wherever Dart runs (the decoder
+  that self-extracting archives carry is C, built in advance and stored
+  in zx as data).
 
 Version 0.5.0. BSD 3-clause, Copyright (c) 2026 Max Brito.
 
@@ -192,6 +198,7 @@ zx a -mcompact backup.zx                  # drop old versions, keep the last
 zx a -m0=zcm:auto -mtime=10m corpus.zx texts/   # strongest zcm in 10 minutes
 zx a -m0=zcm:cmix -mmem=8g corpus.zx texts/     # cmix-class, slow, smallest
 zx a -v4g -v25g -mvdir=/mnt/a:full -mvdir=/mnt/b:full huge.zx data/
+zx a -sfx photos pics/                    # photos.zx.sfx: sh photos.zx.sfx
 
 # Firmware and disk images
 zx l -snest firmware.pak                  # sections, kernel, rootfs files...
@@ -461,6 +468,7 @@ zx stands on the work of many people. Every file names its sources.
 | paq8px models (text, image, audio, x86, SSE...) | **Jan Ondrus**, **Marcio Pais**, **Andrew Epstein**, **Zoltan Gotthardt**, **Sebastian Lehmann** and the paq8px authors; **Florin Ghido** (audio predictor) |
 | cmix: LSTM, byte mixer, dictionary | **Byron Knoll** |
 | BIP-340 Schnorr signatures | **Pieter Wuille**, **Jonas Nick**, **Tim Ruffing** (port from Arca) |
+| wasm3, the WebAssembly interpreter of self-extracting archives | **Steven Massey**, **Volodymyr Shymanskyy** and contributors (MIT) |
 
 The full notices are in [LICENSE](LICENSE). 7-Zip is a registered
 trademark of Igor Pavlov; zx is not affiliated with or endorsed by him.

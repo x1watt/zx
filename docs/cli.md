@@ -174,6 +174,48 @@ hours of work); its `compression` pins those settings for the update.
 The synchronous building blocks (`ZxWriter`,
 `ZxArchiveReader`, `ZxHandler`, `Tlsh`) are exported by `package:zx/zx.dart`.
 
+### Self-extracting archives: `-sfx`
+
+`zx a -sfx[CPUS] NAME files...` writes `NAME.zx.sfx` (the name gets
+`.zx.sfx` when it has another ending): a .zx archive behind a small
+POSIX sh program, which extracts it on a Linux machine where zx is not
+installed:
+
+```
+zx a -sfx backup docs/            # backup.zx.sfx, for x86_64 and aarch64
+zx a -sfxall -psecret backup docs/   # every CPU; encrypted
+zx a -sfxx86_64,riscv64 -m0=zcm:auto backup docs/
+
+sh backup.zx.sfx                  # extract here (./backup.zx.sfx too)
+sh backup.zx.sfx -o out -y        # into out/, overwriting
+sh backup.zx.sfx -l               # list; -t tests; -h help
+sh backup.zx.sfx -psecret docs/a.txt   # one file, password given
+```
+
+- `CPUS`: a list of `x86_64`, `aarch64`, `riscv64` and `arm` (32-bit,
+  hard float) separated by commas, or `all`; by default x86_64 and
+  aarch64. Each CPU adds an engine of 97 to 125 KB; the decoder adds
+  433 KB, whatever the CPUs. A machine of another CPU gets a message
+  (zx itself still reads the archive).
+- The archive is an ordinary .zx file after the stub: `zx l`, `zx x` and
+  `zx t` read `NAME.zx.sfx` (and the app opens it), but it can not be
+  updated: write a new one.
+- What the decoder reads: store, LZMA, LZMA2, zcm (every level, the LSTM
+  and the dictionary), the branch filters and Delta; encryption; solid
+  and deduplicated blocks; the CRC-32C, xxHash64 and SHA-256 checks. zx
+  refuses `-sfx` with another codec (PPMd, zpaq, BZip2...), BLAKE2sp
+  checks, volumes, a pipe, or a zcm model above 2 GiB (`-mmem=2g`): the
+  decoder runs in 32-bit WebAssembly. Use the default (LZMA2) for big
+  archives: the decoder is interpreted, LZMA2 extracts at several MB/s,
+  zcm at about 110 KB/s at level 1, 21 KB/s at level 2, 1.4 KB/s at
+  level 6 and 0.3 KB/s at level 9 (docs/performance.md).
+- The stub needs only `sh`, `uname`, `dd`, `chmod` and `mkdir` (or
+  `mktemp`): it copies the engine of the machine's CPU into a temporary
+  folder where a program may run (`$TMPDIR`, `/tmp`, `/var/tmp`,
+  `/dev/shm`, the home folder or the current folder) and removes it at
+  the end. Symbolic links are created after the files, and nothing is
+  written through a link or outside the output folder.
+
 ### Nested archives
 
 Firmware and disk images hold images inside images: a Reolink pak holds a

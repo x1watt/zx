@@ -742,6 +742,7 @@ ZxListing _readListing(_Opened o, {bool readOnly = false}) {
       fmt != 'Rar' &&
       fmt != 'Split' &&
       link.arcs.first.arcStreamOffset == 0 &&
+      !(zxArc?.h.isSelfExtracting ?? false) &&
       !(arc.errorInfo.thereIsTail && !arc.errorInfo.ignoreTail);
   if (arc.compoundOuterIndex >= 0) {
     // read in one pass here; an update decodes the tar to a temporary

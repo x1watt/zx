@@ -14,13 +14,16 @@ import '../common/method_props.dart';
 import '../format/archive_types.dart';
 import '../format/zx/zx_format.dart';
 import '../format/zx/zx_handler.dart';
+import '../format/zx/zx_sfx.dart' show zxSfxHasMarker;
 import '../io/streams.dart';
 import 'arc_handlers.dart';
 import 'common.dart';
 import 'zx_zcm_auto.dart';
 
-/// IsArc for .zx: the magic.
+/// IsArc for .zx: the magic, or the stub of a self-extracting archive
+/// (zx_sfx.dart; the handler finds the archive after it).
 int isArcZx(Uint8List p, int size) {
+  if (zxSfxHasMarker(p, size)) return 1;
   if (size < 8) {
     for (var i = 0; i < size; i++) {
       if (p[i] != zxMagic[i]) return 0;

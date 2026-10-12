@@ -30,6 +30,12 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
   multi-volume sets, block locations are a volume number plus an offset
   in that volume, and Footer offsets refer to the volume that holds the
   Footer (section 10).
+- A file may hold a single-file archive after a prefix (a
+  self-extracting archive of zx, `.zx.sfx`: a program, then the archive,
+  which ends the file). Offsets are then counted from the start of the
+  archive; a reader finds it from the last Footer (its length is the
+  distance from the archive start to the end of the file) and checks the
+  Header magic there.
 
 ## 2. Overall structure
 
