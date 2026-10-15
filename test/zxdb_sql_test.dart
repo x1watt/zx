@@ -312,6 +312,29 @@ final List<String> _queries = [
 
 // Scripts with writes: each ends with the query that is compared.
 final List<_Case> _scripts = [
+  // INSERT ... SELECT streams unless the source reads the target, and
+  // UPDATE / DELETE keep only rowids when they can: the results must not
+  // change (a statement never sees its own writes).
+  _Case('''CREATE TABLE t (id INTEGER PRIMARY KEY, a INT, b TEXT);
+CREATE INDEX tb ON t (b);
+INSERT INTO t (a, b) VALUES (1, 'x'), (2, 'y'), (3, 'z');
+INSERT INTO t (a, b) SELECT a + 10, b || b FROM t;
+INSERT INTO t (a, b) SELECT a + 100, b FROM t WHERE id IN (SELECT id FROM t WHERE a > 10);
+CREATE TABLE u (a INT, b TEXT);
+INSERT INTO u SELECT a, b FROM t WHERE a < 100;
+CREATE VIEW v AS SELECT a * 2 AS a, b FROM u;
+INSERT INTO u SELECT * FROM v;
+INSERT INTO u SELECT count(*), 'n' FROM u;''', 'SELECT * FROM u ORDER BY a, b'),
+  _Case('''CREATE TABLE t (id INTEGER PRIMARY KEY, a INT, b TEXT);
+INSERT INTO t (a, b) VALUES (1, 'x'), (2, 'y'), (3, 'z'), (4, 'w');
+UPDATE t SET a = a * 10, b = upper(b) WHERE a % 2 = 0;
+UPDATE t SET a = (SELECT max(a) FROM t) + a WHERE b = 'x';
+UPDATE t SET b = b || (SELECT count(*) FROM t WHERE a > 5);
+CREATE TABLE r (id INT, add_ INT);
+INSERT INTO r VALUES (1, 7), (3, 9);
+UPDATE t SET a = a + r.add_ FROM r WHERE r.id = t.id;
+DELETE FROM t WHERE a = (SELECT min(a) FROM t);
+DELETE FROM t WHERE id IN (SELECT id FROM t WHERE b LIKE 'Z%');''', 'SELECT * FROM t ORDER BY id'),
   _Case('''CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT UNIQUE, n INT DEFAULT 0);
 INSERT INTO t (a) VALUES ('x'), ('y'), ('z');
 INSERT OR REPLACE INTO t (a, n) VALUES ('y', 5);

@@ -48,7 +48,7 @@ bool _sameBytes(Uint8List a, Uint8List b) {
 }
 
 /// The input of [zxEncodeBlockJob].
-class ZxEncodeArg {
+class ZxEncodeArg implements SyncJobBulk {
   final Uint8List data;
   final List<ZxCoderSpec> coders;
   final int checkType;
@@ -62,6 +62,16 @@ class ZxEncodeArg {
   final bool digest;
   const ZxEncodeArg(this.data, this.coders, this.checkType,
       [this.aesKey, this.macKey, this.digest = false]);
+
+  @override
+  Uint8List get bulk => data;
+
+  @override
+  Object withoutBulk() => withBulk(Uint8List(0));
+
+  @override
+  Object withBulk(Uint8List b) =>
+      ZxEncodeArg(b, coders, checkType, aesKey, macKey, digest);
 }
 
 /// An encoded block, before its header: the chain's coders with their
@@ -155,13 +165,22 @@ SyncJobResult zxEncodeBlockJob(Object? arg) =>
     zxEncodeBlock(arg as ZxEncodeArg).toResult();
 
 /// The input of [zxDecodeBlockJob].
-class ZxDecodeArg {
+class ZxDecodeArg implements SyncJobBulk {
   /// The block, header and payload, as read from the file.
   final Uint8List raw;
   final ZxChain chain;
   final Uint8List? aesKey;
   final Uint8List? macKey;
   const ZxDecodeArg(this.raw, this.chain, [this.aesKey, this.macKey]);
+
+  @override
+  Uint8List get bulk => raw;
+
+  @override
+  Object withoutBulk() => withBulk(Uint8List(0));
+
+  @override
+  Object withBulk(Uint8List b) => ZxDecodeArg(b, chain, aesKey, macKey);
 }
 
 /// Decodes one block read from the file (header and payload): checks the

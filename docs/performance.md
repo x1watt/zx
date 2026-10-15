@@ -659,7 +659,24 @@ zcm text runs at zcm's decode speed).
   Indexes.
 - Blocks cross isolates as `TransferableTypedData`, and the parallel
   encoder keeps at most one block per worker plus one in flight, so
-  memory is bounded by the number of workers, not by the input.
+  memory is bounded by the number of workers, not by the input. In the
+  synchronous pool (`sync_pool.dart`) a block goes to its worker by file
+  (`SyncJobBulk`), never in the spawn message: the VM keeps a spawn
+  message until the caller's event loop runs, so a long synchronous
+  operation kept every block it handed out (a 14 GB database fold grew
+  past 4 GB). 900 jobs of 256 KiB: 57 MiB flat, was 300 MiB and rising;
+  `zx a -mmt4` of 7 MB: 0.90 s either way, 110 MB instead of 120 MB.
+- zxdb statements over many rows: INSERT ... SELECT streams its source
+  when the SELECT does not read the target table; DELETE, and UPDATE
+  without FROM or subqueries in SET, keep only the rowids (8 bytes each)
+  between their two passes. Copying 2 million rows with INSERT ...
+  SELECT: peak 616 MB instead of 853 MB; UPDATE of all of them 647 MB
+  instead of 1009 MB (`tool/zxdb_dml_bench.dart`).
+- zxdb index writes in an explicit transaction: the statement undo log
+  records index entries without reading the tree (an entry written for a
+  row is new, every value is empty). 10 million random index keys in one
+  transaction: 149 s instead of 858 s, under 700 MB
+  (`tool/zxdb_bigtxn_bench.dart`).
 - The 7z extraction decodes each solid block once, in order, and writes
   through a 64 KB buffered `FileOutStream`.
 
@@ -684,9 +701,13 @@ zcm text runs at zcm's decode speed).
 - 7z compression on several isolates (LZMA2 blocks inside a folder,
   independent folders), see section 6 of `docs/architecture.md`.
 - Multi-block xz decoding in parallel.
-- .zx: the block results cross isolates through files in a temporary
-  folder (`sync_pool.dart`); on a slow disk a tmpfs `TMPDIR` avoids the
-  write and read of each decoded block.
+- .zx: the block inputs and results cross isolates through files in a
+  temporary folder (`sync_pool.dart`); on a slow disk a tmpfs `TMPDIR`
+  avoids the write and read of each block.
+- zxdb: the undo log of a statement inside an explicit transaction
+  (BEGIN ... COMMIT) holds an entry per key the statement writes, so one
+  statement of millions of rows there needs memory for all its keys.
+  Autocommit statements have no undo log.
 - Phones: not measured yet. On a phone keep the levels at 5 or below and
   `threads` at 4 or below.
 

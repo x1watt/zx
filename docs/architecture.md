@@ -300,8 +300,11 @@ caller renames the new file over the old one, as 7-Zip does.
     not have.
 - **Parallel .zx blocks.** The .zx handler codes blocks in parallel
   although it is synchronous: `SyncJobPool` (`sync_pool.dart`) spawns an
-  isolate per block job with the block in the spawn message (isolates
-  start without the event loop of the caller), and the isolate writes its
+  isolate per block job (isolates start without the event loop of the
+  caller). The block itself goes by file (`SyncJobBulk`, `<job>.in`), not
+  in the spawn message: the VM keeps a spawn message until the caller's
+  event loop runs, so blocks sent that way stayed in memory for the whole
+  operation. The isolate writes its
   result to a file in a private temporary folder, which the handler polls
   while it waits (sleeps of 0.1 to 20 ms). At most `threads` jobs are in
   flight; results are written in order, so the output is the same with

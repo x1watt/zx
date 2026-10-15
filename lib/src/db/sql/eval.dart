@@ -50,7 +50,28 @@ class UndoLog {
   }
 }
 
-class _UndoTree implements ZxWritableTree {
+/// Writes to index trees whose keys end with the rowid: an entry written
+/// for a row is new (the row's old entries were deleted first), and every
+/// value is empty, so the undo log of a statement needs no read of the
+/// tree (a read of a cold page per key made large imports in an explicit
+/// transaction slow down as the index grew).
+abstract interface class IndexTreeWrites {
+  /// Puts [key], known to be absent, with an empty value.
+  void putNewEntry(Uint8List key);
+
+  /// Deletes [key], whose value is empty if it exists.
+  bool deleteEntry(Uint8List key);
+}
+
+/// [IndexTreeWrites] for any tree: [t]'s own when it has them.
+void putNewIndexEntry(ZxWritableTree t, Uint8List key) => t is IndexTreeWrites
+    ? (t as IndexTreeWrites).putNewEntry(key)
+    : t.put(key, Uint8List(0));
+
+bool deleteIndexEntry(ZxWritableTree t, Uint8List key) =>
+    t is IndexTreeWrites ? (t as IndexTreeWrites).deleteEntry(key) : t.delete(key);
+
+class _UndoTree implements ZxWritableTree, IndexTreeWrites {
   final ZxWritableTree inner;
   final UndoLog log;
   _UndoTree(this.inner, this.log);
@@ -82,6 +103,19 @@ class _UndoTree implements ZxWritableTree {
   }
 
   @override
+  void putNewEntry(Uint8List key) {
+    log.entries.add((inner, key, null));
+    inner.put(key, Uint8List(0));
+  }
+
+  @override
+  bool deleteEntry(Uint8List key) {
+    if (!inner.delete(key)) return false;
+    log.entries.add((inner, key, Uint8List(0)));
+    return true;
+  }
+
+  @override
   int deleteRange({Uint8List? from, Uint8List? to}) {
     final c = inner.scan(from: from, to: to);
     var n = 0;
@@ -109,6 +143,11 @@ class ExecCtx implements ZxFunctionContext {
   @override
   final int nowNs;
   UndoLog? undo;
+
+  /// Base tables the planner resolved for this statement (lowercase
+  /// names, current generation only), so INSERT ... SELECT can tell
+  /// whether its source reads the table it writes.
+  final Set<String> tablesRead = {};
 
   /// Per execution caches (uncorrelated subqueries, materialized CTEs).
   final Map<Object, Object?> cache = Map.identity();

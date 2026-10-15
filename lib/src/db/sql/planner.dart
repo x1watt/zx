@@ -50,6 +50,28 @@ class _FnIter extends RowIter {
   void close() => _close?.call();
 }
 
+/// The rows of [it] one at a time (closes it at the end or when the
+/// iteration stops early).
+Iterable<List<Object?>> stream(RowIter it) sync* {
+  try {
+    while (it.moveNext()) {
+      yield it.current;
+    }
+  } finally {
+    it.close();
+  }
+}
+
+/// Whether [e] contains a subquery (which may read any table).
+bool hasSubquery(Ev e) {
+  if (e is ScalarSubEv || e is ExistsEv || e is InSubEv) return true;
+  var found = false;
+  e.children((c) {
+    if (!found && hasSubquery(c)) found = true;
+  });
+  return found;
+}
+
 List<List<Object?>> drain(RowIter it) {
   final out = <List<Object?>>[];
   try {
@@ -2194,6 +2216,7 @@ class Planner {
     }
     if (s.history) return _historySource(s, alias, slot);
     final td = catalog.table(s.name);
+    if (td != null && !asOf) ctx.tablesRead.add(td.name.toLowerCase());
     if (td != null) {
       final n = td.columns.length;
       final info = SourceInfo(

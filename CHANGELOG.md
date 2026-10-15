@@ -1,5 +1,41 @@
 ## Unreleased
 
+- **zxdb: CREATE INDEX on a filled table in bounded memory.** It held
+  every decoded row of the table before writing the index, about 4 GB for
+  a 7 million row table with a text column (an offline Wikipedia), until
+  the system killed it. It now streams the table and writes the keys in
+  sorted chunks of `indexBuildChunkBytes` (32 MiB), so each index leaf is
+  written once per chunk; unique checks still see every earlier key.
+- **zxdb: big transactions with random writes.** A tree decided once per
+  transaction whether its writes go through the delta layer, from its size
+  when first used, so a table created and filled in one transaction kept
+  writing its indexes straight into the B+tree: every spill rewrote the
+  same leaves again (6 million rows had written 7.7 GB). Such a tree now
+  moves to the delta layer within the transaction once it passes
+  `lsmMinEntries` with at least a quarter of its puts out of order (sorted
+  loads stay direct; not while one of its cursors is open). 3 million
+  random index keys in one transaction: 43 s instead of 110 s.
+- **zxdb: index writes no longer read the tree for the undo log.** Inside
+  an explicit transaction each statement logged the old value of every
+  key it wrote, which for index entries meant reading a cold page per
+  key; an index entry written for a row is always new and every index
+  value is empty, so nothing needs reading. 10 million random index keys
+  in one transaction: 149 s instead of 858 s, under 700 MB.
+- **zxdb: INSERT ... SELECT, UPDATE and DELETE use less memory.** INSERT
+  ... SELECT streams its rows when the SELECT does not read the table it
+  writes (it still collects them first when it does, so a statement never
+  sees its own rows); DELETE, and UPDATE without FROM or subqueries in
+  SET, keep only the rowids between their two passes. 2 million rows:
+  616 MB instead of 853 MB to copy, 647 MB instead of 1009 MB to update
+  (`tool/zxdb_dml_bench.dart`).
+- **Worker isolates of synchronous operations no longer keep their
+  input.** The VM holds a spawn message until the caller's event loop
+  runs, and the synchronous pool (folds, the .zx writer and reader) never
+  lets it run, so every block handed to a worker stayed in memory until
+  the operation ended: a fold of a 14 GB database grew past 4 GB and was
+  killed. Block arguments (`ZxEncodeArg`, `ZxDecodeArg`, any
+  `SyncJobBulk`) now reach the worker through a file next to its result
+  file; 900 jobs of 256 KiB: 57 MiB flat instead of 300 MiB and rising.
 - **Self-extracting archives** (docs/cli.md, `-sfx`): `zx a -sfx NAME
   files` writes `NAME.zx.sfx`, which `sh NAME.zx.sfx` extracts (`-o`,
   `-l`, `-t`, `-p`, `-y`) on a Linux machine without zx, on x86_64,

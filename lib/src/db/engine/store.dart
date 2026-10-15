@@ -2040,6 +2040,26 @@ class _DbTxn implements ZxWriteTxn, PageWriter, BlobStore, RunFilters {
   }
 }
 
+/// A cursor that reports its close (open cursors of a tree).
+class _CountedCursor implements ZxCursor {
+  final ZxCursor _c;
+  void Function()? _onClose;
+  _CountedCursor(this._c, this._onClose);
+
+  @override
+  bool moveNext() => _c.moveNext();
+  @override
+  Uint8List get key => _c.key;
+  @override
+  Uint8List get value => _c.value;
+  @override
+  void close() {
+    _c.close();
+    _onClose?.call();
+    _onClose = null;
+  }
+}
+
 class _TxnTree implements ZxWritableTree, ZxLengthEstimate {
   final _DbTxn txn;
   final TreeMeta meta;
@@ -2048,8 +2068,19 @@ class _TxnTree implements ZxWritableTree, ZxLengthEstimate {
   bool _dropped = false;
 
   /// Writes go to the delta layer (delta.dart): a memtable, written as a
-  /// run at commit.
-  late final bool lsm = txn._lsmFor(meta);
+  /// run at commit. Decided when the tree is first used in the
+  /// transaction, and switched on later (see [_maybeSwitchToLsm]) when a
+  /// tree that started small takes many random writes.
+  late bool lsm = txn._lsmFor(meta);
+
+  // cursors of this tree that are open (a switch to the delta layer waits
+  // for none: an open TreeCursor follows the base tree only)
+  int _openCursors = 0;
+
+  // the key of the last direct put, and the direct puts since then that
+  // were not after the one before (random order)
+  Uint8List? _lastPut;
+  int _randomPuts = 0;
   SplayTreeMap<Uint8List, Uint8List>? _mem;
   int _memBytes = 0;
 
@@ -2148,8 +2179,11 @@ class _TxnTree implements ZxWritableTree, ZxLengthEstimate {
   ZxCursor scan({Uint8List? from, Uint8List? to, bool reverse = false}) {
     _check();
     if (!lsm) {
-      return TreeCursor(() => txn, () => _root, _check,
-          mods: () => _mods, from: from, to: to, reverse: reverse);
+      _openCursors++;
+      return _CountedCursor(
+          TreeCursor(() => txn, () => _root, _check,
+              mods: () => _mods, from: from, to: to, reverse: reverse),
+          () => _openCursors--);
     }
     return MergeCursor(
         (f, t) => deltaSources(
@@ -2212,6 +2246,34 @@ class _TxnTree implements ZxWritableTree, ZxLengthEstimate {
       txn._depth--;
     }
     _changed();
+    _maybeSwitchToLsm(key);
+  }
+
+  /// A tree written directly that has grown past lsmMinEntries within
+  /// this transaction and takes keys in random order (an index filled by
+  /// a big import, a table loaded unsorted) moves its next writes to the
+  /// delta layer, as it would in the next transaction: random writes to a
+  /// large B+tree change a leaf per key, and a big transaction spills and
+  /// rewrites those leaves again and again (docs/zxdb-design.md 11.2).
+  /// Sorted loads (each key after the last) stay direct.
+  void _maybeSwitchToLsm(Uint8List key) {
+    final last = _lastPut;
+    if (last != null && zxCompareKeys(key, last) <= 0) _randomPuts++;
+    _lastPut = Uint8List.fromList(key);
+    final o = txn.store.options;
+    if (o.lsmMinEntries < 0 ||
+        meta.name == zxDbBlobTree ||
+        _openCursors > 0 ||
+        txn._depth > 0) {
+      return;
+    }
+    final n = _writer?.count ?? meta.count;
+    // at least a quarter of the puts out of order, over a tree that big
+    if (n < o.lsmMinEntries || _randomPuts * 4 < _mods) return;
+    lsm = true;
+    meta.countExact = true; // direct writes kept it exact
+    _baseLastKnown = false;
+    _lastPut = null;
   }
 
   @override

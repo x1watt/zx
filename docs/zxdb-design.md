@@ -476,6 +476,26 @@ architecture: `docs/architecture.md` section 17.
   statements CREATE KV STORE (options `ttl`, `compression`, `page_size`),
   DROP KV STORE and VACUUM [ULTRA]. The commit hooks are the store's
   (`ZxDbStore.beforeCommit`), so SQL commits run them too.
+- **CREATE INDEX on a filled table** streams the table's rows and writes
+  the index keys in sorted chunks of at most `indexBuildChunkBytes`
+  (32 MiB, `zx_sql.dart`): memory stays bounded whatever the table size,
+  and a sorted chunk touches each index leaf once. (It used to decode
+  every row into memory first: about 4 GB for 7.3 million pages with
+  their text.)
+- **Switch to the delta layer within a transaction.** A tree that is
+  written directly (it was small when the transaction first used it)
+  moves to the delta layer once it passes `lsmMinEntries` and at least a
+  quarter of its puts came out of key order, and none of its cursors is
+  open (a TreeCursor follows the base tree only). Without it a big import
+  into a new table rewrote its index leaves at every spill: 6 million
+  random keys had written 7.7 GB; with it (and the undo log that writes
+  index entries without reading them, `IndexTreeWrites` in eval.dart), 10
+  million take 149 s and under 700 MB (`tool/zxdb_bigtxn_bench.dart`).
+- **Fold memory.** A fold is one synchronous call that hands page groups
+  to worker isolates (sync_pool.dart); their inputs travel by file
+  (`SyncJobBulk`), because a spawn message stays alive until the caller's
+  event loop runs, which it does not during the fold. Before that a fold
+  kept every group it had coded: 4 GB into a 14 GB fold.
 - **Group commit** is a pending transaction of `ZxDatabase` (the writer
   lock is held while it is pending), committed when its window has
   passed (next write, a timer, `flush`, `close`).

@@ -130,6 +130,10 @@ class ZxSqlStatement {
   List<List<Object?>> select([Object? params]) => query(params).toList();
 }
 
+/// Memory for the sorted chunks of CREATE INDEX on a filled table (keys
+/// plus about 64 bytes of overhead each).
+int indexBuildChunkBytes = 32 << 20;
+
 class ZxSql {
   final ZxStore store;
   final SqlEnv _env;
@@ -688,28 +692,42 @@ class _Ddl {
     td.indexes.add(ix);
     try {
       Catalog.putIndex(txn, ix, Catalog.indexSql(ix, td));
-      // Populate.
+      // Populate: stream the table and write the keys in sorted chunks of
+      // bounded size. Holding every row (the old way) took gigabytes on a
+      // table of millions of rows with text columns; a sorted chunk touches
+      // each index leaf once, which random order would not.
       final pl = Planner(ctx);
       final w = TableWriter(ctx, pl, td);
       final k = td.indexes.length - 1;
+      final chunk = <(Uint8List, List<Object?>?, int)>[];
+      var chunkBytes = 0;
+      void flush() {
+        chunk.sort((a, b) => zxCompareKeys(a.$1, b.$1));
+        for (final (key, kv, rowid) in chunk) {
+          if (kv != null && w.conflict(k, kv, rowid) != null) {
+            throw ZxDbException(w.uniqueMessage(k), ZxDbError.constraint);
+          }
+          putNewIndexEntry(w.itrees[k], key);
+        }
+        chunk.clear();
+        chunkBytes = 0;
+      }
+
       final c = w.tree.scan();
-      final rowsList = <List<Object?>>[];
       try {
         while (c.moveNext()) {
-          rowsList.add(w.rd.decode(decodeRowid(c.key), c.value));
+          final rowid = decodeRowid(c.key);
+          final kv = w.keyValues(k, w.rd.decode(rowid, c.value));
+          if (kv == null) continue;
+          final key = w.indexKey(k, kv, rowid);
+          chunk.add((key, ix.unique ? kv : null, rowid));
+          chunkBytes += key.length + 64;
+          if (chunkBytes >= indexBuildChunkBytes) flush();
         }
       } finally {
         c.close();
       }
-      for (final row in rowsList) {
-        final kv = w.keyValues(k, row);
-        if (kv == null) continue;
-        final rowid = row.last as int;
-        if (ix.unique && w.conflict(k, kv, rowid) != null) {
-          throw ZxDbException(w.uniqueMessage(k), ZxDbError.constraint);
-        }
-        w.itrees[k].put(w.indexKey(k, kv, rowid), Uint8List(0));
-      }
+      flush();
     } finally {
       td.indexes.removeLast();
     }

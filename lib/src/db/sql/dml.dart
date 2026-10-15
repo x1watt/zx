@@ -177,7 +177,7 @@ class TableWriter {
     tree.put(encodeRowid(rowid), recordOf(row));
     for (var i = 0; i < td.indexes.length; i++) {
       final kv = keyValues(i, row);
-      if (kv != null) itrees[i].put(indexKey(i, kv, rowid), Uint8List(0));
+      if (kv != null) putNewIndexEntry(itrees[i], indexKey(i, kv, rowid));
     }
   }
 
@@ -185,7 +185,7 @@ class TableWriter {
     tree.delete(encodeRowid(rowid));
     for (var i = 0; i < td.indexes.length; i++) {
       final kv = keyValues(i, row);
-      if (kv != null) itrees[i].delete(indexKey(i, kv, rowid));
+      if (kv != null) deleteIndexEntry(itrees[i], indexKey(i, kv, rowid));
     }
   }
 
@@ -357,11 +357,14 @@ class Dml {
         if (!td.columns[i].hidden) targets.add(i);
       }
     }
-    // Source rows.
-    List<List<Object?>> source;
+    // Source rows: streamed when the SELECT does not read the table being
+    // written (it can not see its own inserts then), else collected
+    // first, as SQLite's semantics need.
+    Iterable<List<Object?>> source;
     if (st.defaultValues) {
       source = [[]];
     } else {
+      ctx.tablesRead.clear();
       final plan = pl.planSelect(st.select!, null, _ctes(st.withClause));
       if (plan.columns.length != targets.length) {
         if (st.columns == null) {
@@ -369,7 +372,9 @@ class Dml {
         }
         throw err('${plan.columns.length} values for ${targets.length} columns');
       }
-      source = drain(plan.open(null));
+      source = ctx.tablesRead.contains(td.name.toLowerCase())
+          ? drain(plan.open(null))
+          : stream(plan.open(null));
     }
     final w = TableWriter(ctx, pl, td);
     // Defaults evaluated per row (they may be CURRENT_TIMESTAMP).
@@ -661,16 +666,31 @@ class Dml {
     final alias = st.alias ?? td.name;
     final n = td.columns.length;
     late List<int> cols;
+    late List<Ev> setEvs;
+    // Without FROM and subqueries the new values depend only on the old
+    // row, so the scan keeps just the rowids (8 bytes each) and the values
+    // are computed in the second pass; otherwise each matching row keeps
+    // its new values, as before.
+    var rowidsOnly = st.from == null;
     final scan = pl.planDmlScan(td, alias, st.where, st.from, (sc) {
       final sets = _compileSets(st.sets, td, sc);
       cols = [for (final s in sets) s.$1];
+      setEvs = [for (final s in sets) s.$2];
+      // A new rowid moves rows while the second pass runs: keep the
+      // values computed by the scan then.
+      if (setEvs.any(hasSubquery) ||
+          cols.any((c) => c == n || c == td.ipk)) {
+        rowidsOnly = false;
+      }
       sc.sources[0].used.add(sc.sources[0].rowidCol);
       return [
         ColEv(0, 0, sc.sources[0].rowidCol)..aff = Affinity.integer,
-        for (final s in sets) s.$2,
+        if (!rowidsOnly) ...setEvs,
       ];
     }, _ctes(st.withClause));
-    final hits = drain(scan());
+    final ids = rowidsOnly ? (RowidList()..addAll(stream(scan()))) : null;
+    final hits = ids == null ? drain(scan()) : const <List<Object?>>[];
+    final sf = Frame(ctx, 1, null);
     final w = TableWriter(ctx, pl, td);
     List<Ev>? retEvs;
     List<String> retNames = const [];
@@ -683,15 +703,18 @@ class Dml {
     final retRows = <List<Object?>>[];
     var changes = 0;
     final seen = <int>{};
-    for (final h in hits) {
-      final rowid = h[0] as int;
-      if (!seen.add(rowid)) continue;
+    final count = ids?.length ?? hits.length;
+    for (var i = 0; i < count; i++) {
+      final h = ids == null ? hits[i] : null;
+      final rowid = ids == null ? h![0] as int : ids[i];
+      if (ids == null && !seen.add(rowid)) continue;
       final old = w.rd.read(rowid);
       if (old == null) continue;
       final nw = List<Object?>.of(old);
+      if (ids != null) sf.rows[0] = old;
       for (var k = 0; k < cols.length; k++) {
         final c = cols[k];
-        final v = h[k + 1];
+        final v = ids == null ? h![k + 1] : setEvs[k].eval(sf);
         if (c == n) {
           nw[n] = v;
           if (td.ipk >= 0) nw[td.ipk] = v;
@@ -748,12 +771,13 @@ class Dml {
       sc.sources[0].used.add(sc.sources[0].rowidCol);
       return [ColEv(0, 0, sc.sources[0].rowidCol)..aff = Affinity.integer];
     }, _ctes(st.withClause));
-    final hits = drain(scan());
+    // Rowids only, 8 bytes each: all are found before any row goes.
+    final ids = RowidList()..addAll(stream(scan()));
     final rf = Frame(ctx, 1, null);
     final retRows = <List<Object?>>[];
     var changes = 0;
-    for (final h in hits) {
-      final rowid = h[0] as int;
+    for (var i = 0; i < ids.length; i++) {
+      final rowid = ids[i];
       final old = w.rd.read(rowid);
       if (old == null) continue;
       if (retEvs != null) {
@@ -948,4 +972,26 @@ class Dml {
     ctx.nChanges = rows.length;
     return DmlResult(rows.length);
   }
+}
+
+/// Rowids in chunks of typed memory (8 bytes each), in the order added.
+class RowidList {
+  static const _bits = 16;
+  final _chunks = <Int64List>[];
+  int length = 0;
+
+  void add(int v) {
+    if (length == _chunks.length << _bits) _chunks.add(Int64List(1 << _bits));
+    _chunks[length >> _bits][length & ((1 << _bits) - 1)] = v;
+    length++;
+  }
+
+  /// Adds the first column (the rowid) of each row.
+  void addAll(Iterable<List<Object?>> rows) {
+    for (final r in rows) {
+      add(r[0] as int);
+    }
+  }
+
+  int operator [](int i) => _chunks[i >> _bits][i & ((1 << _bits) - 1)];
 }

@@ -33,6 +33,26 @@ class SyncJobResult {
   SyncJobResult(this.data, [Uint8List? meta]) : meta = meta ?? Uint8List(0);
 }
 
+/// An argument with one large byte buffer. A job that runs in a worker
+/// isolate gets the buffer through a file instead of the spawn message:
+/// the VM keeps a spawn message alive until the event loop of the caller
+/// runs, which a synchronous caller never lets happen, so a long
+/// synchronous operation (a fold of gigabytes, a large archive) kept every
+/// block it had handed out (measured: memory grew by the bytes coded).
+abstract interface class SyncJobBulk {
+  /// The buffer that travels by file.
+  Uint8List get bulk;
+
+  /// This argument without its buffer (sent in the spawn message).
+  Object withoutBulk();
+
+  /// This argument with [b] as its buffer (in the worker).
+  Object withBulk(Uint8List b);
+}
+
+/// Buffers smaller than this travel in the spawn message.
+const int syncJobBulkMin = 4096;
+
 /// A job function: runs in a worker isolate (or inline). [arg] and the
 /// closure must be sendable to an isolate (typed data, numbers, strings,
 /// plain objects of them).
@@ -107,8 +127,19 @@ class SyncJobPool {
     final path = '$dir${Platform.pathSeparator}$ticket';
     final p = _Pending(ticket, path);
     _pending[ticket] = p;
+    var message = arg;
+    var bulk = false;
+    if (arg is SyncJobBulk && arg.bulk.length >= syncJobBulkMin) {
+      try {
+        File('$path.in').writeAsBytesSync(arg.bulk);
+        message = arg.withoutBulk();
+        bulk = true;
+      } on FileSystemException {
+        // sent in the message after all
+      }
+    }
     try {
-      unawaited(Isolate.spawn(_jobEntry, (path, fn, arg)).then((_) {},
+      unawaited(Isolate.spawn(_jobEntry, (path, fn, message, bulk)).then((_) {},
           onError: (Object e) {
         // reported through the missing start file (see take)
       }));
@@ -232,10 +263,16 @@ SyncJobResult _decode(Uint8List b) {
   throw SevenZipException(msg, SevenZipError.io);
 }
 
-void _jobEntry((String, SyncJobFn, Object?) m) {
-  final (path, fn, arg) = m;
+void _jobEntry((String, SyncJobFn, Object?, bool) m) {
+  final (path, fn, message, bulk) = m;
+  var arg = message;
   try {
     File('$path.s').writeAsBytesSync(const []);
+    if (bulk) {
+      final f = File('$path.in');
+      arg = (message as SyncJobBulk).withBulk(f.readAsBytesSync());
+      f.deleteSync();
+    }
   } on FileSystemException {
     return; // the pool is gone
   }
