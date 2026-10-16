@@ -84,6 +84,14 @@ class RedirectCachingTransport implements RangeTransport {
   /// The URL requests go to now (the original one when none is cached).
   String get target => _direct ?? url;
 
+  /// Takes [answeredBy], the URL that answered a request made elsewhere
+  /// (the parallel fetch of a warm set), as the direct URL.
+  void remember(String answeredBy) {
+    if (answeredBy.isEmpty || answeredBy == url) return;
+    _direct = answeredBy;
+    _expires = signedUrlExpiry(answeredBy);
+  }
+
   @override
   RangeResponse fetch(int start, int endInclusive) {
     final d = _direct;
@@ -186,6 +194,29 @@ class HttpRangeInStream implements ClosableInStream {
   }
 
   bool _has(int index) => _pinned.containsKey(index) || _lru.containsKey(index);
+
+  /// Bytes put into the cache by [preload].
+  int preloaded = 0;
+
+  /// Puts [bytes], fetched elsewhere from [offset] (the warm set), into the
+  /// cache: every whole block inside them, and the file's last block when
+  /// they reach the end. Blocks already cached are kept.
+  void preload(int offset, Uint8List bytes) {
+    final end = offset + bytes.length;
+    for (var i = (offset + blockSize - 1) ~/ blockSize;; i++) {
+      final s = i * blockSize;
+      if (s >= length) break;
+      final e = s + blockSize < length ? s + blockSize : length;
+      if (e > end) break;
+      if (!_has(i)) {
+        _store(
+            i,
+            Uint8List.fromList(
+                Uint8List.sublistView(bytes, s - offset, e - offset)));
+        preloaded += e - s;
+      }
+    }
+  }
 
   /// Fetches the blocks [first] to [last] (missing ones only, in runs).
   void _fetchBlocks(int first, int last) {

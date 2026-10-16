@@ -1,5 +1,20 @@
 ## Unreleased
 
+- **Part sets: a warm set, fetched in parallel when a set opens (`zx parts
+  warm`).** A cold query over HTTP walks its trees one request after
+  another (about 10 per question, each 0.4 to 0.7 s on Hugging Face's
+  CDN). `zx parts warm MANIFEST -sql=... [-min=2] [-max=8m]` runs the
+  given queries cold, one by one, notes the blocks each reads, and writes
+  into the manifest (`"warm"`) the blocks that opening reads and that at
+  least -min queries share (the roots and upper levels of the trees). The
+  web engine fetches them in parallel (asynchronous fetch, 16 at a time)
+  when it opens the set, puts them in the parts' block caches and takes
+  the signed URL a redirect gave. English Wikipedia test database on
+  Hugging Face, four cold questions not used to record it: 14.3 s and 34
+  requests without a warm set; with one of 1.9 MB (blocks shared by 5 of
+  35 typical queries) open 0.75 s instead of 1.5 s and 8.9 s with 19
+  requests; with 9.9 MB (shared by 2) 6.5 s and 13 requests but 6.8 s to
+  open. `tool/web_check/remote_bench.sh` measures it.
 - **Web: URLs behind a redirect cost one round trip, not two.** Hosts
   such as Hugging Face answer every file request with a redirect to a
   signed CDN URL (valid an hour) and forbid caching the redirect, so each

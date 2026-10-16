@@ -322,6 +322,17 @@ can be cut (a database, an archive with later generations); the parts are
 plain slices, not volumes. `check` verifies sizes and SHA-256 sums,
 `join` writes the whole file back, `list` shows the parts.
 
+    zx parts warm MANIFEST -sql=SQL [-sql=SQL ...] [-sqlfile=FILE]
+                  [-min=2] [-max=8m] [-block=64k]
+
+records the warm set of a database in parts: it runs each query cold and
+writes into the manifest the blocks that opening the database reads and
+that at least `-min` queries share, up to `-max` bytes, in blocks of
+`-block` (the web engine's, 64 KiB). The web version fetches them in
+parallel when it opens the set, so the first questions skip the upper
+levels of the trees. Give it a few dozen queries of the kinds the app
+asks, with different values (other days, other titles).
+
 A set is read in place, read only: `zx sql FILE ...` opens the database
 of FILE.parts when FILE is missing, and `zx l FILE.parts` (or `x`, `t`)
 reads the archive through the manifest. The web version opens the URL of

@@ -600,12 +600,26 @@ class Engine {
     }
     final path = '/url/${_next++}/${libraryName(m.name)}';
     final made = _partStreams[path] = [];
-    _files.sources[path] = _Source(urlPartSet(m, url, XhrRangeTransport.new,
-        blockSize: blockSize ?? 64 << 10, created: made.add));
+    final set = urlPartSet(m, url, XhrRangeTransport.new,
+        blockSize: blockSize ?? 64 << 10, created: made.add);
+    _files.sources[path] = _Source(set);
+    Map<String, Object?>? warm;
+    if (m.warm.isNotEmpty) {
+      // the warm set, fetched in parallel (section 21); a failure only
+      // costs the speed-up: the blocks are read on demand instead
+      final sw = Stopwatch()..start();
+      try {
+        final (n, b) = await prefetchWarm(set, fetchRange);
+        warm = {'requests': n, 'bytes': b, 'ms': sw.elapsedMilliseconds};
+      } catch (e) {
+        warm = {'problem': '$e'};
+      }
+    }
     return {
       'access': UrlAccess.range.name,
       'size': m.size,
       'parts': m.parts.length,
+      if (warm != null) 'warm': warm,
       'path': path,
       'name': m.name,
     };

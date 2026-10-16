@@ -5,6 +5,8 @@
 // their block caches. Pure Dart apart from the transport, which the
 // engine gives (XhrRangeTransport) and tests fake.
 
+import 'dart:typed_data';
+
 import '../io/part_set.dart';
 import 'range_stream.dart';
 
@@ -28,10 +30,48 @@ PartSetInStream urlPartSet(ZxPartManifest m, String manifestUrl,
     int blockSize = 64 << 10,
     void Function(HttpRangeInStream s)? created}) {
   final urls = partUrls(m, manifestUrl);
+  // every part of the warm set stays open, or its blocks would be lost
+  final warmParts = {for (final r in m.warmRequests()) r.$1}.length;
   return PartSetInStream(m, (i) {
     final s = HttpRangeInStream(transport(urls[i]), m.parts[i].size,
         cacheBytes: cacheBytes, blockSize: blockSize);
     created?.call(s);
     return s;
-  }, maxOpen: maxOpen);
+  }, maxOpen: warmParts > maxOpen ? warmParts : maxOpen);
+}
+
+/// Fetches the warm set of the manifest of [set] (part set over
+/// [HttpRangeInStream]s, from [urlPartSet]) with [fetch], [parallel]
+/// requests at a time, and puts the blocks into the parts' caches; a
+/// redirect seen on the way is remembered by the part's transport.
+/// [fetch] gets a URL and an inclusive byte range and gives the bytes and
+/// the URL that answered. Returns the requests made and the bytes.
+Future<(int, int)> prefetchWarm(PartSetInStream set,
+    Future<(Uint8List, String?)> Function(String url, int start, int end) fetch,
+    {int parallel = 16}) async {
+  final reqs = set.manifest.warmRequests();
+  var bytes = 0;
+  for (var k = 0; k < reqs.length; k += parallel) {
+    final batch = reqs.skip(k).take(parallel).toList();
+    final got = await Future.wait([
+      for (final (part, off, len) in batch)
+        () async {
+          final s = set.partStream(part) as HttpRangeInStream;
+          final t = s.transport;
+          final url = t is RedirectCachingTransport ? t.target : null;
+          if (url == null) return null;
+          final (b, answeredBy) = await fetch(url, off, off + len - 1);
+          if (answeredBy != null && t is RedirectCachingTransport) {
+            t.remember(answeredBy);
+          }
+          return (s, off, b);
+        }(),
+    ]);
+    for (final g in got) {
+      if (g == null) continue;
+      g.$1.preload(g.$2, g.$3);
+      bytes += g.$3.length;
+    }
+  }
+  return (reqs.length, bytes);
 }

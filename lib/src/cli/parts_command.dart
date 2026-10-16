@@ -7,7 +7,10 @@
 //   zx parts check MANIFEST
 //   zx parts join MANIFEST OUT
 //   zx parts list MANIFEST
+//   zx parts warm MANIFEST -sql=SQL ... [-sqlfile=F] [-min=2] [-max=8m] [-block=64k]
 
+import '../db/warm_set.dart';
+import '../host/io.dart';
 import '../io/part_set.dart';
 import '../io/streams.dart' show SevenZipException;
 import 'globals.dart';
@@ -18,13 +21,18 @@ Usage: zx parts split [-size=SIZE] [-o DIR] FILE
        zx parts check MANIFEST
        zx parts join MANIFEST OUT
        zx parts list MANIFEST
+       zx parts warm MANIFEST -sql=SQL [-sql=SQL ...] [-sqlfile=FILE]
+                     [-min=2] [-max=8m] [-block=64k]
 Cuts FILE into parts of SIZE bytes (default 95m; suffixes k, m, g) named
 FILE.001, FILE.002, ... with a manifest FILE.parts listing their sizes and
 SHA-256 sums. zx reads a set in place: "zx sql FILE" opens it (read only)
 when FILE is missing, "zx l FILE.parts" lists it, and the web version
 opens the manifest's URL, reading only the parts and ranges a query
 needs. check verifies the parts, join writes the whole file again, list
-shows the parts.
+shows the parts. warm records the warm set of a database: the blocks that
+opening it and at least -min of the given queries read (run cold, one by
+one), up to -max bytes; it is written into the manifest, and the web
+version fetches it in parallel when it opens the set.
 ''';
 
 int? _size(String s) {
@@ -54,6 +62,8 @@ int runPartsCommand(List<String> args, CliIo io) {
   }
   final sub = args.first;
   var size = 95 << 20;
+  var block = 64 << 10, minHits = 2, maxBytes = 8 << 20;
+  final sqls = <String>[];
   String? outDir;
   final pos = <String>[];
   for (var i = 1; i < args.length; i++) {
@@ -65,6 +75,19 @@ int runPartsCommand(List<String> args, CliIo io) {
         return 1;
       }
       size = n;
+    } else if (a.startsWith('-sql=')) {
+      sqls.add(a.substring(5));
+    } else if (a.startsWith('-sqlfile=')) {
+      sqls.addAll(File(a.substring(9))
+          .readAsLinesSync()
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty && !l.startsWith('--')));
+    } else if (a.startsWith('-min=') && int.tryParse(a.substring(5)) != null) {
+      minHits = int.parse(a.substring(5));
+    } else if (a.startsWith('-max=') && _size(a.substring(5)) != null) {
+      maxBytes = _size(a.substring(5))!;
+    } else if (a.startsWith('-block=') && _size(a.substring(7)) != null) {
+      block = _size(a.substring(7))!;
     } else if (a == '-o' && i + 1 < args.length) {
       outDir = args[++i];
     } else if (a.startsWith('-') && a.length > 1) {
@@ -94,6 +117,16 @@ int runPartsCommand(List<String> args, CliIo io) {
       case 'join' when pos.length == 2:
         zxJoinParts(pos[0], pos[1]);
         out('${readPartManifest(pos[0]).size} bytes written to ${pos[1]}\n');
+        return 0;
+      case 'warm' when pos.length == 1 && sqls.isNotEmpty:
+        final r = zxRecordWarmSet(pos[0], sqls,
+            blockSize: block, minHits: minHits, maxBytes: maxBytes);
+        File(pos[0]).writeAsStringSync(r.manifest.toJsonText());
+        out('warm set: ${r.manifest.warm.length} ranges, '
+            '${r.manifest.warmBytes} bytes (${r.openBlocks} blocks to open, '
+            '${r.sharedBlocks} shared by at least $minHits queries'
+            '${r.leftOut > 0 ? ', ${r.leftOut} left out over -max' : ''}); '
+            'written to ${pos[0]}\n');
         return 0;
       case 'list' when pos.length == 1:
         final m = readPartManifest(pos[0]);

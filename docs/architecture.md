@@ -1467,6 +1467,22 @@ version queries in place.
   pays one redirect per hour. `serve.mjs` has a `redirect` mode for the
   browser test. Everything after that (`db.open`, `db.sql`, `open`)
   is unchanged: the engine's paths hide that the source is in parts.
+- **Warm set** (`lib/src/db/warm_set.dart`, `zx parts warm`): the
+  manifest may list byte ranges (`"warm": [[offset, length], ...]`) that
+  readers need first. They are recorded natively: the database is opened
+  through a stream that notes the blocks read (in the web engine's block
+  size), each given query runs with the store's caches cleared, and the
+  blocks of the opening plus those read by at least `-min` queries are
+  kept (most shared first, up to `-max` bytes), merged into ranges. A leaf
+  read by one query only is left out, so the set is the shared upper
+  levels, not the answers of the sample queries. The web engine's
+  `prefetchWarm` (`url_parts.dart`) fetches the ranges with asynchronous
+  `fetch` (16 at a time, so one round trip for a few dozen ranges),
+  `HttpRangeInStream.preload` puts the whole blocks into the caches, and
+  `RedirectCachingTransport.remember` takes the URL that answered; the
+  parts of the warm set stay open. A failed prefetch is only reported
+  (`warm.problem` in the answer of `url`); the blocks are then read on
+  demand.
 - **Tests.** `test/part_set_test.dart` (boundaries, the manifest checks,
   split, check and join, a database queried from parts natively and over
   a fake HTTP transport with parts on two sites, the CLI);

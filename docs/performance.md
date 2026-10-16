@@ -776,6 +776,14 @@ and the server on this machine), docs/architecture.md section 20.
   the 33 parts. Measured on the VM over a fake transport reading the part
   files (one request per run of missing blocks); a browser adds about one
   round trip per request. Splitting the 3.2 GB file: 43 s.
+- Hugging Face (a 3.2 GB database as one part, headless Chromium here
+  in Germany, `tool/web_check/remote_bench.sh`): a range request costs
+  0.4 to 0.7 s whatever its size (4 KiB to 4 MiB; first byte after
+  0.17 s, then the Xet CDN assembles the range; 0.35 s for a range the
+  CDN has already). Four cold questions: 14.3 s and 34 requests without a
+  warm set; with the warm set of 1.9 MB (15 ranges fetched in parallel,
+  0.75 s at open) 8.9 s and 19 requests; with 9.9 MB 6.5 s and 13
+  requests but 6.8 s to open. Warm questions: 1 ms.
 - Uploaded files are read in 1 MiB blocks with `FileReaderSync` (8 MiB of
   cache per file): nothing is copied whole, so a file of several GB opens
   like a small one.

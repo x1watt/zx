@@ -11,7 +11,11 @@
 // The manifest (JSON, UTF-8):
 //   {"zxParts": 1, "name": "NAME", "size": TOTAL, "partSize": P,
 //    "parts": [{"file": "NAME.001", "size": P, "sha256": "..."}, ...]}
-// Every part but the last has exactly partSize bytes. A part's "file" is
+// Every part but the last has exactly partSize bytes. An optional
+// "warm": [[OFFSET, LENGTH], ...] lists byte ranges of the whole file that
+// readers almost always need first (the warm set: the upper levels of a
+// database's trees, recorded by `zx parts warm`); the web engine fetches
+// them in parallel when it opens the set. A part's "file" is
 // a path relative to the manifest (or a URL, relative or absolute, when
 // the set is read over HTTP), so parts may sit in other folders, or on
 // other sites of the same origin.
@@ -50,7 +54,11 @@ class ZxPartManifest {
   final int partSize;
   final List<ZxPart> parts;
 
-  ZxPartManifest(this.name, this.size, this.partSize, this.parts) {
+  /// The warm set: (offset, length) ranges of the whole file, sorted.
+  final List<(int, int)> warm;
+
+  ZxPartManifest(this.name, this.size, this.partSize, this.parts,
+      {this.warm = const []}) {
     if (partSize <= 0) throw _bad('partSize must be positive');
     var total = 0;
     for (var i = 0; i < parts.length; i++) {
@@ -65,6 +73,36 @@ class ZxPartManifest {
     if (total != size) {
       throw _bad('the parts add up to $total bytes, not $size');
     }
+    for (final (o, n) in warm) {
+      if (o < 0 || n <= 0 || o + n > size) {
+        throw _bad('warm range $o+$n is outside the file');
+      }
+    }
+  }
+
+  /// The same manifest with another warm set.
+  ZxPartManifest withWarm(List<(int, int)> w) =>
+      ZxPartManifest(name, size, partSize, parts, warm: w);
+
+  int get warmBytes => warm.fold(0, (a, r) => a + r.$2);
+
+  /// The warm set as requests per part: (part index, offset in the part,
+  /// length), a range that crosses a part boundary cut in two.
+  List<(int, int, int)> warmRequests() {
+    final out = <(int, int, int)>[];
+    for (final (o, n) in warm) {
+      var at = o, left = n;
+      while (left > 0) {
+        final i = at ~/ partSize;
+        final inPart = at - i * partSize;
+        final room = parts[i].size - inPart;
+        final k = left < room ? left : room;
+        out.add((i, inPart, k));
+        at += k;
+        left -= k;
+      }
+    }
+    return out;
   }
 
   static SevenZipException _bad(String m) =>
@@ -87,8 +125,13 @@ class ZxPartManifest {
           ZxPart((p as Map)['file'] as String, p['size'] as int,
               p['sha256'] as String?),
       ];
+      final warm = [
+        for (final r in (j['warm'] as List?) ?? const [])
+          ((r as List)[0] as int, r[1] as int),
+      ];
       return ZxPartManifest(
-          j['name'] as String, j['size'] as int, j['partSize'] as int, parts);
+          j['name'] as String, j['size'] as int, j['partSize'] as int, parts,
+          warm: warm);
     } on TypeError {
       throw _bad('a field is missing or of the wrong type');
     }
@@ -100,6 +143,10 @@ class ZxPartManifest {
         'size': size,
         'partSize': partSize,
         'parts': [for (final p in parts) p.toJson()],
+        if (warm.isNotEmpty)
+          'warm': [
+            for (final (o, n) in warm) [o, n]
+          ],
       });
 }
 
@@ -123,6 +170,10 @@ class PartSetInStream implements ClosableInStream {
   int opens = 0;
 
   PartSetInStream(this.manifest, this.open, {this.maxOpen = 4});
+
+  /// The stream of part [index] (0 based), opened when it is not open; it
+  /// counts as used now.
+  ClosableInStream partStream(int index) => _part(index);
 
   @override
   int get length => manifest.size;

@@ -46,7 +46,8 @@ Future<void> main() async {
     var s = await stats();
     say('open: ${(_now() - t).round()} ms, ${s['requests']} requests, '
         '${((s['bytes'] as int) / 1024).round()} KiB (${u['parts'] ?? 1} '
-        'part(s), ${u['size']} bytes)');
+        'part(s), ${u['size']} bytes)'
+        '${u['warm'] == null ? '' : ', warm set ${u['warm']}'}');
     for (final pass in ['cold', 'warm']) {
       Object? prev;
       for (final sql in sqls) {

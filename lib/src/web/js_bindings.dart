@@ -62,6 +62,8 @@ extension type JSResponse._(JSObject _) implements JSObject {
   external JSHeaders get headers;
   external JSReadableStream? get body;
   external JSPromise<JSString> text();
+  external JSPromise<JSArrayBuffer> arrayBuffer();
+  external String get url;
 }
 
 extension type JSHeaders._(JSObject _) implements JSObject {

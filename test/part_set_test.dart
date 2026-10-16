@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:zx/src/cli/main.dart' show runSevenZipCliSync;
 import 'package:zx/src/cli/std_stream.dart' show CliIo;
+import 'package:zx/src/db/warm_set.dart';
 import 'package:zx/src/db/zxdb.dart';
 import 'package:zx/src/io/part_set.dart';
 import 'package:zx/src/io/streams.dart';
@@ -273,5 +274,97 @@ void main() {
     expect(server.asked.toSet().any((u) => u.contains('site-b')), isTrue);
     // only part of the set was read for three queries
     expect(fetched, lessThanOrEqualTo(m.size));
+  });
+
+  test('the warm set: in the manifest, split at part boundaries', () {
+    final m = ZxPartManifest(
+        'x', 25, 10, const [ZxPart('a', 10), ZxPart('b', 10), ZxPart('c', 5)],
+        warm: const [(2, 3), (8, 14)]);
+    expect(m.warmRequests(), [(0, 2, 3), (0, 8, 2), (1, 0, 10), (2, 0, 2)]);
+    expect(ZxPartManifest.parse(m.toJsonText()).warm, m.warm);
+    expect(m.warmBytes, 17);
+    expect(
+        () => m.withWarm(const [(20, 9)]), throwsA(isA<SevenZipException>()));
+  });
+
+  test('a recorded warm set, prefetched, saves requests of a cold query',
+      () async {
+    // random names, so the pages do not compress into a few blocks
+    final path = '${tmp.path}/w.zx';
+    final r = Random(7);
+    String name(int i) => 'n$i-'
+        '${List.generate(40, (_) => r.nextInt(16).toRadixString(16)).join()}';
+    final names = [for (var i = 0; i < 20000; i++) name(i)];
+    final db = ZxDatabase.open(path, create: true, options: _opts());
+    db.sql.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)');
+    db.sql.execute('CREATE INDEX t_name ON t (name)');
+    db.sql.execute('BEGIN');
+    for (var i = 0; i < names.length; i++) {
+      db.sql.execute('INSERT INTO t VALUES (?, ?)', [i, names[i]]);
+    }
+    db.sql.execute('COMMIT');
+    db.fold();
+    db.close();
+    zxSplitFile(path, 256 << 10);
+    final manifestPath = '$path.parts';
+    final rep = zxRecordWarmSet(
+        manifestPath,
+        [
+          for (final i in [5, 900, 4777, 12500, 19999])
+            "SELECT id FROM t WHERE name = '${names[i]}'",
+        ],
+        blockSize: 4096);
+    final m = rep.manifest;
+    expect(m.warm, isNotEmpty);
+    expect(rep.openBlocks, greaterThan(0));
+    expect(rep.sharedBlocks, greaterThan(0));
+    final files = <String, Uint8List>{
+      for (final p in m.parts)
+        'https://h/x/${p.file}': File('${tmp.path}/${p.file}').readAsBytesSync()
+    };
+    int syncRequests = 0;
+    RangeTransport transport(String url) =>
+        RedirectCachingTransport(url, (u, s, e) {
+          syncRequests++;
+          final d = files[u.split('?').first]!;
+          final end = min(e + 1, d.length);
+          return RangeResponse(206, Uint8List.sublistView(d, s, end),
+              contentRange: 'bytes $s-${end - 1}/${d.length}', url: u);
+        });
+    Future<int> coldQuery(ZxPartManifest man, {required bool warm}) async {
+      syncRequests = 0;
+      final set =
+          urlPartSet(man, 'https://h/x/w.zx.parts', transport, blockSize: 4096);
+      if (warm) {
+        await prefetchWarm(set, (url, s, e) async {
+          final d = files[url.split('?').first]!;
+          return (
+            Uint8List.sublistView(d, s, e + 1),
+            '$url?Expires=9999999999'
+          );
+        });
+      }
+      final saved = hostFiles;
+      hostFiles = _Files()..s['/url/w.zx'] = set;
+      try {
+        final db =
+            ZxDatabase.open('/url/w.zx', readOnly: true, options: _opts());
+        expect(
+            db.sql
+                .execute("SELECT id FROM t WHERE name = '${names[8888]}'")
+                .rows,
+            [
+              [8888]
+            ]);
+        db.close();
+      } finally {
+        hostFiles = saved;
+      }
+      return syncRequests;
+    }
+
+    final without = await coldQuery(m.withWarm(const []), warm: false);
+    final withWarm = await coldQuery(m, warm: true);
+    expect(withWarm, lessThan(without));
   });
 }

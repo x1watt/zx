@@ -3,7 +3,8 @@
 # compiles the engine and the page, serves them on localhost:8765 and
 # prints the cold and warm times, requests and bytes of each query.
 #
-# Usage: [BS=BLOCKBYTES] tool/web_check/remote_bench.sh URL "SQL" ["SQL" ...]
+# Usage: [BS=BLOCKBYTES] [NOBUILD=1] tool/web_check/remote_bench.sh URL "SQL" ["SQL" ...]
+# (NOBUILD=1 keeps the engine compiled by the last run)
 #   tool/web_check/remote_bench.sh \
 #     https://huggingface.co/datasets/USER/NAME/resolve/main/db.zx.parts \
 #     "SELECT count(*) FROM page_meta"
@@ -14,7 +15,9 @@ url=$1
 shift
 mkdir -p "$dir/engine"
 here=tool/web_check
-dart compile wasm -O2 web_engine/zx_engine.dart -o "$dir/engine/zx_engine.wasm" >/dev/null
+if [ -z "${NOBUILD:-}" ] || [ ! -f "$dir/engine/zx_engine.wasm" ]; then
+  dart compile wasm -O2 web_engine/zx_engine.dart -o "$dir/engine/zx_engine.wasm" >/dev/null
+fi
 cp web_engine/zx_engine_worker.js "$dir/engine/"
 dart compile js -O2 -o "$dir/bench.js" "$here/remote_bench.dart" >/dev/null
 cat > "$dir/index.html" <<'HTML'

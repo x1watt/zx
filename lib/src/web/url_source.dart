@@ -54,6 +54,27 @@ JSObject _init(
 /// as a part manifest.
 JSObject plainGetInit() => _init();
 
+/// Fetches bytes [start] to [endInclusive] of [url] asynchronously (the
+/// parallel fetch of a warm set); gives the bytes and the URL that
+/// answered (after redirects).
+Future<(Uint8List, String?)> fetchRange(
+    String url, int start, int endInclusive) async {
+  final r = await jsFetch(
+      url, _init(headers: {'Range': 'bytes=$start-$endInclusive'})).toDart;
+  if (r.status != 206) {
+    throw SevenZipException(
+        'a warm range of $url answered HTTP ${r.status}', SevenZipError.io);
+  }
+  final b = (await r.arrayBuffer().toDart).toDart.asUint8List();
+  if (b.length != endInclusive - start + 1) {
+    throw SevenZipException(
+        'a warm range of $url has ${b.length} bytes, not '
+        '${endInclusive - start + 1}',
+        SevenZipError.io);
+  }
+  return (b, r.url);
+}
+
 /// Decides how the archive at [url] can be read (see the file comment).
 Future<UrlProbe> probeUrl(String url) async {
   final abort = JSAbortController();
