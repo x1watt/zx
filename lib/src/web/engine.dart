@@ -320,7 +320,8 @@ class Engine {
       case 'url':
         final url = args['url'] as String;
         if (Uri.tryParse(url)?.path.endsWith(ZxPartManifest.suffix) ?? false) {
-          return (await _openPartsUrl(url), null);
+          final bs = args['blockSize'] as int?;
+          return (await _openPartsUrl(url, blockSize: bs), null);
         }
         final p = await probeUrl(url);
         final out = p.toJson();
@@ -580,7 +581,8 @@ class Engine {
   /// manifest is fetched whole, its parts are read with range requests
   /// when first touched. Answers like a range URL, with the number of
   /// parts.
-  Future<Map<String, Object?>> _openPartsUrl(String url) async {
+  Future<Map<String, Object?>> _openPartsUrl(String url,
+      {int? blockSize}) async {
     final ZxPartManifest m;
     try {
       final r = await jsFetch(url, plainGetInit()).toDart;
@@ -598,8 +600,8 @@ class Engine {
     }
     final path = '/url/${_next++}/${libraryName(m.name)}';
     final made = _partStreams[path] = [];
-    _files.sources[path] =
-        _Source(urlPartSet(m, url, XhrRangeTransport.new, created: made.add));
+    _files.sources[path] = _Source(urlPartSet(m, url, XhrRangeTransport.new,
+        blockSize: blockSize ?? 64 << 10, created: made.add));
     return {
       'access': UrlAccess.range.name,
       'size': m.size,
