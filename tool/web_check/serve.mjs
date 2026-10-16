@@ -5,6 +5,8 @@
 //   /bare/F     CORS, byte ranges, no headers exposed (as most hosts)
 //   /norange/F  CORS, Range ignored (always 200 with the whole file)
 //   /nocors/F   byte ranges, no CORS headers (the browser blocks it)
+//   /redirect/F a 302 to /bare/F?Expires=... (as Hugging Face sends to a
+//               signed CDN URL), CORS on both; /stats counts the redirects
 // Every request is logged to DIR/.requests.log (method, path, Range).
 // Usage: node serve.mjs DIR [PORT]
 import http from 'node:http';
@@ -62,8 +64,22 @@ http.createServer((req, res) => {
   serve(req, res, path.join(dir, p === '/' ? 'index.html' : p), 'page');
 }).listen(port);
 
+let redirects = 0;
 http.createServer((req, res) => {
   const p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   const [, mode, ...rest] = p.split('/');
+  const cors = {'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store'};
+  if (mode === 'stats') {
+    res.writeHead(200, {...cors, 'Content-Type': 'application/json'});
+    return res.end(JSON.stringify({redirects}));
+  }
+  if (mode === 'redirect' && req.method !== 'OPTIONS') {
+    redirects++;
+    log.write(`${req.method} ${req.url} ${req.headers.range ?? '-'} 302\n`);
+    const expires = Math.floor(Date.now() / 1000) + 3600;
+    res.writeHead(302, {...cors,
+      Location: `/bare/${rest.join('/')}?Expires=${expires}&Signature=x`});
+    return res.end();
+  }
   serve(req, res, path.join(dir, ...rest), mode);
 }).listen(port + 1);

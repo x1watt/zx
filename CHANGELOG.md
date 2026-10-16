@@ -1,5 +1,15 @@
 ## Unreleased
 
+- **Web: URLs behind a redirect cost one round trip, not two.** Hosts
+  such as Hugging Face answer every file request with a redirect to a
+  signed CDN URL (valid an hour) and forbid caching the redirect, so each
+  range request paid for two. The XMLHttpRequest transport now keeps the
+  URL that answered (`responseURL`) and sends the next ranges there,
+  until a minute before its `Expires` (or `X-Amz-Date` plus
+  `X-Amz-Expires`), or until it fails, then asks the original URL again
+  (`RedirectCachingTransport`). Measured from Europe on a Hugging Face
+  dataset: 0.16 s for the redirect plus about 0.17 s for the range,
+  so about 0.17 s per request instead of 0.33 s.
 - **Part sets: a file in parts, read in place (`zx parts`).** `zx parts
   split FILE` cuts any file into parts of a fixed size (default 95 MiB,
   under GitHub's 100 MB limit) with a manifest `FILE.parts` (sizes and

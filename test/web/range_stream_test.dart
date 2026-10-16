@@ -239,4 +239,79 @@ void main() {
       expect(() => stream(t).read(Uint8List(10), 0, 10), io('compresses'));
     });
   });
+
+  group('redirect caching', () {
+    const original = 'https://huggingface.co/datasets/u/d/resolve/main/x.zx';
+    String signed(int expires) =>
+        'https://cdn.example/x?Expires=$expires&Signature=abc';
+    late List<String> sent;
+    late int now;
+    late int expiry;
+    late bool directFails;
+    RangeResponse send(String url, int s, int e) {
+      sent.add(url);
+      if (url == original) {
+        // the server redirects; the browser follows and reports the URL
+        return RangeResponse(206, Uint8List(e - s + 1), url: signed(expiry));
+      }
+      if (directFails) return RangeResponse(403, Uint8List(0), url: url);
+      return RangeResponse(206, Uint8List(e - s + 1), url: url);
+    }
+
+    setUp(() {
+      sent = [];
+      now = 1000;
+      expiry = 1000 + 3600;
+      directFails = false;
+    });
+
+    test('later requests go to the signed URL directly', () {
+      final t = RedirectCachingTransport(original, send, nowSeconds: () => now);
+      for (var i = 0; i < 5; i++) {
+        t.fetch(i * 10, i * 10 + 9);
+      }
+      expect(sent.first, original);
+      expect(sent.skip(1), everyElement(signed(expiry)));
+      expect(t.viaOriginal, 1);
+    });
+
+    test('a minute before it expires, the original URL is asked again', () {
+      final t = RedirectCachingTransport(original, send, nowSeconds: () => now);
+      t.fetch(0, 9);
+      now = expiry - 30;
+      expiry = now + 3600;
+      t.fetch(10, 19);
+      t.fetch(20, 29);
+      expect(sent, [original, original, signed(expiry)]);
+    });
+
+    test('a failing direct URL falls back to the original', () {
+      final t = RedirectCachingTransport(original, send, nowSeconds: () => now);
+      t.fetch(0, 9);
+      directFails = true;
+      final r = t.fetch(10, 19);
+      expect(r.status, 206);
+      expect(sent, [original, signed(expiry), original]);
+    });
+
+    test('no redirect: nothing is cached', () {
+      final t = RedirectCachingTransport('https://x/y', (u, s, e) {
+        sent.add(u);
+        return RangeResponse(206, Uint8List(e - s + 1), url: u);
+      });
+      t.fetch(0, 9);
+      t.fetch(10, 19);
+      expect(sent, ['https://x/y', 'https://x/y']);
+    });
+
+    test('expiry of CloudFront and S3 signed URLs', () {
+      expect(signedUrlExpiry('https://c/x?Expires=1792170064&Signature=s'),
+          1792170064);
+      expect(
+          signedUrlExpiry('https://s3/x?X-Amz-Date=20261016T160000Z'
+              '&X-Amz-Expires=3600&X-Amz-Signature=s'),
+          DateTime.utc(2026, 10, 16, 17).millisecondsSinceEpoch ~/ 1000);
+      expect(signedUrlExpiry('https://c/x?a=1'), isNull);
+    });
+  });
 }

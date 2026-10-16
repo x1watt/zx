@@ -97,30 +97,32 @@ Future<int?> _headSize(String url) async {
 }
 
 /// Range requests with synchronous XMLHttpRequest (allowed in workers,
-/// and the only synchronous network read a browser has).
-class XhrRangeTransport implements RangeTransport {
-  final String url;
-  XhrRangeTransport(this.url);
+/// and the only synchronous network read a browser has). The browser
+/// follows redirects itself; the URL that answered (`responseURL`) is
+/// kept, so later requests skip the redirect while it stays valid
+/// ([RedirectCachingTransport]).
+class XhrRangeTransport extends RedirectCachingTransport {
+  XhrRangeTransport(String url) : super(url, _xhrRange);
+}
 
-  @override
-  RangeResponse fetch(int start, int endInclusive) {
-    final x = JSXMLHttpRequest();
-    x.open('GET', url, false);
-    x.setRequestHeader('Range', 'bytes=$start-$endInclusive');
-    x.responseType = 'arraybuffer';
-    try {
-      x.send();
-    } catch (e) {
-      throw SevenZipException(
-          'the server can not be reached ($e)', SevenZipError.io);
-    }
-    final body = x.response;
-    final bytes = body == null
-        ? Uint8List(0)
-        : Uint8List.fromList((body as JSArrayBuffer).toDart.asUint8List());
-    return RangeResponse(x.status, bytes,
-        contentRange: x.getResponseHeader('Content-Range'),
-        etag: x.getResponseHeader('ETag'),
-        contentEncoding: x.getResponseHeader('Content-Encoding'));
+RangeResponse _xhrRange(String url, int start, int endInclusive) {
+  final x = JSXMLHttpRequest();
+  x.open('GET', url, false);
+  x.setRequestHeader('Range', 'bytes=$start-$endInclusive');
+  x.responseType = 'arraybuffer';
+  try {
+    x.send();
+  } catch (e) {
+    throw SevenZipException(
+        'the server can not be reached ($e)', SevenZipError.io);
   }
+  final body = x.response;
+  final bytes = body == null
+      ? Uint8List(0)
+      : Uint8List.fromList((body as JSArrayBuffer).toDart.asUint8List());
+  return RangeResponse(x.status, bytes,
+      contentRange: x.getResponseHeader('Content-Range'),
+      etag: x.getResponseHeader('ETag'),
+      contentEncoding: x.getResponseHeader('Content-Encoding'),
+      url: x.responseURL);
 }

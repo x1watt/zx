@@ -43,6 +43,7 @@ extension type JSXMLHttpRequest._(JSObject _) implements JSObject {
   external int get status;
   external JSAny? get response;
   external String? getResponseHeader(String name);
+  external String get responseURL;
 }
 
 extension type JSFileWithTime._(JSObject _) implements JSFile {

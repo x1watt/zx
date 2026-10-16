@@ -21,8 +21,11 @@ class RangeResponse {
   final String? contentRange;
   final String? etag;
   final String? contentEncoding;
+
+  /// The URL that answered, after redirects, when the transport knows it.
+  final String? url;
   const RangeResponse(this.status, this.bytes,
-      {this.contentRange, this.etag, this.contentEncoding});
+      {this.contentRange, this.etag, this.contentEncoding, this.url});
 }
 
 /// Fetches byte ranges of one URL, synchronously.
@@ -30,6 +33,82 @@ abstract interface class RangeTransport {
   /// The bytes [start] to [endInclusive] (the server may send fewer at the
   /// end of the file).
   RangeResponse fetch(int start, int endInclusive);
+}
+
+/// Sends one range request to a URL (following redirects) and answers
+/// with the bytes and the URL that answered.
+typedef RangeSender = RangeResponse Function(
+    String url, int start, int endInclusive);
+
+/// The time a signed URL stops working, in seconds since 1970, from its
+/// query: `Expires=EPOCH` (CloudFront, the CDN of Hugging Face) or
+/// `X-Amz-Date=YYYYMMDDTHHMMSSZ` with `X-Amz-Expires=SECONDS` (S3). Null
+/// when the URL says nothing.
+int? signedUrlExpiry(String url) {
+  final q = Uri.tryParse(url)?.queryParameters;
+  if (q == null) return null;
+  final e = int.tryParse(q['Expires'] ?? '');
+  if (e != null) return e;
+  final d = q['X-Amz-Date'], s = int.tryParse(q['X-Amz-Expires'] ?? '');
+  if (d == null || s == null || d.length != 16) return null;
+  final t = DateTime.tryParse(
+      '${d.substring(0, 4)}-${d.substring(4, 6)}-${d.substring(6, 11)}:'
+      '${d.substring(11, 13)}:${d.substring(13, 15)}Z');
+  return t == null ? null : t.millisecondsSinceEpoch ~/ 1000 + s;
+}
+
+/// A [RangeTransport] that remembers where its URL redirects (Hugging
+/// Face answers every file request with a redirect to a signed CDN URL,
+/// valid for an hour, and never lets the redirect be cached) and sends
+/// the next requests there directly: one round trip per request instead
+/// of two. The direct URL is dropped a minute before it expires, or when
+/// it fails (any answer but 206, or a network error), and the original
+/// URL is asked again.
+class RedirectCachingTransport implements RangeTransport {
+  final String url;
+  final RangeSender send;
+
+  /// The clock, in seconds since 1970 (tests fix it).
+  final int Function() nowSeconds;
+
+  String? _direct;
+  int? _expires;
+
+  /// Requests that went to the original URL (and so through its redirect).
+  int viaOriginal = 0;
+
+  RedirectCachingTransport(this.url, this.send, {int Function()? nowSeconds})
+      : nowSeconds =
+            nowSeconds ?? (() => DateTime.now().millisecondsSinceEpoch ~/ 1000);
+
+  /// The URL requests go to now (the original one when none is cached).
+  String get target => _direct ?? url;
+
+  @override
+  RangeResponse fetch(int start, int endInclusive) {
+    final d = _direct;
+    if (d != null) {
+      final e = _expires;
+      if (e == null || nowSeconds() < e - 60) {
+        try {
+          final r = send(d, start, endInclusive);
+          if (r.status == 206) return r;
+        } on SevenZipException {
+          // expired or gone: through the original URL again
+        }
+      }
+      _direct = null;
+      _expires = null;
+    }
+    viaOriginal++;
+    final r = send(url, start, endInclusive);
+    final to = r.url;
+    if (r.status == 206 && to != null && to.isNotEmpty && to != url) {
+      _direct = to;
+      _expires = signedUrlExpiry(to);
+    }
+    return r;
+  }
 }
 
 /// The total size of a Content-Range header ("bytes 0-99/1234"), or null.

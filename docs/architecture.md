@@ -1456,7 +1456,16 @@ version queries in place.
   is an `HttpRangeInStream` (no probe: the manifest gives the size) with
   64 KiB blocks and 16 MiB of cache, made when first read. `urlStats` adds
   up the requests and bytes of the parts. The answer has `parts`, the
-  number of parts. Everything after that (`db.open`, `db.sql`, `open`)
+  number of parts.
+- **Redirects** (`RedirectCachingTransport`, `range_stream.dart`): a host
+  that redirects each request to a signed URL (Hugging Face: a 302 to its
+  CDN, valid an hour, with `Cache-Control: no-store` on the redirect)
+  would cost two round trips per range. The XHR transport keeps the URL
+  that answered (`responseURL`) and sends later ranges there until a
+  minute before the expiry in its query, or until it fails, then goes
+  through the original URL again. A single file or each part of a set
+  pays one redirect per hour. `serve.mjs` has a `redirect` mode for the
+  browser test. Everything after that (`db.open`, `db.sql`, `open`)
   is unchanged: the engine's paths hide that the source is in parts.
 - **Tests.** `test/part_set_test.dart` (boundaries, the manifest checks,
   split, check and join, a database queried from parts natively and over

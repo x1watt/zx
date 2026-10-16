@@ -29,6 +29,13 @@ external JSObject? _byId(String id);
 @JS('document')
 external JSObject get _document;
 
+@JS('fetch')
+external JSPromise<_Resp> _fetchJs(String url);
+
+extension type _Resp(JSObject _) implements JSObject {
+  external JSPromise<JSAny?> json();
+}
+
 void _show() {
   _byId('out')?['textContent'] = _lines.join('\n').toJS;
 }
@@ -147,23 +154,62 @@ Future<void> run() async {
             .json;
     check('sql: no database', none == false);
     // a part set over HTTP: the manifest's URL, its parts read by range
-    final u = (await engine.call('url',
-            args: {'url': '$remote/bare/dbp.zx.parts'}))
-        .json as Map;
+    final u =
+        (await engine.call('url', args: {'url': '$remote/bare/dbp.zx.parts'}))
+            .json as Map;
     check('parts: manifest', u['access'] == 'range' && (u['parts'] as int) > 3,
         u);
     final pdb = (await engine.call('db.open', args: {'path': u['path']})).json;
-    final pr = sqlResultFromWire(((await engine.call('db.sql', args: {
-      'db': pdb,
-      'sql': 'SELECT count(*), max(name) FROM t'
-    }))
+    final pr = sqlResultFromWire(((await engine.call('db.sql',
+                args: {'db': pdb, 'sql': 'SELECT count(*), max(name) FROM t'}))
             .json as Map)
         .cast());
-    check('parts: sql', pr.rows.single[0] == 50 && pr.rows.single[1] == r.rows.single[1],
+    check(
+        'parts: sql',
+        pr.rows.single[0] == 50 && pr.rows.single[1] == r.rows.single[1],
         pr.rows);
-    final ps = (await engine.call('urlStats', args: {'path': u['path']})).json
-        as Map;
+    final ps =
+        (await engine.call('urlStats', args: {'path': u['path']})).json as Map;
     check('parts: read by range', (ps['requests'] as int) > 0, ps);
+    // behind a redirect to a signed URL (Hugging Face): one redirect per
+    // part, the other requests straight to the signed URL
+    Future<int> redirects() async {
+      final r = await _fetchJs('$remote/stats').toDart;
+      final j = (await r.json().toDart).dartify() as Map;
+      return (j['redirects'] as num).toInt();
+    }
+
+    final before = await redirects();
+    final hu = (await engine
+            .call('url', args: {'url': '$remote/redirect/dbp.zx.parts'}))
+        .json as Map;
+    final hdb = (await engine.call('db.open', args: {'path': hu['path']})).json;
+    final hr = sqlResultFromWire(((await engine.call('db.sql',
+                args: {'db': hdb, 'sql': 'SELECT count(*), max(name) FROM t'}))
+            .json as Map)
+        .cast());
+    final hs =
+        (await engine.call('urlStats', args: {'path': hu['path']})).json as Map;
+    final n = await redirects() - before;
+    check('redirect: sql', hr.rows.single[0] == 50, hr.rows);
+    // the manifest's GET, then one per part opened
+    check(
+        'redirect: one per part',
+        n == 1 + (hs['parts'] as int) && (hs['requests'] as int) >= hs['parts'],
+        {'redirects': n, ...hs});
+    // one file read in several requests: the probe, the HEAD for its size
+    // (bare exposes no Content-Range) and the first range go through the
+    // redirect; the other ranges straight to the signed URL
+    final b2 = await redirects();
+    final mu = (await engine.call('url',
+            args: {'url': '$remote/redirect/many.zx'}))
+        .json as Map;
+    await openAndRead('redirect: many.zx', mu['path'] as String, 'many.zx');
+    final ms = (await engine.call('urlStats', args: {'path': mu['path']})).json
+        as Map;
+    final n2 = await redirects() - b2;
+    check('redirect: signed URL reused',
+        n2 == 3 && (ms['requests'] as int) >= 3, {'redirects': n2, ...ms});
   } catch (e) {
     check('sql', false, e);
   }
