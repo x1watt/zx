@@ -11,6 +11,7 @@ import 'dart:convert';
 import '../host/io.dart';
 
 import '../db/zxdb.dart';
+import '../io/part_set.dart' show partManifestPathFor;
 import 'globals.dart';
 import 'line_editor.dart';
 import 'platform.dart';
@@ -102,7 +103,10 @@ int runSqlCommand(List<String> args, CliIo io) {
   if (cwd != null && !File(path).isAbsolute) path = '$cwd/$path';
   ZxDatabase db;
   try {
-    final exists = File(path).existsSync();
+    // a part set (zx parts split) is read only
+    final parts = !File(path).existsSync() && partManifestPathFor(path) != null;
+    if (parts) readOnly = true;
+    final exists = parts || File(path).existsSync();
     if (!exists && readOnly) {
       err('Error: unable to open database "$archive": no such file\n');
       return 1;

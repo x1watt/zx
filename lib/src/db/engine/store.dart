@@ -29,6 +29,7 @@ import '../../format/zx/zx_handler.dart' show zxResealFile;
 import '../../format/zx/zx_reader.dart';
 import '../../format/zx/zx_seal.dart';
 import '../../format/zx/zx_writer.dart';
+import '../../io/part_set.dart' show partManifestPathFor, readPartManifest;
 import '../../io/streams.dart';
 import '../../pool.dart' show defaultThreads;
 import '../../sync_pool.dart';
@@ -340,6 +341,12 @@ class ZxDbStore implements ZxStore {
       ZxDbStoreOptions? options}) {
     final s = ZxDbStore._(path, options ?? ZxDbStoreOptions(), readOnly,
         password == null || password.isEmpty ? null : password);
+    if (hostFiles == null && !readOnly && partManifestPathFor(path) != null) {
+      throw ZxDbException(
+          '$path is a part set (read only); open it read only, or join it '
+          'first (zx parts join)',
+          ZxDbError.readOnly);
+    }
     if (_statOf(path) == null) {
       if (!create || readOnly) {
         throw ZxDbException('no archive at $path', ZxDbError.notFound);
@@ -2517,6 +2524,11 @@ class _TxnTree implements ZxWritableTree, ZxLengthEstimate {
     return n == null ? null : (n, DateTime.utc(1980));
   }
   final st = FileStat.statSync(path);
-  if (st.type == FileSystemEntityType.notFound) return null;
+  if (st.type == FileSystemEntityType.notFound) {
+    // a part set (part_set.dart): the size of the whole, the manifest's time
+    final m = partManifestPathFor(path);
+    if (m == null) return null;
+    return (readPartManifest(m).size, FileStat.statSync(m).modified);
+  }
   return (st.size, st.modified);
 }

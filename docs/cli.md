@@ -307,6 +307,30 @@ isolate for Flutter apps; `sqliteImport` and `sqliteExport`
 (`lib/src/db/sqlite_io/sqlite_io.dart`) move tables between a session
 and a SQLite file.
 
+### Part sets: `zx parts`
+
+    zx parts split [-size=95m] [-o DIR] FILE
+    zx parts check MANIFEST
+    zx parts join MANIFEST OUT
+    zx parts list MANIFEST
+
+`split` cuts FILE into parts of SIZE bytes (suffixes k, m, g; default
+95m, under the 100 MB a GitHub file may have) named FILE.001, FILE.002,
+... and writes the manifest FILE.parts (JSON: the name and size of the
+whole, the part size, and each part's file, size and SHA-256). Any file
+can be cut (a database, an archive with later generations); the parts are
+plain slices, not volumes. `check` verifies sizes and SHA-256 sums,
+`join` writes the whole file back, `list` shows the parts.
+
+A set is read in place, read only: `zx sql FILE ...` opens the database
+of FILE.parts when FILE is missing, and `zx l FILE.parts` (or `x`, `t`)
+reads the archive through the manifest. The web version opens the URL of
+a manifest and reads only the ranges of the parts a query needs; a part's
+file in the manifest may be a relative URL such as
+`../other-site/FILE.012`, so a set larger than one site can hold is
+spread over several sites of the same origin (docs/architecture.md,
+section 21).
+
 ### Signed generations: `zx seal` and `-msign`
 
 A .zx archive can be sealed with NOSTR keys (docs/zx-format.md section

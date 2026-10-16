@@ -11,6 +11,7 @@ import '../../format/zx/zx_blocks.dart';
 import '../../format/zx/zx_crypto.dart';
 import '../../format/zx/zx_format.dart';
 import '../../format/zx/zx_reader.dart';
+import '../../io/part_set.dart' show openPartSet, partManifestPathFor;
 import '../../io/streams.dart'
     show
         ClosableInStream,
@@ -27,9 +28,14 @@ import 'page.dart';
 /// file (no read cache, the length asked each time), because the store
 /// appends its commits to the same file and reads them back. A host's
 /// files ([hostFiles], the web engine) are read only and do not change.
+///
+/// A part set (part_set.dart: [path] missing and `path.parts` there, or
+/// [path] the manifest itself) is read as one stream; it is read only.
 ClosableInStream dbOpenInput(String path) {
   final h = hostFiles;
-  return h != null ? h.open(path) : _RafInput(File(path).openSync());
+  if (h != null) return h.open(path);
+  final m = partManifestPathFor(path);
+  return m != null ? openPartSet(m) : _RafInput(File(path).openSync());
 }
 
 /// The stream ZxArchiveReader parses [input] with: over a file, a cached

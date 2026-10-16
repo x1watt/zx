@@ -1,5 +1,20 @@
 ## Unreleased
 
+- **Part sets: a file in parts, read in place (`zx parts`).** `zx parts
+  split FILE` cuts any file into parts of a fixed size (default 95 MiB,
+  under GitHub's 100 MB limit) with a manifest `FILE.parts` (sizes and
+  SHA-256 of the parts); `check`, `join` and `list` go with it. zx reads
+  a set as one read-only stream, opening a part when it is first read and
+  keeping at most four open: `zx sql FILE` (FILE missing, FILE.parts
+  there) opens the database in it read only, `zx l FILE.parts` lists the
+  archive, and `ZxDatabase.open(FILE, readOnly: true)` works the same.
+  The web engine opens a manifest's URL (`url` with a path ending in
+  `.parts`): it fetches the manifest, then reads each part with range
+  requests in 64 KiB blocks when a query needs it; part URLs are relative
+  to the manifest, so the parts of one set may live on several sites of
+  one origin. Opening the 3.2 GB English Wikipedia test database (33
+  parts) took 2 requests; four cold queries took 27 requests and 3.3 MiB.
+  A database in parts can not be written (join it first).
 - **zxdb: CREATE INDEX on a filled table in bounded memory.** It held
   every decoded row of the table before writing the index, about 4 GB for
   a 7 million row table with a text column (an offline Wikipedia), until

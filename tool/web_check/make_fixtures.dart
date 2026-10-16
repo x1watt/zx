@@ -8,6 +8,7 @@ import 'dart:typed_data';
 
 import 'package:zx/zx.dart';
 import 'package:zx/src/db/zxdb.dart' show ZxDatabase;
+import 'package:zx/src/io/part_set.dart' show zxSplitFile;
 
 Future<void> main(List<String> args) async {
   final out = Directory(args.single)..createSync(recursive: true);
@@ -68,6 +69,12 @@ Future<void> main(List<String> args) async {
   final lock = File('$p.zx-lock');
   if (lock.existsSync()) lock.deleteSync();
   expected['db.zx'] = {};
+  // the same database as a part set of 1 KiB parts (dbp.zx.001...,
+  // dbp.zx.parts), read over HTTP ranges from its manifest
+  final dbp = '${out.path}/dbp.zx';
+  File(p).copySync(dbp);
+  zxSplitFile(dbp, 1024);
+  File(dbp).deleteSync();
 
   // many small files: listing reads the head and the tail only
   final many = Directory('${src.path}/many')..createSync();

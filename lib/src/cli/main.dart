@@ -32,6 +32,7 @@ import 'extracting_file_path.dart';
 import 'prop_id_utils.dart';
 import 'readme_command.dart';
 import 'seal_command.dart';
+import 'parts_command.dart';
 import 'sql_command.dart';
 import 'platform.dart';
 
@@ -473,6 +474,9 @@ int _main2(List<String> commandStrings, CliIo io) {
   }
   if (commandStrings.first.toLowerCase() == 'sql') {
     return runSqlCommand(commandStrings.sublist(1), io);
+  }
+  if (commandStrings.first.toLowerCase() == 'parts') {
+    return runPartsCommand(commandStrings.sublist(1), io);
   }
   if (commandStrings.first.toLowerCase() == 'readme') {
     return runReadmeCommand(commandStrings.sublist(1), io);

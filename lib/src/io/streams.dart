@@ -6,6 +6,7 @@
 // (see lib/src/api.dart), where blocking file IO is fine and much faster than
 // awaiting a future per chunk.
 
+import 'part_set.dart';
 import '../host/io.dart';
 import 'dart:typed_data';
 
@@ -311,10 +312,13 @@ abstract interface class HostFiles {
 HostFiles? hostFiles;
 
 /// Opens the file at [path] for reading: through [hostFiles] when set,
-/// else as a [FileInStream].
+/// else as a [FileInStream], or as a [PartSetInStream] when [path] is a
+/// part manifest, or is missing and `path.parts` exists (part_set.dart).
 ClosableInStream openInputFile(String path) {
   final h = hostFiles;
-  return h != null ? h.open(path) : FileInStream.open(path);
+  if (h != null) return h.open(path);
+  final m = partManifestPathFor(path);
+  return m != null ? openPartSet(m) : FileInStream.open(path);
 }
 
 /// Buffered random access file input.
@@ -331,8 +335,7 @@ class FileInStream implements ClosableInStream {
       : _length = raf.lengthSync(),
         _cache = Uint8List(cacheSize);
 
-  factory FileInStream.open(String path) =>
-      FileInStream(File(path).openSync());
+  factory FileInStream.open(String path) => FileInStream(File(path).openSync());
 
   bool _closed = false;
 

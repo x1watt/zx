@@ -767,6 +767,15 @@ and the server on this machine), docs/architecture.md section 20.
   readahead doubles on sequential reads up to 4 MiB, so a long read is a
   few large requests, not one per block. The block cache of a URL holds
   64 MiB (least recently used), with the head and tail pinned.
+- Part sets (section 21 of docs/architecture.md): the English Wikipedia
+  test database (3.2 GB, 33 parts of 95 MiB) opens with 2 range requests
+  (82 KiB); four cold queries (a title through its index, 20 facts of a
+  day, the count of the links to an article, an article's lead) take 27
+  requests and 3.3 MiB with 64 KiB blocks, against 7.9 MiB with the
+  256 KiB blocks of a whole archive (same request count), and touch 10 of
+  the 33 parts. Measured on the VM over a fake transport reading the part
+  files (one request per run of missing blocks); a browser adds about one
+  round trip per request. Splitting the 3.2 GB file: 43 s.
 - Uploaded files are read in 1 MiB blocks with `FileReaderSync` (8 MiB of
   cache per file): nothing is copied whole, so a file of several GB opens
   like a small one.

@@ -24,6 +24,7 @@ import '../cli/open_archive.dart' show cliCurrentDirectory;
 import '../cli/nest.dart' show NestNodeSpec;
 import '../db/zxdb.dart';
 import '../format/zx/zx_seal.dart' show zxCheckSealsOfFile;
+import '../io/part_set.dart' show ZxPartManifest;
 import '../io/streams.dart';
 import '../readme/readme.dart' show parseReadme;
 import '../version.dart';
@@ -33,6 +34,7 @@ import 'blob_stream.dart';
 import 'js_bindings.dart';
 import 'library.dart';
 import 'range_stream.dart';
+import 'url_parts.dart';
 import 'url_source.dart';
 import 'wire.dart';
 import 'zx_web_create.dart';
@@ -317,6 +319,9 @@ class Engine {
 
       case 'url':
         final url = args['url'] as String;
+        if (Uri.tryParse(url)?.path.endsWith(ZxPartManifest.suffix) ?? false) {
+          return (await _openPartsUrl(url), null);
+        }
         final p = await probeUrl(url);
         final out = p.toJson();
         if (p.access == UrlAccess.range) {
@@ -331,7 +336,20 @@ class Engine {
         return (out, null);
 
       case 'urlStats':
-        final s = _files.sources[args['path'] as String]?.stream;
+        final path = args['path'] as String;
+        final s = _files.sources[path]?.stream;
+        final parts = _partStreams[path];
+        if (parts != null) {
+          var requests = 0, bytes = 0;
+          for (final p in parts) {
+            requests += p.requests;
+            bytes += p.bytesFetched;
+          }
+          return (
+            {'requests': requests, 'bytes': bytes, 'parts': parts.length},
+            null
+          );
+        }
         if (s is! HttpRangeInStream) return (null, null);
         return ({'requests': s.requests, 'bytes': s.bytesFetched}, null);
 
@@ -552,6 +570,43 @@ class Engine {
         return (null, null);
     }
     throw ArgumentError('unknown request $op');
+  }
+
+  /// The range streams made for the parts of each part set source, by
+  /// path (for urlStats; a part closed and opened again adds one).
+  final Map<String, List<HttpRangeInStream>> _partStreams = {};
+
+  /// Opens the part set whose manifest is at [url] (section 21): the
+  /// manifest is fetched whole, its parts are read with range requests
+  /// when first touched. Answers like a range URL, with the number of
+  /// parts.
+  Future<Map<String, Object?>> _openPartsUrl(String url) async {
+    final ZxPartManifest m;
+    try {
+      final r = await jsFetch(url, plainGetInit()).toDart;
+      if (!r.ok) {
+        return {
+          'access': UrlAccess.blocked.name,
+          'problem': 'HTTP ${r.status}'
+        };
+      }
+      m = ZxPartManifest.parse((await r.text().toDart).toDart);
+    } on SevenZipException catch (e) {
+      return {'access': UrlAccess.blocked.name, 'problem': e.message};
+    } catch (e) {
+      return {'access': UrlAccess.blocked.name, 'problem': '$e'};
+    }
+    final path = '/url/${_next++}/${libraryName(m.name)}';
+    final made = _partStreams[path] = [];
+    _files.sources[path] =
+        _Source(urlPartSet(m, url, XhrRangeTransport.new, created: made.add));
+    return {
+      'access': UrlAccess.range.name,
+      'size': m.size,
+      'parts': m.parts.length,
+      'path': path,
+      'name': m.name,
+    };
   }
 
   ZxDatabase _db(Map<String, Object?> args) {

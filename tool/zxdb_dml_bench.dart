@@ -2,7 +2,6 @@
 //   dart run tool/zxdb_dml_bench.dart OUT.zx [rows]
 import 'dart:io';
 
-import 'package:zx/src/db/engine/store.dart';
 import 'package:zx/src/db/zxdb.dart';
 
 void main(List<String> args) {

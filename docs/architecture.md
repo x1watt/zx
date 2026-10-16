@@ -1424,3 +1424,43 @@ archive, which creates a .zx archive (see the bullet below).
   fixtures from `make_fixtures.dart`; `test/web/` tests the range stream
   (over a fake transport) and the wire format on the VM.
 
+## 21. Part sets (zx extension)
+
+A file cut into parts of a fixed size, read as one stream, so that a
+host with a file size limit but byte ranges (GitHub Pages: files under
+100 MB, sites under 1 GB) can serve a database of several GB that the web
+version queries in place.
+
+- **Format** (`lib/src/io/part_set.dart`). The parts are plain slices of
+  the file (`NAME.001`, `NAME.002`, ...; every part but the last exactly
+  `partSize` bytes), described by a JSON manifest `NAME.parts`:
+  `{"zxParts": 1, "name", "size", "partSize", "parts": [{"file", "size",
+  "sha256"}]}`. A part's `file` is relative to the manifest (a path, or a
+  URL when read over HTTP), so the parts can sit in several folders or
+  sites. Unlike the volumes of a .zx archive (section 16), which carry
+  their own headers and are written as volumes, a part set cuts any
+  finished file, including a zxdb database whose later generations are
+  appended to one file (a database refuses multi-volume archives). The
+  offset arithmetic is a division: no index of the parts is needed.
+- **Reading** (`PartSetInStream`): a `ClosableInStream` over the parts,
+  each opened when first read (its length checked against the manifest)
+  and at most `maxOpen` (4) kept open, the least recently used closed, so
+  a set of many parts costs a few open files or block caches. Natively
+  `openInputFile` and the zxdb store's `dbOpenInput` use it when the path
+  is a manifest, or is missing and `PATH.parts` exists; the store's stat
+  gives the manifest's size and time; a writable open of a set fails
+  (`ZxDbError.readOnly`). `zx sql` opens a set read only by itself.
+- **Over HTTP** (`lib/src/web/url_parts.dart`, `Engine._openPartsUrl`):
+  the `url` request with a path ending in `.parts` fetches the manifest
+  with a plain GET and registers one source over `urlPartSet`: each part
+  is an `HttpRangeInStream` (no probe: the manifest gives the size) with
+  64 KiB blocks and 16 MiB of cache, made when first read. `urlStats` adds
+  up the requests and bytes of the parts. The answer has `parts`, the
+  number of parts. Everything after that (`db.open`, `db.sql`, `open`)
+  is unchanged: the engine's paths hide that the source is in parts.
+- **Tests.** `test/part_set_test.dart` (boundaries, the manifest checks,
+  split, check and join, a database queried from parts natively and over
+  a fake HTTP transport with parts on two sites, the CLI);
+  `tool/web_check/run_e2e.sh` opens a database of 49 parts by its
+  manifest's URL in headless Chromium.
+

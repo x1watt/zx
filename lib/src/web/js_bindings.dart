@@ -60,6 +60,7 @@ extension type JSResponse._(JSObject _) implements JSObject {
   external bool get ok;
   external JSHeaders get headers;
   external JSReadableStream? get body;
+  external JSPromise<JSString> text();
 }
 
 extension type JSHeaders._(JSObject _) implements JSObject {

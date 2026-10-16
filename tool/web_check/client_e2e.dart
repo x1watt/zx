@@ -146,6 +146,24 @@ Future<void> run() async {
         (await engine.call('db.has', args: {'path': await upload('t.zx')}))
             .json;
     check('sql: no database', none == false);
+    // a part set over HTTP: the manifest's URL, its parts read by range
+    final u = (await engine.call('url',
+            args: {'url': '$remote/bare/dbp.zx.parts'}))
+        .json as Map;
+    check('parts: manifest', u['access'] == 'range' && (u['parts'] as int) > 3,
+        u);
+    final pdb = (await engine.call('db.open', args: {'path': u['path']})).json;
+    final pr = sqlResultFromWire(((await engine.call('db.sql', args: {
+      'db': pdb,
+      'sql': 'SELECT count(*), max(name) FROM t'
+    }))
+            .json as Map)
+        .cast());
+    check('parts: sql', pr.rows.single[0] == 50 && pr.rows.single[1] == r.rows.single[1],
+        pr.rows);
+    final ps = (await engine.call('urlStats', args: {'path': u['path']})).json
+        as Map;
+    check('parts: read by range', (ps['requests'] as int) > 0, ps);
   } catch (e) {
     check('sql', false, e);
   }

@@ -50,6 +50,10 @@ JSObject _init(
   return o;
 }
 
+/// The init of a plain GET (no cookies, no cache), for small files such
+/// as a part manifest.
+JSObject plainGetInit() => _init();
+
 /// Decides how the archive at [url] can be read (see the file comment).
 Future<UrlProbe> probeUrl(String url) async {
   final abort = JSAbortController();
