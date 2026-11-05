@@ -24,6 +24,7 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   IntegrationStatus? _status;
+  MountLoginStatus? _mounts;
   bool _working = false;
   String? _error;
 
@@ -39,7 +40,13 @@ class _SettingsPageState extends State<SettingsPage> {
     if (!_integration.supported) return;
     try {
       final s = await _integration.status();
-      if (mounted) setState(() => _status = s);
+      final m = await _integration.mountLoginStatus();
+      if (mounted) {
+        setState(() {
+          _status = s;
+          _mounts = m;
+        });
+      }
     } catch (e) {
       if (mounted) setState(() => _error = errorText(e));
     }
@@ -57,6 +64,69 @@ class _SettingsPageState extends State<SettingsPage> {
     }
     await _refresh();
     if (mounted) setState(() => _working = false);
+  }
+
+  Future<void> _addDrive() async {
+    final picker = widget.services.picker;
+    final archive = await picker.openArchive();
+    if (archive == null) return;
+    final mp = await picker.pickFolder(title: 'Mount point (an empty folder)');
+    if (mp == null) return;
+    await _toggle(() => _integration.addMountDrive(archive, mp));
+  }
+
+  List<Widget> _drives() {
+    final m = _mounts;
+    if (m == null || !_integration.supported) return const [];
+    final cs = Theme.of(context).colorScheme;
+    if (!m.available) {
+      return [
+        ListTile(
+          key: const Key('set-mount-note'),
+          leading: const Icon(Icons.info_outline_rounded),
+          title: Text(m.note),
+        ),
+      ];
+    }
+    return [
+      SwitchListTile(
+        key: const Key('set-mount-login'),
+        secondary: const Icon(Icons.storage_rounded),
+        title: const Text('Mount my drives at login'),
+        subtitle: const Text(
+          'Archives in the list below appear as folders when you log in',
+        ),
+        value: m.enabled,
+        onChanged: _working || (m.drives.isEmpty && !m.enabled)
+            ? null
+            : (v) => _toggle(() => _integration.setMountAtLogin(v)),
+      ),
+      for (final d in m.drives)
+        ListTile(
+          key: Key('set-drive-${d.name}'),
+          dense: true,
+          leading: const Icon(Icons.folder_zip_outlined),
+          title: Text(d.mountpoint),
+          subtitle: Text(
+            d.archive,
+            style: TextStyle(color: cs.onSurfaceVariant),
+          ),
+          trailing: IconButton(
+            tooltip: 'Remove this drive',
+            icon: const Icon(Icons.delete_outline_rounded),
+            onPressed: _working
+                ? null
+                : () => _toggle(() => _integration.removeMountDrive(d.name)),
+          ),
+        ),
+      ListTile(
+        key: const Key('set-mount-add'),
+        leading: const Icon(Icons.add_rounded),
+        title: const Text('Add a drive...'),
+        enabled: !_working,
+        onTap: _addDrive,
+      ),
+    ];
   }
 
   List<Widget> _compression(Settings s) {
@@ -340,6 +410,8 @@ class _SettingsPageState extends State<SettingsPage> {
                       onChanged: (v) => s.openFolderAfterExtract = v,
                     ),
                   ]),
+                  if (Platform.isLinux && _drives().isNotEmpty)
+                    section('Virtual drives', _drives()),
                   if (!Platform.isAndroid)
                     section('Desktop integration', [
                       if (!_integration.supported)

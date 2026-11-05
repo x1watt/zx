@@ -63,6 +63,11 @@ zx mounts enable-boot -linger    # also: start at boot, before you log in
 zx mounts disable-boot           # removes the unit
 ```
 
+`-exe=PROGRAM` writes another program into the unit (the app uses it, since
+it runs from `zx-gui`, not from `zx`). In the app: Settings, Virtual
+drives: a switch "Mount my drives at login" (this), the list of drives and
+"Add drive".
+
 `~/.config/zx/mounts.conf` is the table (INI, one `[name]` section per
 drive: `archive`, `mountpoint`, `readonly`, `allow_other`, `version`,
 `password_file`, `password_cmd`, `commit`, `cache`). `zx mount -persist`

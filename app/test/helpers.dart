@@ -95,6 +95,34 @@ class FakeIntegration implements DesktopIntegration {
     calls.add('removeAll');
     associations = contextMenu = false;
   }
+
+  bool mountAtLogin = false;
+  final drives = <MountDrive>[];
+
+  @override
+  Future<MountLoginStatus> mountLoginStatus() async => MountLoginStatus(
+    available: true,
+    enabled: mountAtLogin,
+    drives: List.of(drives),
+  );
+
+  @override
+  Future<void> setMountAtLogin(bool on) async {
+    calls.add('mount:$on');
+    mountAtLogin = on;
+  }
+
+  @override
+  Future<void> addMountDrive(String archive, String mountpoint) async {
+    calls.add('add:$archive:$mountpoint');
+    drives.add(MountDrive('d${drives.length}', archive, mountpoint));
+  }
+
+  @override
+  Future<void> removeMountDrive(String name) async {
+    calls.add('remove:$name');
+    drives.removeWhere((d) => d.name == name);
+  }
 }
 
 /// Places under the test's temporary folder (no real volumes).

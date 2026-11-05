@@ -278,4 +278,92 @@ text/plain=org.gnome.TextEditor.desktop
       expect((await pk.status()).contextMenu, isTrue);
     },
   );
+
+  group('drives at login', () {
+    late String cli;
+    LinuxIntegration drives({bool withCli = true}) {
+      return LinuxIntegration(
+        testPaths(tmp.path),
+        '/opt/zx/zx-gui',
+        runner: (exe, args) async {
+          commands.add('$exe ${args.join(' ')}');
+          return ProcessResult(0, 0, '', '');
+        },
+        systemConfigDirs: [p.join(tmp.path, 'etc', 'xdg')],
+        zxCliCandidates: withCli ? [cli] : [p.join(tmp.path, 'none')],
+      );
+    }
+
+    setUp(() {
+      cli = p.join(tmp.path, 'zx');
+      File(cli).writeAsStringSync('#!/bin/sh\n');
+    });
+
+    test('unavailable without the command line tool', () async {
+      final st = await drives(withCli: false).mountLoginStatus();
+      expect(st.available, isFalse);
+      expect(st.note, contains('command line tool'));
+    });
+
+    test('reads the table and the unit, and drives the cli', () async {
+      final l = drives();
+      final conf = File(p.join(tmp.path, '.config', 'zx', 'mounts.conf'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('''
+# zx mounts
+[docs]
+archive = /a/docs.zx
+mountpoint = /mnt/docs
+readonly = true
+
+[two]
+archive = /a/two.7z
+mountpoint = /mnt/two
+''');
+      var st = await l.mountLoginStatus();
+      expect(st.available, isTrue);
+      expect(st.enabled, isFalse);
+      expect(st.drives.map((d) => '${d.name} ${d.archive} ${d.mountpoint}'), [
+        'docs /a/docs.zx /mnt/docs',
+        'two /a/two.7z /mnt/two',
+      ]);
+      expect(conf.existsSync(), isTrue);
+
+      await l.setMountAtLogin(true);
+      await l.setMountAtLogin(false);
+      await l.removeMountDrive('two');
+      // a name that is free: the folder name, then _2
+      await l.addMountDrive('/a/new.zx', '/mnt/docs');
+      expect(commands, [
+        '$cli mounts enable-boot -exe=$cli',
+        '$cli mounts disable-boot',
+        '$cli mounts remove two',
+        '$cli mounts add docs_2 /a/new.zx /mnt/docs',
+      ]);
+
+      // the unit is enabled when systemd has the link
+      Directory(
+        p.join(tmp.path, '.config', 'systemd', 'user', 'default.target.wants'),
+      ).createSync(recursive: true);
+      File(
+        p.join(
+          tmp.path,
+          '.config',
+          'systemd',
+          'user',
+          'default.target.wants',
+          'zx-mount@docs.service',
+        ),
+      ).createSync();
+      st = await l.mountLoginStatus();
+      expect(st.enabled, isTrue);
+      commands.clear();
+      await l.addMountDrive('/a/x.zx', '/mnt/x');
+      // a running unit set is refreshed so the new drive starts
+      expect(commands, [
+        '$cli mounts add x /a/x.zx /mnt/x',
+        '$cli mounts enable-boot -exe=$cli',
+      ]);
+    });
+  });
 }

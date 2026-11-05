@@ -67,6 +67,50 @@ class IntegrationStatus {
       '${notes.map((n) => '\nnote: $n').join()}';
 }
 
+/// A drive of the table of `zx mounts` (~/.config/zx/mounts.conf).
+class MountDrive {
+  final String name;
+  final String archive;
+  final String mountpoint;
+  const MountDrive(this.name, this.archive, this.mountpoint);
+}
+
+/// The drives that are mounted at login (see docs/mount.md).
+class MountLoginStatus {
+  /// The drives can be managed here (Linux, with the zx command line tool).
+  final bool available;
+
+  /// Why not, when [available] is false.
+  final String note;
+
+  /// The per-user systemd unit is enabled.
+  final bool enabled;
+  final List<MountDrive> drives;
+
+  const MountLoginStatus({
+    required this.available,
+    this.note = '',
+    this.enabled = false,
+    this.drives = const [],
+  });
+
+  const MountLoginStatus.unavailable(this.note)
+    : available = false,
+      enabled = false,
+      drives = const [];
+}
+
+/// The systems without drives (everything but Linux).
+mixin NoMountDrives {
+  Future<MountLoginStatus> mountLoginStatus() async =>
+      const MountLoginStatus.unavailable(
+        'Mounting archives as drives is available on Linux.',
+      );
+  Future<void> setMountAtLogin(bool on) async {}
+  Future<void> addMountDrive(String archive, String mountpoint) async {}
+  Future<void> removeMountDrive(String name) async {}
+}
+
 abstract class DesktopIntegration {
   /// False where the toggles can not work (see [unsupportedReason]).
   bool get supported;
@@ -84,6 +128,18 @@ abstract class DesktopIntegration {
   /// Removes everything [register], [setAssociations] and
   /// [setContextMenu] installed.
   Future<void> removeAll();
+
+  /// The drives of `zx mount` and whether they start at login.
+  Future<MountLoginStatus> mountLoginStatus();
+
+  /// Starts the drives at login (a per-user systemd unit), or stops doing so.
+  Future<void> setMountAtLogin(bool on);
+
+  /// Adds [archive] as a drive on [mountpoint] to the table.
+  Future<void> addMountDrive(String archive, String mountpoint);
+
+  /// Removes the drive [name] from the table.
+  Future<void> removeMountDrive(String name);
 
   factory DesktopIntegration.forPlatform(
     AppPaths paths, {
@@ -105,7 +161,7 @@ abstract class DesktopIntegration {
   }
 }
 
-class UnsupportedIntegration implements DesktopIntegration {
+class UnsupportedIntegration with NoMountDrives implements DesktopIntegration {
   @override
   final String unsupportedReason;
   const UnsupportedIntegration(this.unsupportedReason);
@@ -172,6 +228,10 @@ class LinuxIntegration implements DesktopIntegration {
   /// Where to look for the native Nautilus extension.
   final List<String> nautilusExtensionDirs;
 
+  /// Where the zx command line tool may be (default: the usual places and
+  /// next to the app); `zx mounts` does the drives.
+  final List<String>? zxCliCandidates;
+
   LinuxIntegration(
     this.paths,
     this.executable, {
@@ -180,6 +240,7 @@ class LinuxIntegration implements DesktopIntegration {
     this.iconSource,
     bool? packaged,
     this.nautilusExtensionDirs = kNautilusExtensionDirs,
+    this.zxCliCandidates,
   }) : systemConfigDirs = systemConfigDirs ?? _xdgConfigDirs(),
        packaged = packaged ?? p.isWithin(kPackageDir, executable);
 
@@ -257,6 +318,118 @@ class LinuxIntegration implements DesktopIntegration {
     }
     return false;
   }
+
+  // ---- drives at login (zx mount) ----
+
+  /// Where the zx command line tool may be, besides next to the app.
+  String? get _zxCli {
+    final home = Platform.environment['HOME'] ?? '';
+    for (final c
+        in zxCliCandidates ??
+            [
+              '/usr/bin/zx',
+              p.join(home, '.local', 'bin', 'zx'),
+              p.join(p.dirname(executable), 'zx'),
+              '/opt/zx/zx',
+            ]) {
+      if (File(c).existsSync()) return c;
+    }
+    return null;
+  }
+
+  String get mountTableFile => p.join(paths.appConfigDir, 'mounts.conf');
+  String get _unitWants =>
+      p.join(paths.configHome, 'systemd', 'user', 'default.target.wants');
+
+  @override
+  Future<MountLoginStatus> mountLoginStatus() async {
+    if (_zxCli == null) {
+      return const MountLoginStatus.unavailable(
+        'Mounting drives needs the zx command line tool (the zx package).',
+      );
+    }
+    var enabled = false;
+    final wants = Directory(_unitWants);
+    if (await wants.exists()) {
+      enabled = await wants.list().any(
+        (e) => p.basename(e.path).startsWith('zx-mount@'),
+      );
+    }
+    return MountLoginStatus(
+      available: true,
+      enabled: enabled,
+      drives: await _readDrives(),
+    );
+  }
+
+  Future<List<MountDrive>> _readDrives() async {
+    final f = File(mountTableFile);
+    if (!await f.exists()) return const [];
+    final out = <MountDrive>[];
+    String? name;
+    var archive = '', mp = '';
+    void flush() {
+      if (name != null && archive.isNotEmpty && mp.isNotEmpty) {
+        out.add(MountDrive(name, archive, mp));
+      }
+    }
+
+    for (var line in await f.readAsLines()) {
+      line = line.trim();
+      if (line.startsWith('[') && line.endsWith(']')) {
+        flush();
+        name = line.substring(1, line.length - 1).trim();
+        archive = mp = '';
+      } else if (line.startsWith('archive')) {
+        archive = line.substring(line.indexOf('=') + 1).trim();
+      } else if (line.startsWith('mountpoint')) {
+        mp = line.substring(line.indexOf('=') + 1).trim();
+      }
+    }
+    flush();
+    return out;
+  }
+
+  Future<void> _zx(List<String> args) async {
+    final cli = _zxCli;
+    if (cli == null) {
+      throw const FileSystemException('the zx command line tool is missing');
+    }
+    final r = await runner(cli, args);
+    if (r == null || r.exitCode != 0) {
+      final msg = r == null ? 'could not start $cli' : '${r.stderr}'.trim();
+      throw FileSystemException(msg.isEmpty ? 'zx ${args.first} failed' : msg);
+    }
+  }
+
+  @override
+  Future<void> setMountAtLogin(bool on) async {
+    if (on) {
+      await _zx(['mounts', 'enable-boot', '-exe=$_zxCli']);
+    } else {
+      await _zx(['mounts', 'disable-boot']);
+    }
+  }
+
+  @override
+  Future<void> addMountDrive(String archive, String mountpoint) async {
+    final base = p
+        .basename(mountpoint)
+        .replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_');
+    final taken = {for (final d in await _readDrives()) d.name};
+    var name = base.isEmpty ? 'drive' : base;
+    for (var i = 2; taken.contains(name); i++) {
+      name = '${base}_$i';
+    }
+    await _zx(['mounts', 'add', name, archive, mountpoint]);
+    // the unit starts the new drive when the switch is on
+    if ((await mountLoginStatus()).enabled) {
+      await _zx(['mounts', 'enable-boot', '-exe=$_zxCli']);
+    }
+  }
+
+  @override
+  Future<void> removeMountDrive(String name) => _zx(['mounts', 'remove', name]);
 
   // ---- desktop entry and icons ----
 
@@ -787,7 +960,7 @@ class _Ini {
 
 const _progId = 'zx.archive';
 
-class WindowsIntegration implements DesktopIntegration {
+class WindowsIntegration with NoMountDrives implements DesktopIntegration {
   final String executable;
   final CommandRunner runner;
   WindowsIntegration(this.executable, {this.runner = runCommand});

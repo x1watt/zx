@@ -1,5 +1,11 @@
 ## Unreleased
 
+- **App: "Virtual drives" in Settings (Linux).** A switch "Mount my drives
+  at login" (the per-user systemd unit of `zx mounts enable-boot`), the list
+  of drives of `~/.config/zx/mounts.conf` with a remove button, and "Add a
+  drive..." (pick an archive and an empty folder). It needs the zx command
+  line tool, which does the work (`zx mounts add|remove|enable-boot`);
+  `enable-boot` gets `-exe=PROGRAM` for the program the unit runs.
 - **`ZxArchive.readRange(item, offset, length)`: part of a file without
   extracting it.** Only the blocks that hold the bytes are decoded (.zx,
   zip, tar, disk images and file systems; null for solid 7z and the

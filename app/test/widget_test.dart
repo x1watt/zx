@@ -12,6 +12,7 @@ import 'package:zx/zx.dart';
 import 'package:zx_app/src/app.dart';
 import 'package:zx_app/src/dialogs/common_dialogs.dart';
 import 'package:zx_app/src/dialogs/extract_dialog.dart';
+import 'package:zx_app/src/integration.dart';
 import 'package:zx_app/src/services.dart';
 import 'package:zx_app/src/settings.dart';
 import 'package:zx_app/src/ui/browser_page.dart';
@@ -325,6 +326,34 @@ void main() {
     await tester.pump();
     expect(s.settings.confirmDelete, isFalse);
   });
+
+  testWidgets('settings page: drives at login', (tester) async {
+    final integ = FakeIntegration()
+      ..drives.add(const MountDrive('docs', '/a/docs.zx', '/mnt/docs'));
+    final picker = FakePicker();
+    final s = testServices(
+      tmp.path,
+      integration: integ,
+      picker: picker,
+      settings: Settings(),
+    );
+    tester.view.physicalSize = const Size(1200, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(MaterialApp(home: SettingsPage(services: s)));
+    await tester.pumpAndSettle();
+    expect(find.text('/mnt/docs'), findsOneWidget);
+    SwitchListTile sw() =>
+        tester.widget<SwitchListTile>(find.byKey(const Key('set-mount-login')));
+    expect(sw().value, isFalse);
+    await tester.tap(find.byKey(const Key('set-mount-login')));
+    await tester.pumpAndSettle();
+    expect(sw().value, isTrue);
+    await tester.tap(find.byTooltip('Remove this drive'));
+    await tester.pumpAndSettle();
+    expect(find.text('/mnt/docs'), findsNothing);
+    expect(integ.calls, ['mount:true', 'remove:docs']);
+  }, skip: !Platform.isLinux);
 
   test('settings are saved and read back', () async {
     final f = p.join(tmp.path, 'cfg', 'settings.json');

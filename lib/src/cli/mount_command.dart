@@ -30,7 +30,7 @@ Usage: zx mount [OPTIONS] ARCHIVE MOUNTPOINT
        zx mounts [list]
        zx mounts add [OPTIONS] NAME ARCHIVE MOUNTPOINT
        zx mounts remove NAME
-       zx mounts enable-boot [--linger]
+       zx mounts enable-boot [-linger] [-exe=PROGRAM]
        zx mounts disable-boot
 Mounts an archive as a virtual drive (Linux, FUSE 3). The archive is
 changed through the mount when its format can be updated (.zx, 7z, zip...)
@@ -685,9 +685,15 @@ Future<int> runMountsCommand(List<String> args) async {
         stderr.writeln('zx mounts: the table is empty (zx mounts add ...)');
         return 1;
       }
+      // -exe=PATH: the program the unit runs (the app starts this from its
+      // own executable, which is not the command line tool)
+      final exe = rest
+          .where((a) => a.startsWith('-exe=') || a.startsWith('--exe='))
+          .map((a) => a.substring(a.indexOf('=') + 1))
+          .firstOrNull;
       final dir = Directory(_unitDir())..createSync(recursive: true);
       File('${dir.path}/zx-mount@.service')
-          .writeAsStringSync(systemdUnit(selfCommand()));
+          .writeAsStringSync(systemdUnit(exe == null ? selfCommand() : [exe]));
       var rc = await _systemctl(['daemon-reload']);
       for (final e in t) {
         rc |= await _systemctl(['enable', '--now', 'zx-mount@${e.name}.service']);

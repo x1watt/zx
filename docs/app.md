@@ -164,6 +164,16 @@ new folder named after it next to it (`b.tar.gz` gives `b/`, an existing
 name gives `b (2)/`), in a small progress window that asks for a password
 when needed and closes itself; this is what the menu entries run.
 
+**Virtual drives (Linux).** Settings has a "Virtual drives" section: the
+switch "Mount my drives at login" enables the per-user systemd unit
+`zx-mount@NAME.service` for every drive, the list shows the drives of
+`~/.config/zx/mounts.conf` (remove with the bin button) and "Add a
+drive..." picks an archive and an empty folder. The app runs the `zx`
+command line tool for all of it (`zx mounts add|remove|enable-boot`, see
+docs/mount.md), looked for in `/usr/bin`, `~/.local/bin`, next to the app
+and `/opt/zx`; without it the section says so. Starting the drives before
+login needs `zx mounts enable-boot -linger` once.
+
 Windows (per user, `HKCU\Software\Classes`, no administrator rights) and
 macOS (document types in `Info.plist`, a Finder Quick Action) are
 described in `app/README.md`.
