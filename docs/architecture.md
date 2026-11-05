@@ -26,7 +26,10 @@ Read it together with `docs/performance.md`.
    run where they are called, and say so.
 4. **Pure Dart.** No FFI, no plugins, no dependencies at run time, so the
    package builds for every native Flutter target unchanged, and for the
-   browser with dart2wasm (section 20).
+   browser with dart2wasm (section 20). Operating system integration that
+   Dart can not do (the Nautilus item, the FUSE daemon of `zx mount`) is
+   a small C program in `native/`, outside `lib/`, that talks to the Dart
+   side by process arguments or a pipe.
 
 ## 2. Rules for every file
 

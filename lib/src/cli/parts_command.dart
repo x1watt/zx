@@ -14,6 +14,7 @@ import '../host/io.dart';
 import '../io/part_set.dart';
 import '../io/streams.dart' show SevenZipException;
 import 'globals.dart';
+import 'size_arg.dart';
 import 'std_stream.dart';
 
 const String zxPartsUsage = '''
@@ -34,18 +35,6 @@ opening it and at least -min of the given queries read (run cold, one by
 one), up to -max bytes; it is written into the manifest, and the web
 version fetches it in parallel when it opens the set.
 ''';
-
-int? _size(String s) {
-  final m = RegExp(r'^(\d+)([kmgKMG]?)$').firstMatch(s);
-  if (m == null) return null;
-  final n = int.parse(m[1]!);
-  return switch (m[2]!.toLowerCase()) {
-    'k' => n << 10,
-    'm' => n << 20,
-    'g' => n << 30,
-    _ => n,
-  };
-}
 
 /// Runs `zx parts` with [args] (after the word "parts"); returns the
 /// exit code.
@@ -69,7 +58,7 @@ int runPartsCommand(List<String> args, CliIo io) {
   for (var i = 1; i < args.length; i++) {
     final a = args[i];
     if (a.startsWith('-size=')) {
-      final n = _size(a.substring(6));
+      final n = parseSizeArg(a.substring(6));
       if (n == null || n <= 0) {
         err('zx parts: Error: bad size: $a\n');
         return 1;
@@ -84,10 +73,10 @@ int runPartsCommand(List<String> args, CliIo io) {
           .where((l) => l.isNotEmpty && !l.startsWith('--')));
     } else if (a.startsWith('-min=') && int.tryParse(a.substring(5)) != null) {
       minHits = int.parse(a.substring(5));
-    } else if (a.startsWith('-max=') && _size(a.substring(5)) != null) {
-      maxBytes = _size(a.substring(5))!;
-    } else if (a.startsWith('-block=') && _size(a.substring(7)) != null) {
-      block = _size(a.substring(7))!;
+    } else if (a.startsWith('-max=') && parseSizeArg(a.substring(5)) != null) {
+      maxBytes = parseSizeArg(a.substring(5))!;
+    } else if (a.startsWith('-block=') && parseSizeArg(a.substring(7)) != null) {
+      block = parseSizeArg(a.substring(7))!;
     } else if (a == '-o' && i + 1 < args.length) {
       outDir = args[++i];
     } else if (a.startsWith('-') && a.length > 1) {

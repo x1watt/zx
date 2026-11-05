@@ -40,6 +40,7 @@ MULTIARCH=x86_64-linux-gnu
 BUNDLE="$ROOT/app/build/linux/x64/release/bundle"
 CLI="$ROOT/build/deb/zx"
 EXT="$ROOT/native/nautilus/libzx-nautilus.so"
+MNT="$ROOT/native/fuse/zx-mount"
 STAGE="$ROOT/build/deb/zx_${VERSION}_${ARCH}"
 OUT="$ROOT/dist/zx_${VERSION}_${ARCH}.deb"
 
@@ -60,8 +61,11 @@ if [ "$BUILD" = 1 ]; then
   echo "== Nautilus extension"
   tool/fetch_nautilus_headers.sh
   make -C native/nautilus clean all test
+  echo "== FUSE daemon of zx mount"
+  tool/fetch_fuse_headers.sh
+  make -C native/fuse clean all
 fi
-for f in "$BUNDLE/zx-gui" "$CLI" "$EXT"; do
+for f in "$BUNDLE/zx-gui" "$CLI" "$EXT" "$MNT"; do
   [ -e "$f" ] || { echo "missing $f (drop --no-build)" >&2; exit 1; }
 done
 
@@ -95,6 +99,9 @@ for s in 16 24 32 48 64 128 256 512; do
   install -D -m 644 "$ICONS/zx-$s.png" "$STAGE/usr/share/icons/hicolor/${s}x$s/apps/zx.png"
 done
 
+# the daemon of "zx mount" (docs/mount.md), found by zx in /usr/lib/zx
+install -D -m 755 "$MNT" "$STAGE/usr/lib/zx/zx-mount"
+strip --strip-unneeded "$STAGE/usr/lib/zx/zx-mount"
 install -m 644 "$EXT" "$STAGE/usr/lib/$MULTIARCH/nautilus/extensions-4/libzx-nautilus.so"
 strip --strip-unneeded "$STAGE/usr/lib/$MULTIARCH/nautilus/extensions-4/libzx-nautilus.so"
 
@@ -134,7 +141,7 @@ find "$STAGE" -type f -perm -u+x -exec chmod 755 {} +
 echo "== dependencies"
 # The shared libraries of the bundle and of the CLI (not of the Nautilus
 # extension: it is loaded only by Nautilus, which brings its library).
-mapfile -t ELFS < <(find "$STAGE/opt/zx" "$STAGE/usr/bin" -type f \
+mapfile -t ELFS < <(find "$STAGE/opt/zx" "$STAGE/usr/bin" "$STAGE/usr/lib/zx" -type f \
   -exec sh -c 'head -c4 "$1" | grep -q "ELF" && echo "$1"' _ {} \;)
 DEPENDS=""
 if command -v dpkg-shlibdeps >/dev/null; then
@@ -157,7 +164,7 @@ Architecture: $ARCH
 Maintainer: Max Brito <maxbrito.x1@gmail.com>
 Installed-Size: $INSTALLED_SIZE
 Depends: $DEPENDS
-Recommends: xdg-utils
+Recommends: xdg-utils, fuse3
 Suggests: nautilus | thunar
 Section: utils
 Priority: optional

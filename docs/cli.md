@@ -387,6 +387,14 @@ zx readme project.zip docs           # the README of the folder docs
 zx readme -check -all project.zx     # check every README of the archive
 ```
 
+### Virtual drives: `zx mount`, `zx umount`, `zx mounts`
+
+`zx mount ARCHIVE MOUNTPOINT` mounts an archive as a read-write drive
+(Linux, FUSE 3), `zx umount MOUNTPOINT` writes the pending changes and
+unmounts, `zx mounts` lists the drives and keeps the table of drives to
+mount at login or boot (`enable-boot`, a per-user systemd unit). See
+docs/mount.md.
+
 ### Installing
 
 - With the Dart SDK: `dart pub global activate --source path <repo>` puts

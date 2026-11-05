@@ -1,5 +1,17 @@
 ## Unreleased
 
+- **Virtual drives: `zx mount` (Linux).** `zx mount ARCHIVE MOUNTPOINT`
+  mounts any archive as a drive with FUSE 3, read-write for the formats zx
+  can update. Reads extract a file once to a bounded cache; writes are
+  staged and committed as one update (one generation for .zx) after a few
+  idle seconds, on fsync and on unmount. Several archives can be mounted at
+  once (one `zx mount -f` and one C daemon, `native/fuse/zx-mount`, per
+  drive; the library stays pure Dart). `zx umount`, `zx mounts` (list,
+  add, remove) and `zx mounts enable-boot [-linger]`, which installs a
+  per-user systemd unit `zx-mount@NAME.service` for the drives of
+  `~/.config/zx/mounts.conf`. See docs/mount.md. New: `ZxFs`
+  (`lib/src/mount`), `tool/fetch_fuse_headers.sh`; the .deb installs the
+  daemon in `/usr/lib/zx`.
 - **Part sets: a warm set, fetched in parallel when a set opens (`zx parts
   warm`).** A cold query over HTTP walks its trees one request after
   another (about 10 per question, each 0.4 to 0.7 s on Hugging Face's

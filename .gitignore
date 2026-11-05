@@ -12,3 +12,4 @@ native/nautilus/zx-nautilus-test
 
 # the browser test of the web engine (tool/web_check/run_e2e.sh)
 .webtest/
+native/fuse/zx-mount

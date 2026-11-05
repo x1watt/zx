@@ -27,6 +27,10 @@ else
         "$CONFIG/zx/context-menu-disabled" \
         "$DATA/nautilus-python/extensions/zx_extract.py"
 fi
+# the boot mounts of "zx mount" (the table mounts.conf is kept unless --purge)
+if command -v zx >/dev/null 2>&1; then
+  zx mounts disable-boot || true
+fi
 rm -f "$HOME/.local/bin/zx-gui"
 rm -rf "$DEST"
 rmdir "$DATA/zx" 2>/dev/null || true

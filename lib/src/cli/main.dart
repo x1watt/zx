@@ -32,6 +32,7 @@ import 'extracting_file_path.dart';
 import 'prop_id_utils.dart';
 import 'readme_command.dart';
 import 'seal_command.dart';
+import 'mount_command.dart';
 import 'parts_command.dart';
 import 'sql_command.dart';
 import 'platform.dart';
@@ -71,6 +72,8 @@ const String _kHelpString = 'Usage: zx'
     '    zx readme <archive> [folder]; -check checks that its images and\n'
     '    linked files are in the archive; zx readme -help lists the options\n'
     '  rn : Rename files in archive\n'
+    '  mount, umount, mounts : (zx) mount an archive as a virtual drive\n'
+    '    (Linux, FUSE), unmount it, list/persist the drives; zx mount -help\n'
     '  seal : (zx) show and check the signed generations of a .zx archive,\n'
     '    sign it (NOSTR keys) and change its admin and maintainers;\n'
     '    zx seal -help lists the options\n'
@@ -910,6 +913,17 @@ Future<int> runSevenZipCli(List<String> args,
 /// streams of the process; Windows runs it in a worker isolate that sends
 /// the output to this one (see [windowsWorkerCliIo]).
 Future<int> runSevenZipCliProcess(List<String> args) async {
+  // the commands that serve a drive run for a long time (async, Linux)
+  if (!kIsWin && args.isNotEmpty) {
+    switch (args.first.toLowerCase()) {
+      case 'mount':
+        return runMountCommand(args.sublist(1));
+      case 'umount':
+        return runUmountCommand(args.sublist(1));
+      case 'mounts':
+        return runMountsCommand(args.sublist(1));
+    }
+  }
   if (!kIsWin) return runSevenZipCliSync(args, processCliIo());
   final port = ReceivePort();
   final done = Completer<int>();
