@@ -620,6 +620,29 @@ class ZxArchive {
     return bytes.materialize().asUint8List();
   }
 
+  /// [length] bytes of the file [item] from [offset] (fewer at the end of
+  /// the file; empty past it), decoding only the blocks that hold them, or
+  /// null when the format gives the item no random access (solid 7z,
+  /// compressed tars...): use [readBytes] or [extract] then. .zx, zip,
+  /// tar, and the formats of disk images and file systems have it. Each
+  /// call opens the archive in a background isolate, so ask for chunks of
+  /// a few MiB, not for single reads.
+  Future<Uint8List?> readRange(Object item, int offset, int length,
+      {ZxCancelToken? cancel}) async {
+    if (offset < 0 || length < 0) {
+      throw ArgumentError('negative offset or length');
+    }
+    final it = _resolveFile(item);
+    final req = _extractRequest(ZxExtractMode.memory, [it.index],
+        maxBytes: length, offset: offset);
+    final (bytes, pw) = await _zxRun<(TransferableTypedData?, String?)>(
+        (ops) => workerReadRange(req, ops),
+        cancel: cancel,
+        onPassword: onPassword);
+    _rememberPassword(pw);
+    return bytes?.materialize().asUint8List();
+  }
+
   /// Whether the file [item] (a [ZxItem], a path or an index) looks like
   /// an archive that [openNested] can open: the name of its format as
   /// the signatures at its start say (an item of a container format such
@@ -899,7 +922,8 @@ class ZxArchive {
       bool restoreTimes = false,
       bool restoreModes = false,
       bool restoreSymlinks = false,
-      int? maxBytes}) {
+      int? maxBytes,
+      int offset = 0}) {
     List<String>? paths;
     List<int>? indices;
     if (items != null) {
@@ -941,6 +965,7 @@ class ZxArchive {
         restoreModes: restoreModes,
         restoreSymlinks: restoreSymlinks,
         maxBytes: maxBytes,
+        offset: offset,
         version: _baseVersion,
         searchDirs: searchDirs);
   }

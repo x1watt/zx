@@ -144,6 +144,9 @@ class ZxExtractRequest {
   final bool restoreSymlinks;
   final int? maxBytes;
 
+  /// [workerReadRange]: where the bytes to read start in the item.
+  final int offset;
+
   /// See [ZxOpenRequest.version].
   final int? version;
 
@@ -168,6 +171,7 @@ class ZxExtractRequest {
     this.restoreModes = false,
     this.restoreSymlinks = false,
     this.maxBytes,
+    this.offset = 0,
     this.version,
     this.searchDirs = const [],
   });
@@ -1528,6 +1532,51 @@ Future<(Uint8List, String?)> workerReadBytesRaw(
         'Item not found in the archive', SevenZipError.unsupported);
   }
   return (data, pw);
+}
+
+/// [ZxArchive.readRange]: (the bytes of the item from [ZxExtractRequest.offset],
+/// at most [ZxExtractRequest.maxBytes], fewer at the end of the item; null
+/// when the item has no random access stream), the password). Only the
+/// blocks that hold the range are decoded (.zx, and the formats whose
+/// items are stored or can be seeked).
+Future<Object?> workerReadRange(ZxExtractRequest r, ZxOps ops) async {
+  _zxSearchDirs = r.searchDirs;
+  final codecs = Codecs.load();
+  final index = r.indices!.single;
+  final o = await _openAsk(codecs, r.archivePath, r.password, r.canAsk, ops,
+      chain: r.chain, nest: r.nest, version: r.version);
+  try {
+    final a = o.archive;
+    if (index < 0 || index >= a.numberOfItems) {
+      throw SevenZipException(
+          'Item #$index not found in the archive', SevenZipError.unsupported);
+    }
+    SeekableInStream? s;
+    try {
+      s = a.getStream(index);
+    } on Object {
+      s = null;
+    }
+    if (s == null) return (null, o.password);
+    var want = r.maxBytes ?? 0;
+    if (r.offset >= s.length) return (TransferableTypedData.fromList([Uint8List(0)]), o.password);
+    if (r.offset + want > s.length) want = s.length - r.offset;
+    final out = Uint8List(want);
+    s.position = r.offset;
+    var got = 0;
+    while (got < want) {
+      final n = s.read(out, got, want - got);
+      if (n <= 0) break;
+      got += n;
+    }
+    return (
+      TransferableTypedData.fromList(
+          [got == want ? out : Uint8List.sublistView(out, 0, got)]),
+      o.password
+    );
+  } finally {
+    o.close();
+  }
 }
 
 /// [ZxArchive.probeNested]: (the format name of the item, or null; the

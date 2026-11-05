@@ -169,7 +169,7 @@ Future<Uint8List?> _dispatch(ZxFs fs, int op, _R r) async {
       return (_W()..u64(fh)).take();
     case FuseOp.read:
       final fh = r.u64(), off = r.u64(), n = r.u32();
-      return fs.read(fh, off, n);
+      return await fs.read(fh, off, n);
     case FuseOp.write:
       final fh = r.u64(), off = r.u64(), n = r.u32();
       final w = fs.write(fh, off, Uint8List.fromList(r.bytes(n)));

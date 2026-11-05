@@ -1,5 +1,10 @@
 ## Unreleased
 
+- **`ZxArchive.readRange(item, offset, length)`: part of a file without
+  extracting it.** Only the blocks that hold the bytes are decoded (.zx,
+  zip, tar, disk images and file systems; null for solid 7z and the
+  compressed tars). `zx mount` uses it for files of 8 MiB and more, in
+  chunks of 4 MiB with read ahead, so a big file opens at once.
 - **Virtual drives: `zx mount` (Linux).** `zx mount ARCHIVE MOUNTPOINT`
   mounts any archive as a drive with FUSE 3, read-write for the formats zx
   can update. Reads extract a file once to a bounded cache; writes are

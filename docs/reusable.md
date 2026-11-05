@@ -23,12 +23,7 @@ writing a new feature.
 | Code | Where | Notes |
 |---|---|---|
 | `ZxArchive.children`, `[]`, `items` | `lib/src/zx_api.dart` | The tree view of a listing, with implied folders. |
-| `ZxArchive.extractToTemp` | `lib/src/zx_api.dart` | One file out of any format into a folder; used for the mount's read cache. A range read API for `.zx` chunks would make big files mount faster (open question, see below). |
+| `ZxArchive.extractToTemp` | `lib/src/zx_api.dart` | One file out of any format into a folder; used for the mount's read cache. For parts of a file use `readRange`. |
+| `ZxArchive.readRange` | `lib/src/zx_api.dart`, `workerReadRange` | Bytes of an item from an offset, decoding only the blocks involved (null when the format has no random access). Previews, media players, hex views, anything that needs the middle of a big file. |
 | `ZxArchive.add/delete/rename/createFolder` | `lib/src/zx_api.dart` | Updates that write a new archive and rename it over the old one, or append a generation. |
 | `CliIo`-free async commands | `runSevenZipCliProcess` in `lib/src/cli/main.dart` | The place to hook long-running (async) commands: dispatch before the synchronous 7-Zip parser. |
-
-## Open questions
-
-- Is a range read (`readRange(item, offset, length)`) on `ZxArchive` worth
-  adding for `.zx` and uncompressed/Copy items? It would let the mount serve
-  the first bytes of a big file without extracting all of it.

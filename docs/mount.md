@@ -21,11 +21,16 @@ Each mount is two processes, started by `zx mount`:
   and forwards every request over a pipe. It has no archive logic, so the
   library stays pure Dart (no FFI) and the protocol is the only coupling.
 
-**Reading.** A file is extracted once into the cache folder
-(`~/.cache/zx/mount/PID-NAME`), then read by offset from that copy. The
-cache keeps up to `-cache=SIZE` (default 1g), least recently used out
-first. The first read of a big file waits for its extraction (the archive
-formats have no range reads); later reads are plain file reads.
+**Reading.** A file of 8 MiB or more is read in chunks of 4 MiB with
+`ZxArchive.readRange`, which decodes only the blocks that hold the chunk
+(.zx, zip, tar, disk images and file systems have random access), so
+`head` or a video player starts at once; the next chunk is fetched while a
+sequential reader consumes the current one, and 64 MiB of chunks are kept.
+Smaller files, and big files of formats with no random access (solid 7z,
+compressed tars), are extracted whole once into the cache folder
+(`~/.cache/zx/mount/PID-NAME`), then read by offset; that cache keeps up to
+`-cache=SIZE` (default 1g), least recently used out first. The first read
+of such a big file waits for its extraction.
 
 **Writing.** A changed or new file lives in the same folder (staging).
 Deletes, renames and new folders are noted in a journal. Nothing touches

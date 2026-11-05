@@ -14,7 +14,8 @@ var _n = 0;
 
 Uint8List b(String s) => Uint8List.fromList(utf8.encode(s));
 
-Future<(ZxArchive, ZxFs)> mountOf(String ext, {bool readOnly = false}) async {
+Future<(ZxArchive, ZxFs)> mountOf(String ext,
+    {bool readOnly = false, int? rangeThreshold}) async {
   final d = Directory('${tmp.path}/m${_n++}')..createSync();
   final src = Directory('${d.path}/src')..createSync();
   File('${src.path}/a.txt').writeAsStringSync('hello\n');
@@ -26,7 +27,11 @@ Future<(ZxArchive, ZxFs)> mountOf(String ext, {bool readOnly = false}) async {
     ZxSource('${src.path}/dir'),
   ]);
   final fs = ZxFs(ZxArchiveBackend(ar),
-      ZxFsOptions('${d.path}/work', readOnly: readOnly, idleCommit: null));
+      ZxFsOptions('${d.path}/work',
+          readOnly: readOnly,
+          rangeThreshold: rangeThreshold,
+          chunkSize: 256,
+          idleCommit: null));
   return (ar, fs);
 }
 
@@ -35,7 +40,7 @@ Future<String> readAll(ZxFs fs, String path) async {
   final out = BytesBuilder();
   var off = 0;
   while (true) {
-    final c = fs.read(fh, off, 4096);
+    final c = await fs.read(fh, off, 4096);
     if (c.isEmpty) break;
     out.add(c);
     off += c.length;
@@ -60,8 +65,8 @@ void main() {
         expect(() => fs.getattr('/nope'),
             throwsA(isA<FsError>().having((e) => e.errno, 'errno', 2)));
         final fh = await fs.open('/dir/b.txt');
-        expect(utf8.decode(fs.read(fh, 4, 4)), 'bee ');
-        expect(fs.read(fh, 5000, 10), isEmpty);
+        expect(utf8.decode(await fs.read(fh, 4, 4)), 'bee ');
+        expect((await fs.read(fh, 5000, 10)), isEmpty);
         fs.release(fh);
         await fs.close();
       });
@@ -120,6 +125,37 @@ void main() {
       });
     });
   }
+
+  for (final ext in ['zx', '7z', 'zip', 'tar']) {
+    test('$ext: a big file is read in chunks', () async {
+      final (ar, fs) = await mountOf(ext, rangeThreshold: 1000);
+      final want = 'bee ' * 300;
+      // b.txt is 1200 bytes: five chunks of 256
+      expect(await readAll(fs, '/dir/b.txt'), want);
+      final fh = await fs.open('/dir/b.txt');
+      expect(utf8.decode(await fs.read(fh, 250, 12)), want.substring(250, 262));
+      expect(utf8.decode(await fs.read(fh, 1190, 100)), want.substring(1190));
+      expect(await fs.read(fh, 1200, 10), isEmpty);
+      fs.release(fh);
+      // the small one is extracted whole
+      expect(await readAll(fs, '/a.txt'), 'hello\n');
+      // writing to it still works (staged copy)
+      final w = await fs.open('/dir/b.txt', write: true);
+      fs.write(w, 0, b('BEE'));
+      fs.release(w);
+      expect((await readAll(fs, '/dir/b.txt')).substring(0, 8), 'BEE bee ');
+      await fs.close();
+      await ar.close();
+    });
+  }
+
+  test('readRange of the archive', () async {
+    final (ar, fs) = await mountOf('zx');
+    final r = await ar.readRange('dir/b.txt', 1196, 100);
+    expect(utf8.decode(r!), 'bee ');
+    expect(await ar.readRange('dir/b.txt', 5000, 10), isEmpty);
+    await fs.close();
+  });
 
   test('read only', () async {
     final (_, fs) = await mountOf('zx', readOnly: true);

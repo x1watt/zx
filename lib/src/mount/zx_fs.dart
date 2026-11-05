@@ -58,6 +58,10 @@ abstract class FsBackend {
   Future<void> rename(String from, String to);
   Future<void> createFolder(String path);
 
+  /// [length] bytes of the file [path] from [offset], or null when the
+  /// format has no random access to it (read it whole with [extract]).
+  Future<Uint8List?> readRange(String path, int offset, int length);
+
   /// Adds the files (stored path to file on disk) in one update.
   Future<void> addAll(Map<String, String> files);
 
@@ -84,6 +88,13 @@ class ZxArchiveBackend implements FsBackend {
     final it = archive[path];
     if (it == null) throw FsError(FsError.enoent, path);
     return archive.extractToTemp(it, tempDir: dir);
+  }
+
+  @override
+  Future<Uint8List?> readRange(String path, int offset, int length) {
+    final it = archive[path];
+    if (it == null) throw FsError(FsError.enoent, path);
+    return archive.readRange(it, offset, length);
   }
 
   @override
@@ -114,6 +125,14 @@ class ZxFsOptions {
   /// Mount read only even if the archive can be changed.
   final bool readOnly;
 
+  /// Files of at least this size are read in chunks ([chunkSize] bytes, by
+  /// [FsBackend.readRange], the blocks that hold them) instead of being
+  /// extracted whole first; null: always extract. [chunkBytes] bounds the
+  /// chunks kept in memory.
+  final int? rangeThreshold;
+  final int chunkSize;
+  final int chunkBytes;
+
   /// Commit when this long passes with no change and no open writer;
   /// null: only on fsync and unmount.
   final Duration? idleCommit;
@@ -126,6 +145,9 @@ class ZxFsOptions {
     this.workDir, {
     this.cacheBytes = 1 << 30,
     this.readOnly = false,
+    this.rangeThreshold = 8 << 20,
+    this.chunkSize = 4 << 20,
+    this.chunkBytes = 64 << 20,
     this.idleCommit = const Duration(seconds: 5),
     this.uid = 0,
     this.gid = 0,
@@ -158,6 +180,10 @@ class _Node {
   String? staged;
   bool dirty = false;
 
+  /// The path in the archive as it is now (the node may have been moved
+  /// since: reads go there until the next commit), null for a new file.
+  String? origin;
+
   /// Open handles on this node.
   int handles = 0;
   final Map<String, _Node>? kids;
@@ -168,9 +194,11 @@ class _Node {
 
 class _Handle {
   final _Node node;
-  final RandomAccessFile file; // reads
+  RandomAccessFile? file; // reads; null while read in chunks
   final RandomAccessFile? out; // writes (not truncating, not appending)
+  int nextSeq = 0; // where a sequential read would continue
   _Handle(this.node, this.file, this.out);
+  bool get ranged => file == null;
 }
 
 sealed class _Op {}
@@ -253,7 +281,8 @@ class ZxFs {
       } else {
         d.kids![name] = _Node(name, false, it.size ?? 0,
             perm ?? opt.fileMode, mtime,
-            link: it.isSymlink ? it.symlinkTarget : null);
+            link: it.isSymlink ? it.symlinkTarget : null)
+          ..origin = it.path;
       }
     }
     for (final e in keep.entries) {
@@ -332,6 +361,7 @@ class ZxFs {
   // ---- open, read, write ----
 
   Future<String> _cached(String path, _Node n) {
+    path = n.origin ?? path;
     final key = '$_epoch:$path';
     final hit = _cache.remove(key);
     if (hit != null) {
@@ -405,8 +435,20 @@ class ZxFs {
         n.size = 0;
         n.dirty = true;
       }
-      final src = n.staged ?? await _cached(p, n);
       final fh = _nextFh++;
+      final th = opt.rangeThreshold;
+      if (!write &&
+          n.staged == null &&
+          _rangeOk &&
+          th != null &&
+          n.size >= th &&
+          n.origin != null) {
+        // a big file: read in chunks, no extraction of the whole file first
+        n.handles++;
+        _handles[fh] = _Handle(n, null, null);
+        return fh;
+      }
+      final src = n.staged ?? await _cached(p, n);
       n.handles++;
       _handles[fh] = _Handle(
           n,
@@ -451,13 +493,92 @@ class ZxFs {
     return h;
   }
 
-  Uint8List read(int fh, int offset, int size) {
+  Future<Uint8List> read(int fh, int offset, int size) async {
     final h = _h(fh);
-    final f = h.file;
+    if (h.ranged) {
+      final r = await _readChunks(h, offset, size);
+      if (r != null) return r;
+      // no random access in this format: read the extracted copy from now on
+      final n = h.node;
+      final src = await _cached(n.origin!, n);
+      if (_handles[fh] != h) return Uint8List(0); // released meanwhile
+      h.file = File(src).openSync();
+    }
+    final f = h.file!;
     f.setPositionSync(offset);
     final b = Uint8List(size);
     final got = f.readIntoSync(b);
     return got == size ? b : Uint8List.sublistView(b, 0, got);
+  }
+
+  // ---- reading in chunks
+
+  // false after the backend said it has no random access
+  var _rangeOk = true;
+  final _chunks = <String, Uint8List>{}; // LRU: oldest first
+  final _chunkPending = <String, Future<Uint8List?>>{};
+  var _chunkTotal = 0;
+
+  Future<Uint8List?> _chunk(_Node n, int i) {
+    final path = n.origin!;
+    final key = '$_epoch:$path#$i';
+    final hit = _chunks.remove(key);
+    if (hit != null) {
+      _chunks[key] = hit;
+      return Future.value(hit);
+    }
+    return _chunkPending[key] ??= () async {
+      try {
+        final cs = opt.chunkSize;
+        final b = await backend.readRange(path, i * cs, cs);
+        if (b == null) {
+          _rangeOk = false;
+          return null;
+        }
+        _chunks[key] = b;
+        _chunkTotal += b.length;
+        while (_chunkTotal > opt.chunkBytes && _chunks.length > 1) {
+          final k = _chunks.keys.first;
+          if (k == key) break;
+          _chunkTotal -= _chunks.remove(k)!.length;
+        }
+        return b;
+      } on FsError {
+        rethrow;
+      } on SevenZipException catch (e) {
+        throw FsError(FsError.eio, e.message);
+      } finally {
+        _chunkPending.remove(key);
+      }
+    }();
+  }
+
+  /// The bytes [offset, offset + size) of a ranged handle; null when the
+  /// backend has no random access to the file.
+  Future<Uint8List?> _readChunks(_Handle h, int offset, int size) async {
+    final n = h.node;
+    final cs = opt.chunkSize;
+    if (offset >= n.size || size <= 0) return Uint8List(0);
+    final end = offset + size > n.size ? n.size : offset + size;
+    final out = Uint8List(end - offset);
+    for (var i = offset ~/ cs; i * cs < end; i++) {
+      final c = await _chunk(n, i);
+      if (c == null) return null;
+      final from = i * cs;
+      final a = offset > from ? offset - from : 0;
+      final b = end - from < c.length ? end - from : c.length;
+      if (b <= a) {
+        return Uint8List.sublistView(out, 0, from > offset ? from - offset : 0);
+      }
+      out.setRange(from + a - offset, from + b - offset, c, a);
+    }
+    // a sequential reader: have the next chunk ready
+    if (offset == h.nextSeq && end < n.size) {
+      final next = end ~/ cs + (end % cs == 0 ? 0 : 1);
+      if (next * cs < n.size) _chunk(n, next).then((_) {}, onError: (_) {});
+    }
+    h.nextSeq = end;
+    return out;
   }
 
   int write(int fh, int offset, Uint8List data) {
@@ -478,7 +599,7 @@ class ZxFs {
   void release(int fh) {
     final h = _handles.remove(fh);
     if (h == null) return;
-    h.file.closeSync();
+    h.file?.closeSync();
     h.out?.closeSync();
     h.node.handles--;
     _touch();
@@ -666,6 +787,9 @@ class ZxFs {
   }
 
   void _dropCache() {
+    _chunks.clear();
+    _chunkTotal = 0;
+    _rangeOk = true;
     for (final e in _cache.values) {
       _deleteQuiet(e.file, parent: true);
     }
@@ -692,7 +816,7 @@ class ZxFs {
     _closed = true;
     _idle?.cancel();
     for (final h in _handles.values) {
-      h.file.closeSync();
+      h.file?.closeSync();
       h.out?.closeSync();
     }
     _handles.clear();
