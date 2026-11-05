@@ -31,4 +31,12 @@ else
   dart compile exe bin/zx.dart -o dist/zx-windows-x64.exe
   tool/windows_exe_icon.sh dist/zx-windows-x64.exe
 fi
+# The daemon of "zx mount" for Windows (needs WinFsp headers, fetched, and a
+# MinGW cross compiler: apt install gcc-mingw-w64-x86-64). Ship it next to
+# zx.exe as zx-mount.exe; users install WinFsp (https://winfsp.dev).
+if [ "$host_os" = Linux ] && command -v x86_64-w64-mingw32-gcc >/dev/null; then
+  tool/fetch_winfsp_headers.sh
+  make -C native/fuse clean windows
+  cp native/fuse/zx-mount.exe dist/zx-mount-windows-x64.exe
+fi
 ls -l dist

@@ -30,11 +30,34 @@ LDHARDEN := -Wl,-z,relro -Wl,-z,now -Wl,--as-needed
 
 all: zx-mount
 
-zx-mount: zx-mount.c
+zx-mount: zx-mount.c zx-rpc.h
 	$(CC) $(CFLAGS) $(HARDEN) $(WARN) -D_FILE_OFFSET_BITS=64 $(FUSE_CFLAGS) \
 	  -o $@ $< $(LDFLAGS) $(LDHARDEN) $(FUSE_LIBS)
 
-clean:
-	rm -f zx-mount
+# ---- Windows: zx-mount.exe against WinFsp (tool/fetch_winfsp_headers.sh),
+# cross compiled with MinGW (apt install gcc-mingw-w64-x86-64). The program
+# loads winfsp-x64.dll (the WinFsp installer); the import library is made
+# from the names the headers declare.
+WINFSP := $(ROOT)/ref/build-deps/winfsp/inc
+WINCC ?= x86_64-w64-mingw32-gcc
+WINDLLTOOL ?= x86_64-w64-mingw32-dlltool
+WINHDR := $(WINFSP)/fuse/winfsp_fuse.h
 
-.PHONY: all clean
+windows: zx-mount.exe
+
+winfsp-x64.def: $(WINHDR)
+	( echo LIBRARY winfsp-x64.dll; echo EXPORTS; \
+	  grep -o 'FSP_FUSE_API_NAME(fsp_fuse_[a-z_]*)' $(WINFSP)/fuse/*.h \
+	  | sed 's/.*(\(.*\))/\1/' | sort -u ) > $@
+
+libwinfsp-x64.dll.a: winfsp-x64.def
+	$(WINDLLTOOL) -d winfsp-x64.def -l $@
+
+zx-mount.exe: zx-mount-fuse2.c zx-rpc.h libwinfsp-x64.dll.a
+	$(WINCC) -O2 $(WARN) -I$(WINFSP) -I$(WINFSP)/fuse -o $@ zx-mount-fuse2.c \
+	  -L. -lwinfsp-x64 -static-libgcc -Wl,--nxcompat -Wl,--dynamicbase
+
+clean:
+	rm -f zx-mount zx-mount.exe winfsp-x64.def libwinfsp-x64.dll.a
+
+.PHONY: all clean windows

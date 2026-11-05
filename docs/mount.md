@@ -1,6 +1,6 @@
 # Mounting an archive as a virtual drive (`zx mount`)
 
-Linux, FUSE 3. Any archive zx opens can be mounted; the ones zx can update
+Linux (FUSE 3) and Windows (WinFsp, see "Windows" below). Any archive zx opens can be mounted; the ones zx can update
 (.zx, 7z, zip, tar...) can be changed through the mount. Several archives
 can be mounted at the same time, each with its own mount point.
 
@@ -78,6 +78,43 @@ and a missing archive or a wrong password is logged to the journal
 (`journalctl --user -u zx-mount@NAME`) and never blocks the session.
 Without a password file or command an encrypted archive can not start
 unattended.
+
+## Windows
+
+Install [WinFsp](https://winfsp.dev) (free, one installer; it provides the
+drives), then `zx.exe` and `zx-mount.exe` next to each other:
+
+```
+zx mount C:\backup.zx Z:             # a drive letter, in the background
+zx mount C:\backup.zx C:\Mnt\backup   # or a folder that does not exist yet
+zx umount Z:                         # writes pending changes, removes the drive
+zx mounts add backup C:\backup.zx Z:
+zx mounts enable-boot                # starts the drives at every login
+```
+
+It is the same server and protocol as on Linux; only the daemon differs
+(`native/fuse/zx-mount-fuse2.c`, WinFsp's FUSE compatible layer, built by
+`make -C native/fuse windows` after `tool/fetch_winfsp_headers.sh`, with
+MinGW; the release script does it). What differs for you:
+
+- The mount point is a free drive letter (`Z:`) or a folder that does not
+  exist. `-allow-other` does not apply; the files belong to you.
+- `umount` asks the server to stop through a file in
+  `%LOCALAPPDATA%\zx\mount\state` (the server also writes there which
+  drives are up); it writes the changes first, then the drive disappears. A
+  drive of a server that was killed disappears with it, changes since the
+  last commit are lost as on Linux.
+- Starting at login is a value `zx-mount-NAME` under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no administrator
+  rights, no Task Scheduler). A console window may flash at login.
+  `-linger` does not exist: a Run value starts when you log in.
+- Logs of a background drive: `%LOCALAPPDATA%\zx\mount\NAME.log`. The table
+  is `%APPDATA%\zx\mounts.conf`.
+- Windows names: a file whose name Windows can not have (`a:b`, trailing
+  dots, `CON`) in an archive is listed but may not open.
+
+I could not run the Windows side here (it was cross compiled and its Dart
+parts tested on Linux): report what the first real mount does.
 
 ## Building the daemon
 

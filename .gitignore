@@ -13,3 +13,6 @@ native/nautilus/zx-nautilus-test
 # the browser test of the web engine (tool/web_check/run_e2e.sh)
 .webtest/
 native/fuse/zx-mount
+native/fuse/zx-mount.exe
+native/fuse/winfsp-x64.def
+native/fuse/libwinfsp-x64.dll.a

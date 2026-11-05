@@ -1,5 +1,14 @@
 ## Unreleased
 
+- **`zx mount` on Windows (WinFsp).** The same server, protocol and
+  commands as on Linux; the daemon is `native/fuse/zx-mount-fuse2.c` on
+  WinFsp's FUSE compatible layer (it would also build for macFUSE), cross
+  compiled with MinGW (`make -C native/fuse windows`, headers from
+  `tool/fetch_winfsp_headers.sh`). Mount points are drive letters or new
+  folders; `zx umount` stops the server through a state file; drives at login
+  are `Run` values of the registry. The protocol code moved to
+  `native/fuse/zx-rpc.h`. The app's Virtual drives section works on Windows
+  too (it asks for a drive letter). Untested on a real Windows system.
 - **App: "Virtual drives" in Settings (Linux).** A switch "Mount my drives
   at login" (the per-user systemd unit of `zx mounts enable-boot`), the list
   of drives of `~/.config/zx/mounts.conf` with a remove button, and "Add a

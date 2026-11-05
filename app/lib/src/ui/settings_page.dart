@@ -70,9 +70,31 @@ class _SettingsPageState extends State<SettingsPage> {
     final picker = widget.services.picker;
     final archive = await picker.openArchive();
     if (archive == null) return;
-    final mp = await picker.pickFolder(title: 'Mount point (an empty folder)');
-    if (mp == null) return;
-    await _toggle(() => _integration.addMountDrive(archive, mp));
+    final letters = _mounts?.driveLetters ?? const <String>[];
+    String? mp;
+    if (letters.isNotEmpty) {
+      if (!mounted) return;
+      // Windows: a drive letter
+      mp = await showDialog<String>(
+        context: context,
+        builder: (c) => SimpleDialog(
+          title: const Text('Drive letter'),
+          children: [
+            for (final l in letters.take(8))
+              SimpleDialogOption(
+                key: Key('set-letter-$l'),
+                onPressed: () => Navigator.pop(c, l),
+                child: Text(l),
+              ),
+          ],
+        ),
+      );
+    } else {
+      mp = await picker.pickFolder(title: 'Mount point (an empty folder)');
+    }
+    final chosen = mp;
+    if (chosen == null) return;
+    await _toggle(() => _integration.addMountDrive(archive, chosen));
   }
 
   List<Widget> _drives() {
@@ -410,7 +432,8 @@ class _SettingsPageState extends State<SettingsPage> {
                       onChanged: (v) => s.openFolderAfterExtract = v,
                     ),
                   ]),
-                  if (Platform.isLinux && _drives().isNotEmpty)
+                  if ((Platform.isLinux || Platform.isWindows) &&
+                      _drives().isNotEmpty)
                     section('Virtual drives', _drives()),
                   if (!Platform.isAndroid)
                     section('Desktop integration', [

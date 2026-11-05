@@ -390,7 +390,7 @@ zx readme -check -all project.zx     # check every README of the archive
 ### Virtual drives: `zx mount`, `zx umount`, `zx mounts`
 
 `zx mount ARCHIVE MOUNTPOINT` mounts an archive as a read-write drive
-(Linux, FUSE 3), `zx umount MOUNTPOINT` writes the pending changes and
+(Linux FUSE 3, Windows WinFsp), `zx umount MOUNTPOINT` writes the pending changes and
 unmounts, `zx mounts` lists the drives and keeps the table of drives to
 mount at login or boot (`enable-boot`, a per-user systemd unit). See
 docs/mount.md.

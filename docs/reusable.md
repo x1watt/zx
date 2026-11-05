@@ -10,6 +10,9 @@ writing a new feature.
 |---|---|---|
 | `ZxFs` and `FsBackend` | `lib/src/mount/zx_fs.dart` | An archive as a file system with staging, a journal and one-update commits. FUSE-free: a macFUSE, WinFsp, WebDAV or NFS front end only needs to call it. `FsBackend` is the seam for fakes in tests. |
 | `serveFuse`, frame reader/writer (`_R`, `_W`) | `lib/src/mount/fuse_bridge.dart` | Length-prefixed binary requests over a child's pipes, one at a time. Any native helper process (a Windows or macOS daemon speaking the same protocol, the Nautilus-style helpers) can use it. |
+| `native/fuse/zx-rpc.h` | `native/fuse` | The daemon side of the pipe protocol (buffers, framed requests, errno translation, a lock). `zx-mount.c` (libfuse 3) and `zx-mount-fuse2.c` (WinFsp, macFUSE) both include it; a daemon for another file system API (FUSE-T, Dokan, a Finder extension) includes it too. |
+| `lib/src/cli/mount_windows.dart` | `lib/src/cli/` | Drive letter helpers, state files with a stop request between a server and `zx umount`, Run key (`reg`) helpers. The state-file handshake suits any background process that must be stopped gracefully without signals. |
+| `ZxDrives` mixin | `app/lib/src/integration.dart` | The app side of drives at login for any system with the zx command line tool: it reads `mounts.conf`, the CLI does the rest. |
 | `parseSizeArg` | `lib/src/cli/size_arg.dart` | "95m", "1g" arguments (`zx parts`, `zx mount`). |
 | `selfCommand`, `findDaemon` | `lib/src/cli/mount_command.dart` | Starting this program again (AOT executable or `dart script.dart`) and locating a native helper next to it, in the source tree or in the lib folders. Candidates to move to a shared `cli/` util if a second helper appears. |
 | `MountEntry`, `readMountTable`, `writeMountTable` | `lib/src/cli/mount_command.dart` | A tiny INI file with `[section]` and `key = value` (no dependency). Reuse for any other per-user table of items (settings, saved sources). |

@@ -80,7 +80,8 @@ class _W {
 
 /// Serves [fs] to the daemon [daemon] until it exits. [log] gets the
 /// messages. Returns 0 after a clean unmount, else a non-zero exit code.
-Future<int> serveFuse(ZxFs fs, Process daemon, void Function(String) log) async {
+Future<int> serveFuse(ZxFs fs, Process daemon, void Function(String) log,
+    {bool Function()? stopped}) async {
   Future<void> send(int status, [Uint8List? payload]) async {
     final body = _W()..u32(status & 0xFFFFFFFF);
     if (payload != null) body.raw(payload);
@@ -133,7 +134,7 @@ Future<int> serveFuse(ZxFs fs, Process daemon, void Function(String) log) async 
   final code = await daemon.exitCode;
   // a clean unmount (destroy handled, changes written) is a success, whatever
   // the daemon's own status says after a signal
-  if (done) return 0;
+  if (done || (stopped?.call() ?? false)) return 0;
   log('the FUSE daemon ended without a clean unmount');
   return code == 0 ? 1 : code;
 }
