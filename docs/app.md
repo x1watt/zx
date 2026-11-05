@@ -105,7 +105,7 @@ derivatives, amd64):
 
 ```sh
 tool/build_deb.sh                        # writes dist/zx_<version>_amd64.deb
-sudo apt install ./dist/zx_0.5.0_amd64.deb
+sudo apt install ./dist/zx_0.6.0_amd64.deb
 nautilus -q                              # once, so Nautilus loads the extension
 ```
 

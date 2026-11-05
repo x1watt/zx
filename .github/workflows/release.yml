@@ -67,6 +67,25 @@ jobs:
           name: ${{ matrix.name }}
           path: dist/${{ matrix.name }}
 
+  # The daemons of "zx mount": zx-mount (Linux x64, libfuse3) and
+  # zx-mount.exe (cross compiled with MinGW against the WinFsp headers).
+  mount:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config gcc-mingw-w64-x86-64
+      - run: |
+          mkdir -p dist
+          make -C native/fuse
+          cp native/fuse/zx-mount dist/zx-mount-linux-x64
+          tool/fetch_winfsp_headers.sh
+          make -C native/fuse windows
+          cp native/fuse/zx-mount.exe dist/zx-mount-windows-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zx-mount
+          path: dist/zx-mount-*
+
   # The Android app, signed with the release key from the repository secrets
   # (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS,
   # ANDROID_KEY_PASSWORD). A tag never publishes a debug-signed APK; a
@@ -137,7 +156,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, build, android]
+    needs: [test, build, mount, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write

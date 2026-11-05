@@ -3,7 +3,7 @@
 // and the .zx reader (the min_reader_version check).
 
 /// The zx release, as a string.
-const String zxVersionString = '0.5.0';
+const String zxVersionString = '0.6.0';
 
 /// The zx release as (major, minor, patch), for the .zx format.
 const (int, int, int) zxVersion = (0, 5, 0);

@@ -95,7 +95,7 @@ SELECT path, distance FROM similar('report-final.pdf', 20);
   that self-extracting archives carry is C, built in advance and stored
   in zx as data).
 
-Version 0.5.0. BSD 3-clause, Copyright (c) 2026 Max Brito.
+Version 0.6.0. BSD 3-clause, Copyright (c) 2026 Max Brito.
 
 ---
 
@@ -217,6 +217,12 @@ zx seal -full book.zx                     # who signed what; was it changed?
 # The README of an archive
 zx readme project.zx                      # the README.md at its top
 zx readme -check -all project.zx          # images and links stay inside
+
+# Archives as virtual drives (Linux FUSE 3, Windows WinFsp)
+zx mount backup.zx ~/drive                # read-write; Z: on Windows
+zx mounts add backup.zx ~/drive           # remembered, mounted again by
+zx mounts enable-boot                     # the systemd user unit at login
+zx umount ~/drive                         # commits pending changes
 ```
 
 Full reference of every switch: [docs/cli.md](docs/cli.md).
@@ -436,7 +442,8 @@ Heavy work runs in worker isolates, never on the UI isolate. API guide:
 - [docs/performance.md](docs/performance.md): every number, with the
   method to reproduce it.
 - [docs/zx-format.md](docs/zx-format.md), [docs/zxdb-sql.md](docs/zxdb-sql.md),
-  [docs/cli.md](docs/cli.md), [docs/readme.md](docs/readme.md).
+  [docs/cli.md](docs/cli.md), [docs/readme.md](docs/readme.md),
+  [docs/mount.md](docs/mount.md) (virtual drives).
 
 Tests (`dart test`, `cd app && flutter test`) compare against the real
 tools wherever they exist: 7z, xz, zip/unzip, tar, gzip, bzip2, rar and

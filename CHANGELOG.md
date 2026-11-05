@@ -1,4 +1,4 @@
-## Unreleased
+## 0.6.0
 
 - **`zx mount` on Windows (WinFsp).** The same server, protocol and
   commands as on Linux; the daemon is `native/fuse/zx-mount-fuse2.c` on
