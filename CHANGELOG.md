@@ -1,5 +1,12 @@
 ## Unreleased
 
+- **ext: inodes in use that no folder names are listed as
+  `[UNKNOWN]/<inode>`, as 7-Zip lists them.** e2fsprogs 1.47 gives every
+  new ext4 file system an orphan file (inode 12) that no folder names; it
+  was missing from zx's listing (the CI failed on it since mke2fs 1.47
+  reached the runners).
+- **zxdb: `replace(x, '', y)` returns x as text**, as SQLite 3.45 does
+  (3.44 kept a number a number).
 - **`zxPackBytes` / `zxUnpackBytes`: one file in an in-memory .zx.** A
   small file (a key, a settings file, a blob kept beside a database)
   packed into a one-entry archive with the archive's own encryption and

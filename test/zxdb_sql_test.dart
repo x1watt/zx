@@ -1029,9 +1029,18 @@ INSERT INTO mixed VALUES (1,'1','1','1','1'),(2.5,'2.5','2.5','2.5','2.5'),('x',
       s.execute(setup);
       var compared = 0;
       final failures = <String>[];
+      // zxdb is SQLite 3.45.1; an older sqlite3 shell differs in replace()
+      // with an empty pattern (3.44 kept a number a number)
+      final ver = (Process.runSync(sqlite!, ['-version']).stdout as String)
+          .split('.')
+          .take(2)
+          .map((p) => int.tryParse(p.trim()) ?? 0)
+          .toList();
+      final before345 = ver.length == 2 && ver[0] == 3 && ver[1] < 45;
       for (var k = 0; k < queries.length; k++) {
         final out = chunks[k];
         if (out.contains('Error') || out.contains('error')) continue;
+        if (before345 && queries[k].contains('replace(')) continue;
         List<List<Object?>> got;
         try {
           got = s.execute(queries[k]).rows;

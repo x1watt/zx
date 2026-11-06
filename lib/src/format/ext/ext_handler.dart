@@ -9,7 +9,9 @@
 // sockets. Hashed (htree) folders are read linearly, as their leaf blocks
 // are ordinary directory blocks. The journal is not replayed: a file
 // system that needs recovery is opened as it is on disk, with a warning.
-// The journal inode is listed as "[SYS]/Journal", as 7-Zip lists it.
+// The journal inode is listed as "[SYS]/Journal", and inodes in use that
+// no folder names (the orphan file of e2fsprogs 1.47) as
+// "[UNKNOWN]/<inode>", as 7-Zip lists them.
 //
 // Written for this package from the on-disk layout described in the Linux
 // kernel's Documentation/filesystems/ext4 text ("ext4 Data Structures and
@@ -42,6 +44,8 @@ const int _incompatFlexBg = 0x200;
 const int _incompatInlineData = 0x8000;
 const int _roSparseSuper = 0x1;
 const int _roHugeFile = 0x8;
+const int _roGdtCsum = 0x10;
+const int _roMetadataCsum = 0x400;
 
 // inode flags
 const int _flHugeFile = 0x40000;
@@ -196,6 +200,10 @@ class ExtHandler extends ReadOnlyHandler {
   int incompat = 0;
   int roCompat = 0;
   Int64List _inodeTable = Int64List(0);
+  // per group: the inode bitmap block, and whether the bitmap is unset
+  // (flag INODE_UNINIT: no inode of the group is in use)
+  Int64List _inodeBitmap = Int64List(0);
+  List<bool> _inodesUninit = const [];
   bool _headersError = false;
   bool _unexpectedEnd = false;
 
@@ -307,6 +315,8 @@ class ExtHandler extends ReadOnlyHandler {
     _inodeSize = 128;
     _descSize = 32;
     _inodeTable = Int64List(0);
+    _inodeBitmap = Int64List(0);
+    _inodesUninit = const [];
     _headersError = false;
     _unexpectedEnd = false;
     _blocks.clear();
@@ -352,6 +362,10 @@ class ExtHandler extends ReadOnlyHandler {
     final metaBg = (incompat & _incompatMetaBg) != 0;
     final firstMeta = le32(_sb, 0x104);
     final t = Int64List(_groups);
+    final bm = Int64List(_groups);
+    final uninit = List<bool>.filled(_groups, false);
+    // the flags are meaningful with group checksums only
+    final csums = (roCompat & (_roGdtCsum | _roMetadataCsum)) != 0;
     for (var g = 0; g < _groups; g++) {
       final m = g ~/ perBlock;
       int blk;
@@ -367,8 +381,14 @@ class ExtHandler extends ReadOnlyHandler {
       var it = le32(b, o + 8);
       if (_descSize >= 64) it |= le32(b, o + 0x28) << 32;
       t[g] = it;
+      var ib = le32(b, o + 4);
+      if (_descSize >= 64) ib |= le32(b, o + 0x24) << 32;
+      bm[g] = ib;
+      uninit[g] = csums && (le16(b, o + 0x12) & 0x1) != 0;
     }
     _inodeTable = t;
+    _inodeBitmap = bm;
+    _inodesUninit = uninit;
     return true;
   }
 
@@ -757,6 +777,39 @@ class ExtHandler extends ReadOnlyHandler {
     if ((compat & _compatHasJournal) != 0 && jIno != 0) {
       final ind = readInode(jIno);
       if (ind != null) items.add(_itemOf(jIno, ind, '[SYS]/Journal'));
+    }
+    _listUnreached({...visited, ...firstPath.keys, jIno});
+  }
+
+  // Inodes in use that no folder names (the orphan file of e2fsprogs
+  // 1.47, files whose entry was removed while open), listed as 7-Zip
+  // lists them: "[UNKNOWN]/<inode number>". Folders among them are not
+  // listed. The reserved inodes below the first ordinary one are skipped.
+  void _listUnreached(Set<int> reached) {
+    final first = le32(_sb, 0x4C) >= 1 ? le32(_sb, 0x54) : 11;
+    for (var g = 0; g < _groups; g++) {
+      if (_inodesUninit[g]) continue;
+      final blk = _inodeBitmap[g];
+      if (blk <= 0 || blk >= _blocksCount) continue;
+      final bits = _block(blk);
+      final n = _inodesPerGroup < bits.length * 8
+          ? _inodesPerGroup
+          : bits.length * 8;
+      for (var i = 0; i < n; i++) {
+        if ((bits[i >> 3] & (1 << (i & 7))) == 0) continue;
+        final ino = g * _inodesPerGroup + i + 1;
+        if (ino < first || ino > _inodesCount || reached.contains(ino)) {
+          continue;
+        }
+        final ind = readInode(ino);
+        if (ind == null) continue;
+        // in use: a type, links, not deleted
+        if (le16(ind, 0) == 0 || le16(ind, 0x1A) == 0 || le32(ind, 0x14) != 0) {
+          continue;
+        }
+        final it = _itemOf(ino, ind, '[UNKNOWN]/$ino');
+        if (!it.isDir) items.add(it);
+      }
     }
   }
 

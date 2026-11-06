@@ -17,8 +17,18 @@ import 'package:zx/zx.dart';
 
 import 'codec_test_util.dart';
 
-String? _mke2fs = findTool('mke2fs');
 String? _debugfs = findTool('debugfs');
+// The mke2fs of the same e2fsprogs as debugfs: another one earlier in PATH
+// (the Android SDK ships an old one) can not read the system's
+// /etc/mke2fs.conf when that names newer features (orphan_file).
+String? _mke2fs = () {
+  final d = _debugfs;
+  if (d != null) {
+    final sibling = File('${File(d).parent.path}/mke2fs');
+    if (sibling.existsSync()) return sibling.path;
+  }
+  return findTool('mke2fs');
+}();
 
 void _run(String tool, List<String> args) {
   final r = Process.runSync(tool, args);
@@ -205,11 +215,13 @@ void main() {
         'lost+found',
         '-x',
         '*SYS*',
+        '-x',
+        '*UNKNOWN*',
         src,
         out
       ]);
       expect(diff.exitCode, 0, reason: '${diff.stdout}');
-      expect(treeListing(out, skip: {'./lost+found', './[SYS]', './fifo'}),
+      expect(treeListing(out, skip: {'./lost+found', './[SYS]', './[UNKNOWN]', './fifo'}),
           treeListing(src, skip: {'./fifo'}));
       expect(File('$out/h/hard2').readAsStringSync(), 'x' * 100);
 
@@ -272,6 +284,33 @@ void main() {
     expect(h.needsRecovery, isTrue);
     expect(h.getArchiveProperty(Kpid.warning), contains('recovery'));
     s2.raf.closeSync();
+  }, skip: _mke2fs == null || _debugfs == null ? 'e2fsprogs missing' : false);
+
+  test('inodes in use that no folder names are [UNKNOWN]/<inode>', () {
+    final src = Directory('${tmp.path}/unref_src')..createSync();
+    File('${src.path}/keep').writeAsStringSync('keep');
+    File('${src.path}/gone').writeAsStringSync('gone!!');
+    Directory('${src.path}/d').createSync();
+    File('${src.path}/d/inner').writeAsStringSync('in');
+    final img = '${tmp.path}/unref.img';
+    _run(_mke2fs!, ['-q', '-F', '-t', 'ext4', '-d', src.path, img, '8M']);
+    final h = ExtHandler();
+    var s = FileInStream(File(img).openSync());
+    expect(h.open(s), isTrue);
+    final ino = h.items.firstWhere((e) => e.path == 'gone').ino;
+    final before =
+        h.items.where((e) => e.path.startsWith('[UNKNOWN]/')).length;
+    s.raf.closeSync();
+    _run(_debugfs!, ['-w', '-R', 'unlink gone', img]);
+    s = FileInStream(File(img).openSync());
+    expect(h.open(s), isTrue);
+    final paths = {for (final it in h.items) it.path: it};
+    expect(paths.containsKey('gone'), isFalse);
+    expect(paths['[UNKNOWN]/$ino']!.size, 6);
+    expect(h.items.where((e) => e.path.startsWith('[UNKNOWN]/')).length,
+        before + 1);
+    expect(paths['d/inner']!.size, 2);
+    s.raf.closeSync();
   }, skip: _mke2fs == null || _debugfs == null ? 'e2fsprogs missing' : false);
 
   for (final opts in [
