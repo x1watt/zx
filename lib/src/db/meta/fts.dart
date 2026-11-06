@@ -17,10 +17,8 @@
 // ZxMetaDb reindexes that file's document (its old terms come from
 // zx_fts_docs, so nothing is re-read), in the same transaction.
 //
-// Tokenizer: Unicode letters and digits ([\p{L}\p{N}]+ after folding),
-// lowercase with the common Latin (and Greek) diacritics folded (a with
-// accents to a, c cedilla to c, sharp s to ss), so "Informacao" finds the
-// word written with its accents.
+// Tokenizer (fts_text.dart, shared with the fts5 tables of SQL): Unicode
+// letters and digits, lowercase, common diacritics folded.
 // Optional light stemming (English plurals), fixed per
 // index when it is created. Subtitle text (SRT, WebVTT) loses its cue
 // numbers, time lines and tags first.
@@ -36,14 +34,16 @@
 // a field searches every field but lang, with weights (title and tag 3,
 // name and tag words 2, description 1, chapters 0.8, other layers 0.5).
 
-import 'dart:math' as math;
 import 'dart:typed_data';
 
+import '../fts_text.dart';
 import '../keycodec.dart';
 import '../record.dart';
 import '../storage_api.dart';
 import '../system/sys_vtab.dart';
 import 'meta_store.dart';
+
+export '../fts_text.dart' show ftsFold, ftsStem, ftsTokenize;
 
 const List<String> ftsFields = [
   'name', 'title', 'description', 'tag', 'subtitles', 'transcript', //
@@ -95,99 +95,7 @@ int ftsFieldOfKind(String? kind) => switch (kind?.toLowerCase()) {
     };
 
 // ---------------------------------------------------------------------------
-// tokenizer
-
-final Map<int, String> _fold = () {
-  final m = <int, String>{};
-  void put(String from, String to) {
-    for (final r in from.runes) {
-      m[r] = to;
-    }
-  }
-
-  put('\u00E0\u00E1\u00E2\u00E3\u00E4\u00E5\u0101\u0103\u0105\u01CE', 'a');
-  put('\u00E7\u0107\u0109\u010B\u010D', 'c');
-  put('\u010F\u0111', 'd');
-  put('\u00E8\u00E9\u00EA\u00EB\u0113\u0115\u0117\u0119\u011B', 'e');
-  put('\u011D\u011F\u0121\u0123', 'g');
-  put('\u0125\u0127', 'h');
-  put('\u00EC\u00ED\u00EE\u00EF\u0129\u012B\u012D\u012F\u0131', 'i');
-  put('\u0135', 'j');
-  put('\u0137', 'k');
-  put('\u013A\u013C\u013E\u0140\u0142', 'l');
-  put('\u00F1\u0144\u0146\u0148\u0149', 'n');
-  put('\u00F2\u00F3\u00F4\u00F5\u00F6\u00F8\u014D\u014F\u0151', 'o');
-  put('\u0155\u0157\u0159', 'r');
-  put('\u015B\u015D\u015F\u0161\u0219', 's');
-  put('\u0163\u0165\u0167\u021B', 't');
-  put('\u00F9\u00FA\u00FB\u00FC\u0169\u016B\u016D\u016F\u0171\u0173', 'u');
-  put('\u0175', 'w');
-  put('\u00FD\u00FF\u0177', 'y');
-  put('\u017A\u017C\u017E', 'z');
-  put('\u00DF', 'ss');
-  put('\u00E6', 'ae');
-  put('\u0153', 'oe');
-  put('\u00FE', 'th');
-  put('\u00F0', 'd');
-  put('\u03AC\u1FB6', '\u03B1');
-  put('\u03AD', '\u03B5');
-  put('\u03AE', '\u03B7');
-  put('\u03AF\u03CA\u0390', '\u03B9');
-  put('\u03CC', '\u03BF');
-  put('\u03CD\u03CB\u03B0', '\u03C5');
-  put('\u03CE', '\u03C9');
-  return m;
-}();
-
-final RegExp _word = RegExp(r'[\p{L}\p{N}]+', unicode: true);
-
-/// Lowercases [s] and folds the common Latin diacritics.
-String ftsFold(String s) {
-  final l = s.toLowerCase();
-  StringBuffer? sb;
-  var i = 0;
-  for (final r in l.runes) {
-    final f = r < 0xC0 ? null : _fold[r];
-    if (f != null && sb == null) {
-      sb = StringBuffer(l.substring(0, i));
-    }
-    if (sb != null) {
-      if (f != null) {
-        sb.write(f);
-      } else {
-        sb.writeCharCode(r);
-      }
-    }
-    i += r > 0xFFFF ? 2 : 1;
-  }
-  return sb?.toString() ?? l;
-}
-
-/// Light plural stemming (English): ies to y, sses to ss, and a final s
-/// dropped (not after s, u or i) in words of more than 3 letters.
-String ftsStem(String w) {
-  if (w.length <= 3) return w;
-  if (w.endsWith('ies') && w.length > 4) {
-    return '${w.substring(0, w.length - 3)}y';
-  }
-  if (w.endsWith('sses')) return w.substring(0, w.length - 2);
-  if (w.endsWith('s') &&
-      !w.endsWith('ss') &&
-      !w.endsWith('us') &&
-      !w.endsWith('is')) {
-    return w.substring(0, w.length - 1);
-  }
-  return w;
-}
-
-/// The words of [text], folded (and stemmed when [stem]).
-List<String> ftsTokenize(String text, {bool stem = false}) {
-  final f = ftsFold(text);
-  return [
-    for (final m in _word.allMatches(f))
-      if (m[0]!.length <= 64) stem ? ftsStem(m[0]!) : m[0]!
-  ];
-}
+// subtitles
 
 final RegExp _timeLine = RegExp(r'-->');
 final RegExp _cueNumber = RegExp(r'^\s*\d+\s*$');
@@ -278,7 +186,7 @@ class ZxFts {
   static const docsTree = 'zx_fts_docs';
   static const statsTree = 'zx_fts_stats';
 
-  static const double k1 = 1.2, b = 0.75;
+  static const double k1 = ftsK1, b = ftsB;
 
   /// Longest expansion of a prefix query.
   static int maxPrefixTerms = 256;
@@ -547,16 +455,8 @@ class ZxFts {
       }
     }
 
-    if (a.prefix) {
-      // the text component without its terminator: every term with the
-      // prefix
-      final full = encodeKey([a.term]);
-      final from = Uint8List.sublistView(full, 0, full.length - 2);
-      scanTerm(from, prefixEnd(from));
-    } else {
-      final from = encodeKey([a.term]);
-      scanTerm(from, prefixEnd(from));
-    }
+    final (from, to) = ftsTermRange(const [], a.term, prefix: a.prefix);
+    scanTerm(from, to);
     return out;
   }
 
@@ -565,7 +465,7 @@ class ZxFts {
     final out = <String, double>{};
     if (p.isEmpty) return out;
     final df = p.length;
-    final idf = math.log(1 + (n - df + 0.5) / (df + 0.5));
+    final idf = ftsIdfPositive(n, df);
     final docs = _s.tree(docsTree);
     for (final e in p.entries) {
       var score = 0.0;
@@ -578,8 +478,9 @@ class ZxFts {
         }
         lens ??= _lengthsOf(docs, e.key);
         final dl = lens[f];
-        final norm = avg[f] <= 0 ? 1.0 : dl / avg[f];
-        score += w * idf * tf * (k1 + 1) / (tf + k1 * (1 - b + b * norm));
+        score += avg[f] <= 0
+            ? w * ftsBm25(idf, tf, 1, 1.0)
+            : w * ftsBm25(idf, tf, dl, avg[f]);
       }
       out[e.key] = score;
     }

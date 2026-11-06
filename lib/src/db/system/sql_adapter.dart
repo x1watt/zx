@@ -34,6 +34,7 @@ SysOp? _op(ZxConstraintOp o) => switch (o) {
       ZxConstraintOp.glob => SysOp.glob,
       ZxConstraintOp.isNull => SysOp.isNull,
       ZxConstraintOp.isNotNull => SysOp.isNotNull,
+      ZxConstraintOp.match => null,
     };
 
 /// A [SysDbAccess] bound to one statement's context.

@@ -711,6 +711,10 @@ class Parser {
     _expectKw('CREATE');
     final temp = _acceptKw('TEMP') || _acceptKw('TEMPORARY');
     if (_acceptKw('TABLE')) return _createTable(temp);
+    if (!temp && _cur.kw == 'VIRTUAL' && _peek().kw == 'TABLE') {
+      _i += 2;
+      return _createVirtualTable();
+    }
     if (_acceptKws(['UNIQUE', 'INDEX'])) return _createIndex(true);
     if (_acceptKw('INDEX')) return _createIndex(false);
     if (_acceptKw('VIEW')) {
@@ -802,6 +806,47 @@ class Parser {
       return CreateRollupStmt(ine, name, cols, sel, every, ret, opts, on: on);
     }
     throw _error();
+  }
+
+  // CREATE VIRTUAL TABLE: the arguments are any tokens, split at the
+  // commas outside parentheses (SQLite's rule), kept as source text
+  CreateVirtualTableStmt _createVirtualTable() {
+    final ine = _ifNotExists();
+    final name = _qualifiedName();
+    _expectKw('USING');
+    final module = _name();
+    final args = <String>[];
+    if (_acceptOp('(')) {
+      var depth = 0;
+      int? start;
+      var end = 0;
+      void flush() {
+        if (start == null) throw _error();
+        args.add(src.substring(start!, end).trim());
+        start = null;
+      }
+
+      while (true) {
+        final t = _cur;
+        if (t.type == Tok.eof) throw _error();
+        if (t.type == Tok.op && depth == 0 && (t.text == ',' || t.text == ')')) {
+          if (t.text == ')' && start == null && args.isEmpty) {
+            _i++;
+            break;
+          }
+          flush();
+          _i++;
+          if (t.text == ')') break;
+          continue;
+        }
+        if (t.type == Tok.op && t.text == '(') depth++;
+        if (t.type == Tok.op && t.text == ')') depth--;
+        start ??= t.pos;
+        end = t.end;
+        _i++;
+      }
+    }
+    return CreateVirtualTableStmt(ine, name, module.toLowerCase(), args);
   }
 
   String _stringLit() {

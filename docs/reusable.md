@@ -30,3 +30,13 @@ writing a new feature.
 | `ZxArchive.readRange` | `lib/src/zx_api.dart`, `workerReadRange` | Bytes of an item from an offset, decoding only the blocks involved (null when the format has no random access). Previews, media players, hex views, anything that needs the middle of a big file. |
 | `ZxArchive.add/delete/rename/createFolder` | `lib/src/zx_api.dart` | Updates that write a new archive and rename it over the old one, or append a generation. |
 | `CliIo`-free async commands | `runSevenZipCliProcess` in `lib/src/cli/main.dart` | The place to hook long-running (async) commands: dispatch before the synchronous 7-Zip parser. |
+
+## zxdb full-text search
+
+| Code | Where | Reuse it for |
+|---|---|---|
+| `ftsTokenize`, `ftsFold`, `ftsStem` | `lib/src/db/fts_text.dart` | Words of a text for any index or search: Unicode letters and digits, lowercase, diacritics folded. Used by the metadata index, the fts5 tables and the time series text index. |
+| `ftsBm25`, `ftsIdfFts5`, `ftsIdfPositive` | `lib/src/db/fts_text.dart` | BM25 scoring (SQLite fts5's order of operations, so the same doubles). |
+| `ftsTermRange` | `lib/src/db/fts_text.dart` | The key range of a text component (exact or prefix) in keycodec keys: prefix scans over any index tree. |
+| `ZxVirtualTableModule`, `ZxSql.registerModule` | `lib/src/db/sql/vtab.dart`, `zx_sql.dart` | A new `CREATE VIRTUAL TABLE ... USING x(...)` kind whose definition persists in the catalog (fts5 is the example: `lib/src/db/sql/fts5.dart`). |
+| `ZxVtabContext.writableTree` | `lib/src/db/sql/vtab.dart` | Writes of a virtual table that a failed statement in an explicit transaction undoes. |

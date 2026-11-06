@@ -1,3 +1,16 @@
+## Unreleased
+
+- **zxdb: full-text search with SQLite's FTS5 syntax.** `CREATE VIRTUAL
+  TABLE t USING fts5(a, b, id UNINDEXED, tokenize = 'unicode61')`,
+  `INSERT` / `UPDATE` / `DELETE`, `t MATCH '"hello" "wor"*'` (phrases,
+  prefixes, AND, OR, NOT, column filters, `^`) and `ORDER BY bm25(t)` with
+  SQLite's values, also when the table is joined with ordinary tables. The
+  definition and the index persist in the database; writes are in the
+  statement's transaction. Modules of `CREATE VIRTUAL TABLE` can be added
+  with `ZxSql.registerModule`. The tokenizer and BM25 code are shared with
+  the metadata index (`lib/src/db/fts_text.dart`). Deviations in
+  docs/zxdb-sql.md.
+
 ## 0.6.0
 
 - **`zx mount` on Windows (WinFsp).** The same server, protocol and

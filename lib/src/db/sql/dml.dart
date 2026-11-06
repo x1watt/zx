@@ -338,7 +338,7 @@ class Dml {
       if (ctx.catalog.view(st.table) != null) {
         throw err('cannot modify ${st.table} because it is a view');
       }
-      final vt = ctx.env.findVtab(st.table, ctx.snap);
+      final vt = ctx.env.findVtabIn(ctx.catalog, st.table, ctx.snap);
       if (vt != null) return _insertVtab(st, vt);
       throw err('no such table: ${st.table}');
     }
@@ -656,7 +656,7 @@ class Dml {
   DmlResult update(UpdateStmt st) {
     final td = ctx.catalog.table(st.table);
     if (td == null) {
-      final vt = ctx.env.findVtab(st.table, ctx.snap);
+      final vt = ctx.env.findVtabIn(ctx.catalog, st.table, ctx.snap);
       if (vt != null) return _updateVtab(st, vt);
       if (ctx.catalog.view(st.table) != null) {
         throw err('cannot modify ${st.table} because it is a view');
@@ -741,7 +741,7 @@ class Dml {
   DmlResult delete(DeleteStmt st) {
     final td = ctx.catalog.table(st.table);
     if (td == null) {
-      final vt = ctx.env.findVtab(st.table, ctx.snap);
+      final vt = ctx.env.findVtabIn(ctx.catalog, st.table, ctx.snap);
       if (vt != null) return _deleteVtab(st, vt);
       if (ctx.catalog.view(st.table) != null) {
         throw err('cannot modify ${st.table} because it is a view');
@@ -800,8 +800,11 @@ class Dml {
     return vt;
   }
 
-  ZxVtabContext get _vctx =>
-      ZxVtabContext(ctx.txn ?? ctx.snap, ctx.txn, ctx.nowNs);
+  ZxVtabContext get _vctx {
+    final u = ctx.undo;
+    return ZxVtabContext(ctx.txn ?? ctx.snap, ctx.txn, ctx.nowNs,
+        undoWrap: u == null ? null : (t) => withUndo(t, u));
+  }
 
   static ZxConflictMode _mode(String? or) {
     switch (or) {

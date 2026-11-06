@@ -42,6 +42,19 @@
 //
 // Time travel: `FROM t AS OF ...` on a virtual table passes the requested
 // snapshot in [ZxVtabContext.snapshot].
+//
+// Modules: `ZxSql.registerModule('fts5', module)` makes
+// `CREATE VIRTUAL TABLE name USING fts5(args...)` work. The definition
+// (name, module, argument texts and a storage tree name chosen by the
+// engine) is kept in the SQL catalog, so the table exists again after the
+// database is reopened; the module's [ZxVirtualTableModule.connect] turns
+// a definition into a [ZxVirtualTable] when a statement uses it.
+//
+// MATCH: `x MATCH y` on a column of a virtual table is offered to
+// bestIndex as a [ZxConstraintOp.match] constraint. Only the table can
+// evaluate it: the table must take it (argvIndex) and set omit, else the
+// statement fails ("unable to use function MATCH in the requested
+// context"), as in SQLite.
 
 import '../storage_api.dart';
 
@@ -57,7 +70,10 @@ class ZxVtabColumn {
   const ZxVtabColumn(this.name, [this.type, this.hidden = false]);
 }
 
-enum ZxConstraintOp { eq, gt, ge, lt, le, ne, isNull, isNotNull, like, glob, isOp, isNot }
+enum ZxConstraintOp {
+  eq, gt, ge, lt, le, ne, isNull, isNotNull, like, glob, isOp, isNot, //
+  match,
+}
 
 class ZxIndexConstraint {
   /// Column index in [ZxVirtualTable.columns]; -1 is the rowid.
@@ -116,7 +132,25 @@ class ZxVtabContext {
 
   /// True when this scan is `AS OF` an older state.
   final bool asOf;
-  const ZxVtabContext(this.snapshot, this.txn, this.nowNs, {this.asOf = false});
+
+  /// Wraps a tree of [txn] so its writes are undone when the statement
+  /// fails inside an explicit transaction (null: no statement undo).
+  final ZxWritableTree Function(ZxWritableTree tree)? undoWrap;
+  const ZxVtabContext(this.snapshot, this.txn, this.nowNs,
+      {this.asOf = false, this.undoWrap});
+
+  /// The tree [name] of the write transaction, for the writes of this
+  /// statement (undone with it); null when it does not exist.
+  ZxWritableTree? writableTree(String name) {
+    final t = txn;
+    if (t == null) {
+      throw const ZxDbException('no write transaction', ZxDbError.readOnly);
+    }
+    final w = t.tree(name);
+    if (w == null) return null;
+    final u = undoWrap;
+    return u == null ? w : u(w);
+  }
 }
 
 abstract class ZxVtabCursor {
@@ -144,7 +178,44 @@ abstract class ZxVirtualTable {
   /// Chooses a plan (see the file comment). The default is a full scan.
   void bestIndex(ZxIndexInfo info) {}
 
+  /// True when the table enforces every constraint bestIndex marks omit,
+  /// so the executor does not test those again. False (the default): omit
+  /// is only a hint and the executor tests every constraint but MATCH.
+  bool get enforcesOmitted => false;
+
   ZxVtabCursor open(ZxVtabContext ctx);
+}
+
+/// A virtual table created by CREATE VIRTUAL TABLE, as the catalog keeps
+/// it.
+class ZxVirtualTableDef {
+  final String name;
+
+  /// The module name (lower case).
+  final String module;
+
+  /// The module arguments, as their source text (`content`,
+  /// `event_id UNINDEXED`, `tokenize = 'unicode61'`).
+  final List<String> args;
+
+  /// A storage tree name reserved for the table: the module may create
+  /// the tree of this name (and others starting with it and ':').
+  final String tree;
+  const ZxVirtualTableDef(this.name, this.module, this.args, this.tree);
+}
+
+/// A module of CREATE VIRTUAL TABLE ... USING module(args).
+abstract class ZxVirtualTableModule {
+  /// Checks the arguments and creates the table's storage, in [txn] (CREATE
+  /// VIRTUAL TABLE). Throws a ZxDbException for bad arguments.
+  void create(ZxWriteTxn txn, ZxVirtualTableDef def);
+
+  /// The table of a stored definition (when a statement uses it; the
+  /// engine keeps the result while the definition is unchanged).
+  ZxVirtualTable connect(ZxVirtualTableDef def);
+
+  /// Removes the table's storage (DROP TABLE).
+  void destroy(ZxWriteTxn txn, ZxVirtualTableDef def);
 }
 
 /// A virtual table with a history: `FROM HISTORY OF name` yields

@@ -416,6 +416,16 @@ class ExplainStmt extends Stmt {
   ExplainStmt(this.queryPlan, this.stmt);
 }
 
+/// CREATE VIRTUAL TABLE [IF NOT EXISTS] name USING module[(args)]; each
+/// argument is kept as its source text.
+class CreateVirtualTableStmt extends Stmt {
+  final bool ifNotExists;
+  final String name;
+  final String module;
+  final List<String> args;
+  CreateVirtualTableStmt(this.ifNotExists, this.name, this.module, this.args);
+}
+
 /// CREATE KV STORE name [WITH (...)].
 class CreateKvStoreStmt extends Stmt {
   final bool ifNotExists;
