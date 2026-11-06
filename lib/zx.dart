@@ -96,6 +96,8 @@ export 'src/codec/zcm/zcm.dart'
 // the .zx format (docs/zx-format.md): the synchronous building blocks
 export 'src/format/zx/zx_handler.dart'
     show ZxHandler, ZxSeqReader, ZxTimelineVersion, ZxUpdateFileResult;
+export 'src/format/zx/zx_pack.dart'
+    show zxPackBytes, zxUnpackBytes, zxLooksPacked;
 export 'src/format/zx/zx_writer.dart'
     show
         ZxWriter,

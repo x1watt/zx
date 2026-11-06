@@ -130,6 +130,14 @@ class ZxDbStoreOptions {
   /// one. A signature costs a few milliseconds.
   int sealEveryMicros;
 
+  /// The scrypt cost (log2 of N) of the key of a new encrypted archive;
+  /// an existing archive keeps the cost in its header. The default (15)
+  /// is meant for passwords people type, and costs about a second per
+  /// open on a phone. A password that is already a random key of 128
+  /// bits or more (an HKDF output, for example) gains nothing from the
+  /// stretching: 1 makes the open cost nothing.
+  int scryptLog2N;
+
   ZxDbStoreOptions(
       {this.pageCacheBytes = 128 << 20,
       this.blockCacheBytes = 32 << 20,
@@ -153,7 +161,8 @@ class ZxDbStoreOptions {
       this.lsmFoldRatio = 0.5,
       this.lsmFoldMin = 65536,
       this.signer,
-      this.sealEveryMicros = 0})
+      this.sealEveryMicros = 0,
+      this.scryptLog2N = zxDefaultScryptLog2N})
       : threads = threads ?? defaultThreads();
 }
 
@@ -361,6 +370,7 @@ class ZxDbStore implements ZxStore {
     final tmp = '$path.zx-part';
     final o = ZxWriteOptions()
       ..password = _password
+      ..scryptLog2N = options.scryptLog2N
       ..threads = 1
       ..generationComment = 'database created';
     // a new archive with a key is sealed from the start, the key its admin

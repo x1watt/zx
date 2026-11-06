@@ -33,3 +33,6 @@ export 'src/db/engine/store.dart' show ZxDbStoreOptions, ZxDbFoldResult;
 export 'src/db/storage_api.dart' show ZxDbException, ZxDbError, ZxStore;
 export 'src/db/handle/zx_db.dart'
     show ZxDb, ZxRow, ZxRows, ZxDbStatement, zxDbOpenFile, zxDbOpenMemory;
+export 'src/format/zx/zx_pack.dart'
+    show zxPackBytes, zxUnpackBytes, zxLooksPacked;
+export 'src/io/streams.dart' show SevenZipException, SevenZipError;

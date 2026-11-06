@@ -100,6 +100,20 @@ codecs (`LzmaCompressor`, `Lzma2Compressor`, `PpmdCompressor`, their
 decoder streams, `createFilterEncoder`, `Crc32`, `Crc64`, `Sha256`). They
 block while they work: do not call them on the UI isolate.
 
+### One file in memory
+
+`zxPackBytes(data, {name, password, scryptLog2N, compression})` returns
+the bytes of a new .zx archive holding [data] as its one entry, encrypted
+when a password is given (data and Index); `zxUnpackBytes(bytes,
+{password})` returns the data, and throws `SevenZipException` (kind
+`wrongPassword` for a missing or wrong password). `compression` is
+`'none'`, `'fast'` (LZ4, the default) or `'max'`. Use it for small files
+that must stay encrypted on their own: key files, settings, blobs kept
+beside a database. When the password is already a random key, pass
+`scryptLog2N: 1` (the same option exists for databases,
+`ZxDbStoreOptions.scryptLog2N`): scrypt's default cost is about a second
+per open on a phone and adds nothing to a 256-bit key.
+
 ### The README of an archive
 
 `ZxArchive.readmeIn(dir)` is the README of a folder (README.md,

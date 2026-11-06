@@ -128,4 +128,26 @@ void main() {
     expect(db.select('SELECT v FROM t WHERE k = 0').single['v'], 'after');
     db.dispose();
   });
+
+  test('a cheap scrypt cost keeps an encrypted open fast and survives '
+      'compaction', () {
+    final path = '${dir.path}/k.zx';
+    final key = 'f' * 64;
+    var db = zxDbOpenFile(path,
+        password: key, options: ZxDbStoreOptions(scryptLog2N: 1));
+    db.execute('CREATE TABLE t (v TEXT)');
+    db.execute("INSERT INTO t VALUES ('x')");
+    db.compact();
+    db.dispose();
+    final sw = Stopwatch()..start();
+    for (var i = 0; i < 10; i++) {
+      // the cost is read from the header: default options open it fast
+      db = zxDbOpenFile(path, password: key);
+      expect(db.select('SELECT v FROM t').single['v'], 'x');
+      db.dispose();
+    }
+    expect(sw.elapsedMilliseconds, lessThan(3000));
+    expect(() => zxDbOpenFile(path, password: 'g' * 64),
+        throwsA(isA<ZxDbException>()));
+  });
 }

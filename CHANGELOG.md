@@ -1,5 +1,14 @@
 ## Unreleased
 
+- **`zxPackBytes` / `zxUnpackBytes`: one file in an in-memory .zx.** A
+  small file (a key, a settings file, a blob kept beside a database)
+  packed into a one-entry archive with the archive's own encryption and
+  compression, and read back, synchronously and without an isolate.
+  `zxLooksPacked` tells such bytes apart.
+- **zxdb: `ZxDbStoreOptions.scryptLog2N`.** The scrypt cost of a new
+  encrypted database. The default costs about a second per open on a
+  phone; a password that is already a random key passes 1 and opens at
+  once. The cost is stored in the header, so later opens need no option.
 - **zxdb: `package:zx/zxdb.dart`, the synchronous API, and `ZxDb`.** The
   database opened in the calling isolate (`ZxDatabase`, `ZxSql`,
   `ZxMemoryStore`), and `zxDbOpenFile` / `zxDbOpenMemory`: a handle shaped

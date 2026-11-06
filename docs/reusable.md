@@ -46,4 +46,5 @@ writing a new feature.
 | Code | Where | Reuse it for |
 |---|---|---|
 | `zxDbOpenFile`, `zxDbOpenMemory`, `ZxDb` | `lib/src/db/handle/zx_db.dart` (`package:zx/zxdb.dart`) | Any application store: a package:sqlite3-shaped handle (rows as maps, prepared statements, transactions), one database per file per isolate, compaction by itself. The XPRS app and its encrypted archive persist through it. |
+| `zxPackBytes`, `zxUnpackBytes`, `zxLooksPacked` | `lib/src/format/zx/zx_pack.dart` (`package:zx/zxdb.dart`, `package:zx/zx.dart`) | One small file encrypted and compressed as a one-entry .zx in memory, synchronous: key files, settings, blobs kept beside a database. Pass `scryptLog2N: 1` when the password is already a random key. |
 | `ZxDbStore.livePages` | `lib/src/db/engine/store.dart` | A database's live size for a byte budget (the file's length counts history until a vacuum). |
