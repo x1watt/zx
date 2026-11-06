@@ -413,6 +413,40 @@ void main() {
     }
   });
 
+  test('livePages counts the last generation, not the history in the file',
+      () {
+    final path = newPath();
+    final st = ZxDbStore.open(path, create: true, options: small());
+    expect(st.livePages, 0);
+    var t = st.begin();
+    final a = t.createTree('a');
+    for (var i = 0; i < 2000; i++) {
+      a.put(k('key$i'), lcgBytes(100, i));
+    }
+    t.commit();
+    final full = st.livePages;
+    expect(full, greaterThan(1));
+    // Rewriting every value many times grows the file, not the live pages.
+    final fileBefore = File(path).lengthSync();
+    for (var round = 0; round < 5; round++) {
+      t = st.begin();
+      for (var i = 0; i < 2000; i++) {
+        t.tree('a')!.put(k('key$i'), lcgBytes(100, i + round));
+      }
+      t.commit();
+    }
+    expect(File(path).lengthSync(), greaterThan(fileBefore));
+    expect(st.livePages, lessThanOrEqualTo(full + 2));
+    // Deleting most rows frees their pages.
+    t = st.begin();
+    for (var i = 0; i < 1900; i++) {
+      t.tree('a')!.delete(k('key$i'));
+    }
+    t.commit();
+    expect(st.livePages, lessThan(full));
+    st.close();
+  });
+
   test('identical large values share their overflow pages', () {
     final path = newPath();
     final st = ZxDbStore.open(path, create: true, options: small());

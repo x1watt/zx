@@ -535,6 +535,23 @@ class ZxDbStore implements ZxStore {
   /// commit), for tools and tests.
   ZxDbRoot? get root => _head.index.database;
 
+  /// The pages the last generation uses: the page ids handed out less the
+  /// free ones. Times [ZxDbStoreOptions.pageSize] it is the database's live
+  /// size before compression, the figure SQLite's `page_count * page_size`
+  /// gave: unlike the file's length it does not count the pages of earlier
+  /// generations a vacuum has not dropped yet, so a byte budget read from it
+  /// does not evict live rows to pay for history.
+  int get livePages {
+    _refresh();
+    final r = root;
+    if (r == null) return 0;
+    var free = 0;
+    for (var i = 1; i < r.free.length; i += 2) {
+      free += r.free[i];
+    }
+    return r.nextPageId - 1 - free;
+  }
+
   ZxIndex _indexOf(ZxGeneration g) {
     if (g.number == _head.number) return _head.index;
     final hit = _indexes[g.number];
