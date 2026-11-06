@@ -182,6 +182,39 @@ cur.close();                               // releases its snapshot
 - Session state: `lastInsertRowid`, `changes`, `totalChanges`,
   `inTransaction`; `close()` rolls back an open transaction.
 
+### A handle shaped like package:sqlite3's (ZxDb)
+
+For code moving off SQLite, `package:zx/zxdb.dart` also gives a handle with
+the slice of package:sqlite3 that stores use, over a `ZxDatabase` and its
+SQL session, so their SQL and their code stay as they were:
+
+```dart
+final db = zxDbOpenFile('notes.zx', password: pw,      // ':memory:' too
+    options: ZxDbStoreOptions(compression: 'fast'));
+db.execute('CREATE TABLE IF NOT EXISTS t (k TEXT PRIMARY KEY, n INTEGER)');
+db.transaction(() {                                     // one commit
+  db.execute('INSERT INTO t VALUES (?, ?)', ['a', 1]);
+});
+final rows = db.select('SELECT k, n FROM t');           // ZxRows: a List
+rows.first['n'];                                        // ZxRow: a Map
+db.updatedRows; db.lastInsertRowId;
+db.bytes;      // the file, history included until the next compaction
+db.liveBytes;  // the live data (ZxDbStore.livePages times the page size)
+db.dispose();
+```
+
+- One database per file per isolate: a second `zxDbOpenFile` of the same
+  file shares the first's (as SQLite connections shared one file); the last
+  `dispose` closes it.
+- A statement outside BEGIN ... COMMIT is a generation of its own (about a
+  millisecond and a few KiB appended): write several rows in one
+  transaction.
+- The handle compacts the file (`ZxDatabase.vacuum(keep: 1)`) when it has
+  doubled since the last compaction (plus 4 MiB); prepared statements parse
+  again after it. `compact()` does it now.
+- A wrong password or a file that is not a database is a
+  `ZxDbException(corrupt)`.
+
 ### Extension points
 
 - Functions: `sql.functions.scalar(ZxScalarFunction(...))`,

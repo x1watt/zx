@@ -40,3 +40,10 @@ writing a new feature.
 | `ftsTermRange` | `lib/src/db/fts_text.dart` | The key range of a text component (exact or prefix) in keycodec keys: prefix scans over any index tree. |
 | `ZxVirtualTableModule`, `ZxSql.registerModule` | `lib/src/db/sql/vtab.dart`, `zx_sql.dart` | A new `CREATE VIRTUAL TABLE ... USING x(...)` kind whose definition persists in the catalog (fts5 is the example: `lib/src/db/sql/fts5.dart`). |
 | `ZxVtabContext.writableTree` | `lib/src/db/sql/vtab.dart` | Writes of a virtual table that a failed statement in an explicit transaction undoes. |
+
+## zxdb from an application
+
+| Code | Where | Reuse it for |
+|---|---|---|
+| `zxDbOpenFile`, `zxDbOpenMemory`, `ZxDb` | `lib/src/db/handle/zx_db.dart` (`package:zx/zxdb.dart`) | Any application store: a package:sqlite3-shaped handle (rows as maps, prepared statements, transactions), one database per file per isolate, compaction by itself. The XPRS app and its encrypted archive persist through it. |
+| `ZxDbStore.livePages` | `lib/src/db/engine/store.dart` | A database's live size for a byte budget (the file's length counts history until a vacuum). |

@@ -1,5 +1,14 @@
 ## Unreleased
 
+- **zxdb: `package:zx/zxdb.dart`, the synchronous API, and `ZxDb`.** The
+  database opened in the calling isolate (`ZxDatabase`, `ZxSql`,
+  `ZxMemoryStore`), and `zxDbOpenFile` / `zxDbOpenMemory`: a handle shaped
+  like package:sqlite3's (`execute`, `select` with rows read as maps,
+  `prepare`, `updatedRows`, `lastInsertRowId`, `transaction`), sharing one
+  database per file per isolate and compacting the file when it has
+  doubled. The XPRS app replaced SQLite with it.
+- **zxdb: `ZxDbStore.livePages`.** The pages the last generation uses: a
+  database's live size, without the history a vacuum has not dropped.
 - **zxdb: full-text search with SQLite's FTS5 syntax.** `CREATE VIRTUAL
   TABLE t USING fts5(a, b, id UNINDEXED, tokenize = 'unicode61')`,
   `INSERT` / `UPDATE` / `DELETE`, `t MATCH '"hello" "wor"*'` (phrases,
