@@ -18,6 +18,9 @@
 /// db.close();
 /// ```
 ///
+/// [ZxDb] ([zxDbOpenFile], [zxDbOpenMemory]) is the same database behind a
+/// handle shaped like package:sqlite3's, for stores moving off SQLite.
+///
 /// Not for the browser (it reads and writes files with dart:io).
 library;
 
@@ -28,3 +31,5 @@ export 'src/db/sql/sql_result.dart';
 export 'src/db/memory_store.dart' show ZxMemoryStore;
 export 'src/db/engine/store.dart' show ZxDbStoreOptions, ZxDbFoldResult;
 export 'src/db/storage_api.dart' show ZxDbException, ZxDbError, ZxStore;
+export 'src/db/handle/zx_db.dart'
+    show ZxDb, ZxRow, ZxRows, ZxDbStatement, zxDbOpenFile, zxDbOpenMemory;
