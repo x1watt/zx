@@ -13,6 +13,7 @@ export 'dart:io'
         OSError,
         FileSystemEntity,
         FileSystemEntityType,
+        Link,
         pid;
 export 'platform_web.dart';
 export 'web_fs.dart';

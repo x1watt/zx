@@ -177,7 +177,7 @@ void main() {
     expect(b.select('SELECT body FROM doc WHERE k = ?', ['d3']).single['body'],
         'word3 common');
     a.dispose();
-    expect(b.select('SELECT COUNT(*) n FROM doc').single[0], 200,
+    expect(b.select('SELECT COUNT(*) n FROM doc').single.columnAt(0), 200,
         reason: 'b still holds the file');
     b.dispose();
 

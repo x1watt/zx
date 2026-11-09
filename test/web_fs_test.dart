@@ -102,4 +102,37 @@ void main() {
     final f = fs.changes().whereType<w.ZxWebFsFile>().single;
     expect(f.chunks.keys.toSet(), {0, 1});
   });
+
+  test('what the archiver needs beyond the database: types, times, '
+      'directory renames, links refused', () async {
+    w.File('/a/b/c.txt').openSync(mode: w.FileMode.write)
+      ..writeFromSync([1, 2, 3])
+      ..closeSync();
+    expect(w.FileSystemEntity.typeSync('/a/b/c.txt'), w.FileSystemEntityType.file);
+    expect(w.FileSystemEntity.typeSync('/a/b'), w.FileSystemEntityType.directory);
+    expect(w.FileSystemEntity.typeSync('/nope'), w.FileSystemEntityType.notFound);
+    expect(w.FileSystemEntity.isLinkSync('/a/b/c.txt'), isFalse);
+
+    final t = DateTime.utc(2020, 1, 2, 3, 4, 5);
+    w.File('/a/b/c.txt').setLastModifiedSync(t);
+    expect(w.File('/a/b/c.txt').lastModifiedSync(), t);
+    w.File('/a/b/c.txt').setLastAccessedSync(t); // accepted, not kept
+
+    fs.changes(); // settle
+    w.Directory('/a').renameSync('/z');
+    expect(w.Directory('/a').existsSync(), isFalse);
+    expect(w.File('/z/b/c.txt').readAsBytesSync(), [1, 2, 3]);
+    expect(w.Directory('/z/b').existsSync(), isTrue);
+    final changes = fs.changes();
+    expect(changes.whereType<w.ZxWebFsDelete>(), isEmpty,
+        reason: 'a rename keeps the file id: no delete and re-add');
+
+    await w.Directory('/z').delete(recursive: true);
+    expect(w.Directory('/z').existsSync(), isFalse);
+
+    final l = w.Link('/l');
+    expect(l.existsSync(), isFalse);
+    expect(() => l.createSync('/z'), throwsA(isA<w.FileSystemException>()));
+    expect(() => l.targetSync(), throwsA(isA<w.FileSystemException>()));
+  });
 }

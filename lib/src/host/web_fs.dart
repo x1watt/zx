@@ -278,6 +278,13 @@ class FileStat {
 
 /// dart:io's FileSystemEntity (the common part).
 abstract class FileSystemEntity {
+  /// The kind of entity at [path] (there are no links in a browser).
+  static FileSystemEntityType typeSync(String path, {bool followLinks = true}) =>
+      FileStat.statSync(path).type;
+
+  /// Whether [path] is a link: never, in a browser.
+  static bool isLinkSync(String path) => false;
+
   String get path;
   bool existsSync();
   FileStat statSync() => FileStat.statSync(path);
@@ -355,6 +362,19 @@ class File extends FileSystemEntity {
           (throw FileSystemException('Cannot retrieve length of file', path,
               const OSError('No such file or directory', 2))))
       .length;
+
+  /// Sets the modification time (kept with the file, and persisted).
+  void setLastModifiedSync(DateTime time) {
+    final f = _fs._get(path) ??
+        (throw FileSystemException('Cannot set modification time', path,
+            const OSError('No such file or directory', 2)));
+    f.modified = time;
+    f.metaDirty = true;
+    _fs._changed();
+  }
+
+  /// Access times are not kept in a browser: nothing to set.
+  void setLastAccessedSync(DateTime time) {}
 
   DateTime lastModifiedSync() => (_fs._get(path) ??
           (throw FileSystemException('Cannot retrieve modification time', path,
@@ -574,6 +594,34 @@ class Directory extends FileSystemEntity {
     _fs._changed();
   }
 
+  Future<Directory> delete({bool recursive = false}) async {
+    deleteSync(recursive: recursive);
+    return this;
+  }
+
+  /// Moves the directory and everything in it to [newPath] (each file keeps
+  /// its id, so the host sees renames, not copies).
+  Directory renameSync(String newPath) {
+    if (!existsSync()) {
+      throw FileSystemException('Cannot rename directory', path,
+          const OSError('No such file or directory', 2));
+    }
+    final to = ZxWebFs.norm(newPath);
+    final pre = '$path/';
+    for (final p in [for (final p in _fs._files.keys) if (p.startsWith(pre)) p]) {
+      File(p).renameSync('$to/${p.substring(pre.length)}');
+    }
+    final moved = [
+      for (final d in _fs._dirs) if (d == path || d.startsWith(pre)) d,
+    ];
+    _fs._dirs.removeAll(moved);
+    for (final d in moved) {
+      _fs._mkdirs(d == path ? to : '$to/${d.substring(pre.length)}');
+    }
+    _fs._changed();
+    return Directory(to);
+  }
+
   List<FileSystemEntity> listSync(
       {bool recursive = false, bool followLinks = true}) {
     final pre = path == '/' ? '/' : '$path/';
@@ -587,6 +635,32 @@ class Directory extends FileSystemEntity {
 
   @override
   String toString() => "Directory: '$path'";
+}
+
+/// dart:io's Link: a browser has no links, so none exists and none can be
+/// made (the code that makes them is the archiver's, on a disk).
+class Link extends FileSystemEntity {
+  Link(String path) : path = ZxWebFs.norm(path);
+  @override
+  final String path;
+
+  @override
+  bool existsSync() => false;
+
+  @override
+  Link get absolute => this;
+
+  Never _none(String what) => throw FileSystemException(
+      what, path, const OSError('Links are not supported in a browser', 95));
+
+  String targetSync() => _none('Cannot read link');
+  void createSync(String target, {bool recursive = false}) =>
+      _none('Cannot create link');
+  void deleteSync({bool recursive = false}) => _none('Cannot delete link');
+  Link renameSync(String newPath) => _none('Cannot rename link');
+
+  @override
+  String toString() => "Link: '$path'";
 }
 
 /// The process id in a browser (one page, one "process").
