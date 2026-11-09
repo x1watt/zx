@@ -15,6 +15,12 @@
 - **`ZxDbError.wrongPassword`** for a wrong or missing password (was
   `generic`).
 - **`ZxSql.lockWaitMs`**: how long a SQL write waits for another writer.
+- **A writable database in the browser.** Compiled for the web (dart2wasm),
+  the library's files are held in memory (`lib/src/host/web_fs.dart`,
+  exported by `host/io.dart` instead of dart:io's file classes), so zxdb
+  databases are written, compacted and read in a page; `ZxWebFs.changes()`
+  and `restore` let the host persist them (IndexedDB, OPFS).
+  docs/architecture.md section 20.
 
 ## 0.6.0
 

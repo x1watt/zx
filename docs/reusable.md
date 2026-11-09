@@ -32,4 +32,4 @@ writing a new feature.
 | `CliIo`-free async commands | `runSevenZipCliProcess` in `lib/src/cli/main.dart` | The place to hook long-running (async) commands: dispatch before the synchronous 7-Zip parser. |
 | `ZxSqlDb`, `package:zx/zxdb.dart` | `lib/src/db/zx_sql_db.dart` | zxdb where a program would use SQLite: synchronous SQL with map rows, transactions, KV, time series, compaction policy. The entry point for apps that embed zxdb (XPRS uses it for all its stores). |
 | `ZxKeys.derive` cache | `lib/src/format/zx/zx_crypto.dart` | Any code that opens the same encrypted archive repeatedly gets its keys without scrypt; `zxKdfRuns` to assert it in tests. |
-
+| `ZxWebFs` and its `File`/`RandomAccessFile`/`Directory` | `lib/src/host/web_fs.dart` | Synchronous dart:io-shaped files in memory for code compiled to the web, with a change list (64 KiB chunks, deletions, renames by id) for the host to persist. Anything else in zx that writes files (an archive update in the web app) can run on it. |
