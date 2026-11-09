@@ -126,6 +126,56 @@ admin with its acceptance) or signs the history. `generateSecretKey`,
 `ZxDbStoreOptions(signer: key, sealEveryMicros: ...)`. See
 docs/zx-format.md section 17.
 
+### An application database
+
+`package:zx/zxdb.dart` is the database alone, for a program that wants
+zxdb where it would use SQLite (no archiver, no isolate pool): `ZxSqlDb`
+(`lib/src/db/zx_sql_db.dart`).
+
+```dart
+import 'package:zx/zxdb.dart';
+
+final db = ZxSqlDb.open('/data/app/notes.zx', password: secretHex, scryptLog2N: 1);
+db.execute('CREATE TABLE IF NOT EXISTS n (id INTEGER PRIMARY KEY, t TEXT) '
+    "WITH (compression = 'fast')");
+db.transaction(() {
+  for (final t in texts) db.execute('INSERT INTO n (t) VALUES (?)', [t]);
+});
+for (final r in db.select('SELECT id, t FROM n WHERE t LIKE ?', ['%x%'])) {
+  print('${r['id']} ${r.columnAt(1)}');
+}
+db.kv('cache', ttl: const Duration(days: 1)).putString('k', 'v');
+db.maybeCompact();          // when idle: rewrite the file once it has grown
+db.dispose();
+```
+
+- Synchronous, like an SQLite binding: `execute`, `select` (rows are maps
+  by column name, `columnAt(i)` by position), `prepare`, `updatedRows`,
+  `lastInsertRowId`, `transaction(fn)` (one commit; rolled back when `fn`
+  throws; `fn` must not await). The SQL is zxdb's (docs/zxdb-sql.md).
+- Every write outside a transaction is a commit of its own (about a
+  millisecond and some bytes of file each): batch writes in transactions.
+- The file only grows; `maybeCompact()` rewrites it when it passed twice
+  its size after the last compaction (`stats()` gives the sizes). It holds
+  the writer lock while it rewrites: call it when idle, or from another
+  isolate that opens the same file.
+- Several isolates and processes may open one file: one writer at a time
+  (a write waits `lockWaitMs` for the other, then throws
+  `ZxDbError.busy`), and a read sees the others' commits (at every
+  statement with the default `refreshMicros: 0`).
+- Encryption: `password`. For a random secret of full strength (a key
+  derived by the program, as hex) pass `scryptLog2N: 1` when creating:
+  the secret needs no stretching, so opening costs no KDF time. Derived
+  keys are cached per process (`ZxKeys.clearCache`), so reopening and
+  following other writers cost no KDF either. A wrong or missing password
+  is `ZxDbError.wrongPassword`.
+- `kv(name)`: a KV store (created on first use) with TTLs; its writes
+  commit on their own, so inside a transaction write through SQL on its
+  table `name (key, value)`. `series(name)`: a time series.
+- `systemTables: true` adds the system tables (zx_files...), the metadata
+  tables and full-text search over the archive's files.
+- `ZxSqlDb.memory()`: SQL in memory only (tests).
+
 ### In a Flutter app
 
 Call the API from anywhere; each operation runs in its own isolate.

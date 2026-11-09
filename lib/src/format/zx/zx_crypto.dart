@@ -66,6 +66,12 @@ class ZxHmac {
   }
 }
 
+/// How many derived keys [ZxKeys.derive] keeps (process wide).
+int zxKeyCacheSize = 64;
+
+/// scrypt runs so far in this isolate (the key cache's misses); tests use it.
+int zxKdfRuns = 0;
+
 /// The keys of an encrypted archive.
 class ZxKeys {
   final Uint8List aesKey;
@@ -77,7 +83,47 @@ class ZxKeys {
 
   /// The keys for [password] and [params]; throws [SevenZipException]
   /// (unsupported) for an unknown KDF or cipher.
+  ///
+  /// Derived keys are kept in a process wide cache ([zxKeyCacheSize]
+  /// entries, least recently used out) keyed by the SHA-256 of the password
+  /// and the KDF parameters (salt included): an archive opened again (a
+  /// database refreshing after another writer's commit, its SQL session,
+  /// a vacuum) does not run scrypt again. [zxKdfRuns] counts the runs.
   factory ZxKeys.derive(String password, ZxKdfParams params) {
+    final pw = Sha256.hash(Uint8List.fromList(utf8.encode(password)));
+    final id = _cacheId(pw, params);
+    final hit = _keyCache.remove(id);
+    if (hit != null) {
+      _keyCache[id] = hit;
+      return hit;
+    }
+    final k = ZxKeys._derive(pw, params);
+    _keyCache[id] = k;
+    while (_keyCache.length > zxKeyCacheSize) {
+      _keyCache.remove(_keyCache.keys.first);
+    }
+    return k;
+  }
+
+  static final Map<String, ZxKeys> _keyCache = <String, ZxKeys>{};
+
+  static String _cacheId(Uint8List pw, ZxKdfParams p) {
+    final b = StringBuffer();
+    for (final x in pw) {
+      b.write(x.toRadixString(16).padLeft(2, '0'));
+    }
+    b.write('|${p.kdfId}|${p.cipherId}|${p.log2N}|${p.r}|${p.p}|');
+    for (final x in p.salt) {
+      b.write(x.toRadixString(16).padLeft(2, '0'));
+    }
+    return b.toString();
+  }
+
+  /// Forgets every cached key (a test, or a program that wants keys out of
+  /// memory once it closed its archives).
+  static void clearCache() => _keyCache.clear();
+
+  factory ZxKeys._derive(Uint8List pw, ZxKdfParams params) {
     if (params.kdfId != 1) {
       throw SevenZipException('zx: unsupported key derivation ${params.kdfId}',
           SevenZipError.unsupportedMethod);
@@ -95,7 +141,7 @@ class ZxKeys {
       throw const SevenZipException(
           'zx: unsupported scrypt parameters', SevenZipError.unsupportedMethod);
     }
-    final pw = Sha256.hash(Uint8List.fromList(utf8.encode(password)));
+    zxKdfRuns++;
     final dk =
         scrypt(pw, params.salt, 1 << params.log2N, params.r, params.p, 64);
     return ZxKeys(Uint8List.fromList(Uint8List.sublistView(dk, 0, 32)),

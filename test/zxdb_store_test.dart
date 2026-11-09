@@ -17,6 +17,7 @@ import 'package:zx/src/db/engine/store.dart';
 import 'package:zx/src/db/memory_store.dart';
 import 'package:zx/src/db/storage_api.dart';
 import 'package:zx/src/format/archive_types.dart';
+import 'package:zx/src/format/zx/zx_crypto.dart';
 import 'package:zx/src/format/zx/zx_handler.dart';
 import 'package:zx/src/io/streams.dart';
 
@@ -730,6 +731,47 @@ void main() {
     expect(st2.vacuum(), greaterThan(0));
     expect(s(st2.snapshot().tree('a')!.get(k('plainkey9'))!), 'plainvalue9');
     st2.close();
+  });
+
+  test('encryption: wrong or missing password is its own error kind', () {
+    final path = newPath();
+    ZxDbStore.open(path, create: true, password: 'secret', options: small())
+        .close();
+    for (final pw in [null, 'wrong']) {
+      expect(
+          () => ZxDbStore.open(path, password: pw, options: small()),
+          throwsA(isA<ZxDbException>()
+              .having((e) => e.kind, 'kind', ZxDbError.wrongPassword)));
+    }
+  });
+
+  test('encryption: derived keys are cached, a random secret can skip the '
+      'stretching', () {
+    ZxKeys.clearCache();
+    final path = newPath();
+    final before = zxKdfRuns;
+    final w = ZxDbStore.open(path,
+        create: true, password: 'a' * 64, options: small()..scryptLog2N = 1);
+    final r = ZxDbStore.open(path, password: 'a' * 64, options: small()
+      ..refreshMicros = 0);
+    // creating derives once (the new archive's KDF); every later open,
+    // and the reader's refresh after each of the writer's commits, reuses it
+    final afterOpen = zxKdfRuns;
+    expect(afterOpen - before, lessThanOrEqualTo(2));
+    for (var i = 0; i < 20; i++) {
+      final t = w.begin();
+      (t.tree('a') ?? t.createTree('a')).put(k('k$i'), k('v$i'));
+      t.commit();
+      expect(s(r.snapshot().tree('a')!.get(k('k$i'))!), 'v$i');
+    }
+    expect(zxKdfRuns, afterOpen, reason: 'no scrypt on refresh');
+    w.close();
+    r.close();
+    // log2 N = 1 is in the header: a fresh process (empty cache) opens fast
+    ZxKeys.clearCache();
+    final sw = Stopwatch()..start();
+    ZxDbStore.open(path, password: 'a' * 64, options: small()).close();
+    expect(sw.elapsedMilliseconds, lessThan(2000));
   });
 
   test('vacuum keeps the last generations and the data', () {

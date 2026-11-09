@@ -1,3 +1,21 @@
+## Unreleased
+
+- **`package:zx/zxdb.dart` and `ZxSqlDb`: zxdb as an application
+  database.** The database without the archiver, used like an SQLite
+  binding: synchronous SQL with rows by column name, prepared statements,
+  `transaction(fn)`, `updatedRows`, plus KV stores, time series, `stats()`
+  and `maybeCompact()`; `ZxSqlDb.memory()` for tests. docs/api.md, "An
+  application database".
+- **Derived keys are cached per process.** `ZxKeys.derive` keeps the keys
+  of the last 64 (password, KDF parameters) pairs, so a database refreshing
+  after another writer's commit, its SQL session and a vacuum no longer
+  run scrypt again (`zxKdfRuns` counts the runs; `ZxKeys.clearCache`).
+- **`ZxDbStoreOptions.scryptLog2N`** sets scrypt's N for a new encrypted
+  database: 1 for a program's random secret (no stretching needed).
+- **`ZxDbError.wrongPassword`** for a wrong or missing password (was
+  `generic`).
+- **`ZxSql.lockWaitMs`**: how long a SQL write waits for another writer.
+
 ## 0.6.0
 
 - **`zx mount` on Windows (WinFsp).** The same server, protocol and

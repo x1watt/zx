@@ -171,6 +171,10 @@ class ZxSql {
   }
 
   bool get inTransaction => _txn != null;
+
+  /// How long a write waits for the writer lock of another writer (another
+  /// isolate or process) before it fails with [ZxDbError.busy].
+  int lockWaitMs = 5000;
   int get lastInsertRowid => _lastRowid;
   int get changes => _changes;
   int get totalChanges => _totalChanges;
@@ -330,7 +334,7 @@ class ZxSql {
     }
     // Writes.
     final explicit = _txn != null;
-    final txn = _txn ?? store.begin();
+    final txn = _txn ?? store.begin(waitMs: lockWaitMs);
     final ctx = _ctx(txn, txn, params);
     if (explicit) ctx.undo = UndoLog();
     try {
@@ -375,7 +379,7 @@ class ZxSql {
           throw const ZxDbException(
               'cannot start a transaction within a transaction');
         }
-        _txn = store.begin();
+        _txn = store.begin(waitMs: lockWaitMs);
         return const ZxSqlResult([], [], 0, 0);
       case 'COMMIT':
         if (_txn == null) {

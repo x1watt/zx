@@ -30,3 +30,6 @@ writing a new feature.
 | `ZxArchive.readRange` | `lib/src/zx_api.dart`, `workerReadRange` | Bytes of an item from an offset, decoding only the blocks involved (null when the format has no random access). Previews, media players, hex views, anything that needs the middle of a big file. |
 | `ZxArchive.add/delete/rename/createFolder` | `lib/src/zx_api.dart` | Updates that write a new archive and rename it over the old one, or append a generation. |
 | `CliIo`-free async commands | `runSevenZipCliProcess` in `lib/src/cli/main.dart` | The place to hook long-running (async) commands: dispatch before the synchronous 7-Zip parser. |
+| `ZxSqlDb`, `package:zx/zxdb.dart` | `lib/src/db/zx_sql_db.dart` | zxdb where a program would use SQLite: synchronous SQL with map rows, transactions, KV, time series, compaction policy. The entry point for apps that embed zxdb (XPRS uses it for all its stores). |
+| `ZxKeys.derive` cache | `lib/src/format/zx/zx_crypto.dart` | Any code that opens the same encrypted archive repeatedly gets its keys without scrypt; `zxKdfRuns` to assert it in tests. |
+

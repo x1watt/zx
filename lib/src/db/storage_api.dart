@@ -44,6 +44,7 @@ enum ZxDbError {
   corrupt,
   syntax, // SQL
   unsupported,
+  wrongPassword, // encrypted: no password, or not this archive's
 }
 
 /// Per-tree storage options (from `WITH (...)` or ALTER ... SET).

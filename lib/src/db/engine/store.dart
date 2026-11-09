@@ -130,6 +130,12 @@ class ZxDbStoreOptions {
   /// one. A signature costs a few milliseconds.
   int sealEveryMicros;
 
+  /// log2 of scrypt's N for a new encrypted archive (zx-format.md 7): 15
+  /// for a password a person types. A program that passes a random secret
+  /// of full strength (32 random bytes, hex) gains nothing from stretching
+  /// it and may pass 1, so opening costs no KDF time.
+  int scryptLog2N;
+
   ZxDbStoreOptions(
       {this.pageCacheBytes = 128 << 20,
       this.blockCacheBytes = 32 << 20,
@@ -153,7 +159,8 @@ class ZxDbStoreOptions {
       this.lsmFoldRatio = 0.5,
       this.lsmFoldMin = 65536,
       this.signer,
-      this.sealEveryMicros = 0})
+      this.sealEveryMicros = 0,
+      this.scryptLog2N = 15})
       : threads = threads ?? defaultThreads();
 }
 
@@ -361,6 +368,7 @@ class ZxDbStore implements ZxStore {
     final tmp = '$path.zx-part';
     final o = ZxWriteOptions()
       ..password = _password
+      ..scryptLog2N = options.scryptLog2N
       ..threads = 1
       ..generationComment = 'database created';
     // a new archive with a key is sealed from the start, the key its admin
@@ -403,10 +411,10 @@ class ZxDbStore implements ZxStore {
       } on ZxNeedPasswordException {
         throw const ZxDbException(
             'the archive is encrypted: a password is needed',
-            ZxDbError.generic);
+            ZxDbError.wrongPassword);
       } on SevenZipException catch (e) {
         if (e.kind == SevenZipError.wrongPassword) {
-          throw const ZxDbException('wrong password', ZxDbError.generic);
+          throw const ZxDbException('wrong password', ZxDbError.wrongPassword);
         }
         throw ZxDbException(e.message, ZxDbError.corrupt);
       }
@@ -425,9 +433,9 @@ class ZxDbStore implements ZxStore {
       } on ZxNeedPasswordException {
         throw const ZxDbException(
             'the archive is encrypted: a password is needed',
-            ZxDbError.generic);
+            ZxDbError.wrongPassword);
       } on SevenZipException {
-        throw const ZxDbException('wrong password', ZxDbError.generic);
+        throw const ZxDbException('wrong password', ZxDbError.wrongPassword);
       }
       final file = reuse ??
           DbFile(path, input, r.header, keys,
