@@ -14,6 +14,9 @@ void main() {
     final f = w.File('/data/a.zx');
     expect(f.existsSync(), isFalse);
     expect(() => f.openSync(), throwsA(isA<w.FileSystemException>()));
+    // opened for writing, a file gets its folders
+    w.File('/made/on/write').openSync(mode: w.FileMode.write).closeSync();
+    expect(w.Directory('/made/on').existsSync(), isTrue);
     final raf = f.openSync(mode: w.FileMode.append);
     raf.writeFromSync([1, 2, 3, 4, 5]);
     raf.writeFromSync([6, 7], 0, 2);

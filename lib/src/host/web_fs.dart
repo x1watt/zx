@@ -384,10 +384,8 @@ class File extends FileSystemEntity {
         throw FileSystemException('Cannot open file', path,
             const OSError('No such file or directory', 2));
       }
-      if (!_fs._dirs.contains(ZxWebFs.parentOf(path))) {
-        throw FileSystemException('Cannot open file', path,
-            const OSError('No such file or directory', 2));
-      }
+      // the host's own files (and their folders) live elsewhere in a
+      // browser: a file opened for writing gets its folders
       f = _fs._create(path);
     } else if (mode == FileMode.write || mode == FileMode.writeOnly) {
       f.length = 0;
