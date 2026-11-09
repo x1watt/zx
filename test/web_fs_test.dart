@@ -93,4 +93,13 @@ void main() {
     w.File('/r/b').writeAsStringSync('z');
     expect(fs.changes().whereType<w.ZxWebFsFile>().single.id, greaterThan(7));
   });
+
+  test('markAllDirty lists everything again (a failed host write)', () {
+    w.File('/m/a').writeAsBytesSync(Uint8List(w.zxWebChunk + 5));
+    fs.changes();
+    expect(fs.changes(), isEmpty);
+    fs.markAllDirty();
+    final f = fs.changes().whereType<w.ZxWebFsFile>().single;
+    expect(f.chunks.keys.toSet(), {0, 1});
+  });
 }

@@ -155,6 +155,20 @@ class ZxWebFs {
     return out;
   }
 
+  /// Marks every file as changed in all its chunks, so the next [changes]
+  /// lists everything: a host whose last write failed calls it, since
+  /// [changes] had already cleared what that write carried.
+  void markAllDirty() {
+    for (final f in _files.values) {
+      for (var c = 0; c * zxWebChunk < f.length; c += 1) {
+        f.dirty.add(c);
+      }
+      f.metaDirty = true;
+    }
+    _newDirs.addAll(_dirs.where((d) => d != '/'));
+    _changed();
+  }
+
   /// Forgets everything (tests).
   void reset() {
     _files.clear();
