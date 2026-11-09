@@ -21,6 +21,51 @@ class SqlEnv {
       resolvers = [];
   SqlEnv(this.store, this.functions);
 
+  /// Modules of CREATE VIRTUAL TABLE, by lower case name.
+  final Map<String, ZxVirtualTableModule> modules = {};
+  final Map<String, (ZxVirtualTableDef, ZxVirtualTable)> _connected = {};
+
+  ZxVirtualTableModule module(String name) {
+    final m = modules[name.toLowerCase()];
+    if (m == null) throw ZxDbException('no such module: $name');
+    return m;
+  }
+
+  /// The table of a CREATE VIRTUAL TABLE definition (kept while the
+  /// definition is the same).
+  ZxVirtualTable connect(ZxVirtualTableDef d) {
+    final key = d.name.toLowerCase();
+    final have = _connected[key];
+    if (have != null &&
+        have.$1.tree == d.tree &&
+        have.$1.module == d.module &&
+        _sameArgs(have.$1.args, d.args)) {
+      return have.$2;
+    }
+    final vt = module(d.module).connect(d);
+    _connected[key] = (d, vt);
+    return vt;
+  }
+
+  /// Forgets the table of [name] (dropped or created).
+  void disconnect(String name) => _connected.remove(name.toLowerCase());
+
+  static bool _sameArgs(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// A virtual table of [catalog] (CREATE VIRTUAL TABLE) or a registered /
+  /// resolved one.
+  ZxVirtualTable? findVtabIn(Catalog catalog, String name, ZxSnapshot snap) {
+    final d = catalog.vtable(name);
+    if (d != null) return connect(d);
+    return findVtab(name, snap);
+  }
+
   ZxVirtualTable? findVtab(String name, ZxSnapshot snap) {
     final v = vtabs[name.toLowerCase()];
     if (v != null) return v;
@@ -70,6 +115,10 @@ void putNewIndexEntry(ZxWritableTree t, Uint8List key) => t is IndexTreeWrites
 
 bool deleteIndexEntry(ZxWritableTree t, Uint8List key) =>
     t is IndexTreeWrites ? (t as IndexTreeWrites).deleteEntry(key) : t.delete(key);
+
+/// [t] with its writes recorded in [log] (when not null).
+ZxWritableTree withUndo(ZxWritableTree t, UndoLog? log) =>
+    log == null ? t : _UndoTree(t, log);
 
 class _UndoTree implements ZxWritableTree, IndexTreeWrites {
   final ZxWritableTree inner;

@@ -23,6 +23,7 @@ import 'ast.dart';
 import 'catalog.dart';
 import 'dml.dart';
 import 'eval.dart';
+import 'fts5.dart';
 import 'functions.dart';
 import 'parser.dart';
 import 'planner.dart';
@@ -146,7 +147,15 @@ class ZxSql {
   final Map<String, ParsedScript> _parseCache = {};
 
   ZxSql(this.store, {ZxFunctionRegistry? functions})
-      : _env = SqlEnv(store, functions ?? ZxFunctionRegistry());
+      : _env = SqlEnv(store, functions ?? ZxFunctionRegistry()) {
+    zxFts5Register(registerModule, _env.functions);
+  }
+
+  /// Makes `CREATE VIRTUAL TABLE name USING [name](...)` use [module]
+  /// (fts5 is registered by default).
+  void registerModule(String name, ZxVirtualTableModule module) {
+    _env.modules[name.toLowerCase()] = module;
+  }
 
   /// Scalar and aggregate functions (register more here).
   ZxFunctionRegistry get functions => _env.functions;
@@ -565,6 +574,7 @@ class ZxSql {
     if (st is CreateTableStmt) return ddl.createTable(st);
     if (st is CreateIndexStmt) return ddl.createIndex(st);
     if (st is CreateViewStmt) return ddl.createView(st);
+    if (st is CreateVirtualTableStmt) return ddl.createVirtualTable(st);
     if (st is AlterTableStmt) return ddl.alter(st);
     if (st is DropStmt) {
       switch (st.kind) {
@@ -686,6 +696,22 @@ class _Ddl {
     return DmlResult(0);
   }
 
+  DmlResult createVirtualTable(CreateVirtualTableStmt st) {
+    _checkName(st.name);
+    if (cat.nameTaken(st.name) || sql._env.vtabs.containsKey(st.name.toLowerCase())) {
+      if (st.ifNotExists) return DmlResult(0);
+      throw err('table ${st.name} already exists');
+    }
+    final m = sql._env.module(st.module);
+    final def = ZxVirtualTableDef(st.name, st.module, st.args,
+        freeTreeName(txn, 'v:${st.name.toLowerCase()}'));
+    m.create(txn, def);
+    Catalog.putVirtualTable(txn, def);
+    sql._env.disconnect(def.name);
+    _done();
+    return DmlResult(0);
+  }
+
   DmlResult createIndex(CreateIndexStmt st) {
     _checkName(st.name);
     if (cat.nameTaken(st.name)) {
@@ -758,6 +784,14 @@ class _Ddl {
 
   DmlResult dropTable(DropStmt st) {
     final td = cat.table(st.name);
+    final vd = cat.vtable(st.name);
+    if (td == null && vd != null) {
+      sql._env.module(vd.module).destroy(txn, vd);
+      Catalog.remove(txn, vd.name);
+      sql._env.disconnect(vd.name);
+      _done();
+      return DmlResult(0);
+    }
     if (td == null) {
       if (st.ifExists) return DmlResult(0);
       if (cat.view(st.name) != null) {

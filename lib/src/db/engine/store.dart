@@ -130,10 +130,12 @@ class ZxDbStoreOptions {
   /// one. A signature costs a few milliseconds.
   int sealEveryMicros;
 
-  /// log2 of scrypt's N for a new encrypted archive (zx-format.md 7): 15
-  /// for a password a person types. A program that passes a random secret
-  /// of full strength (32 random bytes, hex) gains nothing from stretching
-  /// it and may pass 1, so opening costs no KDF time.
+  /// The scrypt cost (log2 of N) of the key of a new encrypted archive;
+  /// an existing archive keeps the cost in its header. The default (15)
+  /// is meant for passwords people type, and costs about a second per
+  /// open on a phone. A password that is already a random key of 128
+  /// bits or more (an HKDF output, for example) gains nothing from the
+  /// stretching: 1 makes the open cost nothing.
   int scryptLog2N;
 
   ZxDbStoreOptions(
@@ -160,7 +162,7 @@ class ZxDbStoreOptions {
       this.lsmFoldMin = 65536,
       this.signer,
       this.sealEveryMicros = 0,
-      this.scryptLog2N = 15})
+      this.scryptLog2N = zxDefaultScryptLog2N})
       : threads = threads ?? defaultThreads();
 }
 
@@ -542,6 +544,23 @@ class ZxDbStore implements ZxStore {
   /// The database root of the last generation (null before the first
   /// commit), for tools and tests.
   ZxDbRoot? get root => _head.index.database;
+
+  /// The pages the last generation uses: the page ids handed out less the
+  /// free ones. Times [ZxDbStoreOptions.pageSize] it is the database's live
+  /// size before compression, the figure SQLite's `page_count * page_size`
+  /// gave: unlike the file's length it does not count the pages of earlier
+  /// generations a vacuum has not dropped yet, so a byte budget read from it
+  /// does not evict live rows to pay for history.
+  int get livePages {
+    _refresh();
+    final r = root;
+    if (r == null) return 0;
+    var free = 0;
+    for (var i = 1; i < r.free.length; i += 2) {
+      free += r.free[i];
+    }
+    return r.nextPageId - 1 - free;
+  }
 
   ZxIndex _indexOf(ZxGeneration g) {
     if (g.number == _head.number) return _head.index;

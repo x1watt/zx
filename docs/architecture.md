@@ -1404,7 +1404,7 @@ archive, which creates a .zx archive (see the bullet below).
   `FileStat`, `Directory`, `FileMode` and `pid` from `web_fs.dart` instead of
   dart:io's (which throw there): the synchronous subset the database, its
   writer lock, its compaction and the .zx writer use, over files held in
-  memory (`ZxWebFs`), so `ZxSqlDb`/`ZxDatabase` run unchanged in a page or a
+  memory (`ZxWebFs`), so `ZxDb`/`ZxDatabase` run unchanged in a page or a
   worker. One tab, one thread: locks are always granted. Persistence is the
   host's: `ZxWebFs.changes()` lists, since the last call, the files whose
   bytes changed by 64 KiB chunk (with their id, path and length; a rename

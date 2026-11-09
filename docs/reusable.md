@@ -30,8 +30,25 @@ writing a new feature.
 | `ZxArchive.readRange` | `lib/src/zx_api.dart`, `workerReadRange` | Bytes of an item from an offset, decoding only the blocks involved (null when the format has no random access). Previews, media players, hex views, anything that needs the middle of a big file. |
 | `ZxArchive.add/delete/rename/createFolder` | `lib/src/zx_api.dart` | Updates that write a new archive and rename it over the old one, or append a generation. |
 | `CliIo`-free async commands | `runSevenZipCliProcess` in `lib/src/cli/main.dart` | The place to hook long-running (async) commands: dispatch before the synchronous 7-Zip parser. |
-| `ZxSqlDb`, `package:zx/zxdb.dart` | `lib/src/db/zx_sql_db.dart` | zxdb where a program would use SQLite: synchronous SQL with map rows, transactions, KV, time series, compaction policy. The entry point for apps that embed zxdb (XPRS uses it for all its stores). |
+| `ZxDb` (also `ZxSqlDb`), `package:zx/zxdb.dart` | `lib/src/db/handle/zx_db.dart` | zxdb where a program would use SQLite: synchronous SQL with map rows, transactions, KV, time series, compaction policy. The entry point for apps that embed zxdb (XPRS uses it for all its stores). |
 | `ZxKeys.derive` cache | `lib/src/format/zx/zx_crypto.dart` | Any code that opens the same encrypted archive repeatedly gets its keys without scrypt; `zxKdfRuns` to assert it in tests. |
 | `ZxWebFs` and its `File`/`RandomAccessFile`/`Directory` | `lib/src/host/web_fs.dart` | Synchronous dart:io-shaped files in memory for code compiled to the web, with a change list (64 KiB chunks, deletions, renames by id) for the host to persist. Anything else in zx that writes files (an archive update in the web app) can run on it. |
-| `ZxTextIndex`, `ZxSqlDb.textIndex` | `lib/src/db/text_index.dart` | BM25 full-text search over any keyed documents with named, weighted fields, kept in the caller's transaction. Use it instead of a scan with LIKE for search boxes (XPRS: the media archive, the Nostr relay store). |
+| `ZxTextIndex`, `ZxDb.textIndex` | `lib/src/db/text_index.dart` | BM25 full-text search over any keyed documents with named, weighted fields, kept in the caller's transaction. Use it instead of a scan with LIKE for search boxes (XPRS: the media archive, the Nostr relay store). |
 
+## zxdb full-text search
+
+| Code | Where | Reuse it for |
+|---|---|---|
+| `ftsTokenize`, `ftsFold`, `ftsStem` | `lib/src/db/fts_text.dart` | Words of a text for any index or search: Unicode letters and digits, lowercase, diacritics folded. Used by the metadata index, the fts5 tables and the time series text index. |
+| `ftsBm25`, `ftsIdfFts5`, `ftsIdfPositive` | `lib/src/db/fts_text.dart` | BM25 scoring (SQLite fts5's order of operations, so the same doubles). |
+| `ftsTermRange` | `lib/src/db/fts_text.dart` | The key range of a text component (exact or prefix) in keycodec keys: prefix scans over any index tree. |
+| `ZxVirtualTableModule`, `ZxSql.registerModule` | `lib/src/db/sql/vtab.dart`, `zx_sql.dart` | A new `CREATE VIRTUAL TABLE ... USING x(...)` kind whose definition persists in the catalog (fts5 is the example: `lib/src/db/sql/fts5.dart`). |
+| `ZxVtabContext.writableTree` | `lib/src/db/sql/vtab.dart` | Writes of a virtual table that a failed statement in an explicit transaction undoes. |
+
+## zxdb from an application
+
+| Code | Where | Reuse it for |
+|---|---|---|
+| `zxDbOpenFile`, `zxDbOpenMemory` | `lib/src/db/handle/zx_db.dart` (`package:zx/zxdb.dart`) | `ZxDb.open` with zxdb's desktop defaults: any application store, package:sqlite3-shaped (rows as maps, prepared statements that survive a compaction, transactions), one database per file per isolate, compaction by itself. |
+| `zxPackBytes`, `zxUnpackBytes`, `zxLooksPacked` | `lib/src/format/zx/zx_pack.dart` (`package:zx/zxdb.dart`, `package:zx/zx.dart`) | One small file encrypted and compressed as a one-entry .zx in memory, synchronous: key files, settings, blobs kept beside a database. Pass `scryptLog2N: 1` when the password is already a random key. |
+| `ZxDbStore.livePages` | `lib/src/db/engine/store.dart` | A database's live size for a byte budget (the file's length counts history until a vacuum). |

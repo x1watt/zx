@@ -314,7 +314,9 @@ Object? _unhex(List<Object?> a) {
 Object? _replace(Object? s, Object? f, Object? r) {
   if (s == null || f == null) return null;
   final fs = _text(f)!;
-  if (fs.isEmpty || fs.codeUnitAt(0) == 0) return s is Uint8List ? _text(s) : s;
+  // SQLite 3.45 returns the first argument as text (3.44 returned it as it
+  // was): replace(0, '', 1) is '0'.
+  if (fs.isEmpty || fs.codeUnitAt(0) == 0) return _text(s);
   if (r == null) return null;
   return _text(s)!.replaceAll(fs, _text(r)!);
 }

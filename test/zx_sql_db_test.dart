@@ -1,4 +1,4 @@
-// ZxSqlDb (lib/src/db/zx_sql_db.dart): the application-database facade.
+// ZxDb under its name ZxSqlDb (lib/src/db/handle/zx_db.dart), as the XPRS stores use it.
 import 'dart:io';
 import 'dart:isolate';
 

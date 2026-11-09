@@ -3,7 +3,9 @@
 //
 // Catalog tree layout (keys are UTF-8):
 //   <lower case name>   record [type, name, tbl_name, sql, tree, options]
-//                       type: 'table', 'index', 'view'; sql is the
+//                       type: 'table', 'index', 'view'; a virtual table
+//                       is a 'table' whose sql is CREATE VIRTUAL TABLE
+//                       (tree: the tree name reserved for it); sql is the
 //                       canonical CREATE statement (null for automatic
 //                       indexes of PRIMARY KEY / UNIQUE constraints); tree
 //                       is the name of the storage tree; options is JSON
@@ -26,6 +28,7 @@ import '../storage_api.dart';
 import 'ast.dart';
 import 'parser.dart';
 import 'value.dart';
+import 'vtab.dart';
 
 const String catalogTree = 'sql:catalog';
 
@@ -145,17 +148,20 @@ class Catalog {
   final Map<String, TableDef> tables = {};
   final Map<String, IndexDef> indexes = {};
   final Map<String, ViewDef> views = {};
+  final Map<String, ZxVirtualTableDef> vtables = {};
   int version = 0;
 
   TableDef? table(String name) => tables[name.toLowerCase()];
   ViewDef? view(String name) => views[name.toLowerCase()];
   IndexDef? index(String name) => indexes[name.toLowerCase()];
+  ZxVirtualTableDef? vtable(String name) => vtables[name.toLowerCase()];
 
   bool nameTaken(String name) {
     final l = name.toLowerCase();
     return tables.containsKey(l) ||
         indexes.containsKey(l) ||
-        views.containsKey(l);
+        views.containsKey(l) ||
+        vtables.containsKey(l);
   }
 
   static Uint8List _key(String s) => Uint8List.fromList(utf8.encode(s));
@@ -213,8 +219,13 @@ class Catalog {
       final tree = r[4] as String?;
       switch (type) {
         case 'table':
-          final st = Parser.parse(sql!).statements.single as CreateTableStmt;
-          final td = buildTableDef(st, tree!);
+          final st = Parser.parse(sql!).statements.single;
+          if (st is CreateVirtualTableStmt) {
+            c.vtables[st.name.toLowerCase()] =
+                ZxVirtualTableDef(st.name, st.module, st.args, tree!);
+            continue;
+          }
+          final td = buildTableDef(st as CreateTableStmt, tree!);
           c.tables[td.name.toLowerCase()] = td;
         case 'view':
           final st = Parser.parse(sql!).statements.single as CreateViewStmt;
@@ -271,6 +282,17 @@ class Catalog {
       if (ix.auto) putIndex(txn, ix, null);
     }
   }
+
+  static void putVirtualTable(ZxWriteTxn txn, ZxVirtualTableDef d) {
+    final t = txn.tree(catalogTree) ?? txn.createTree(catalogTree);
+    t.put(_key(d.name.toLowerCase()),
+        encodeRecord(['table', d.name, d.name, virtualTableSql(d), d.tree, null]));
+  }
+
+  /// Canonical CREATE VIRTUAL TABLE text of a definition.
+  static String virtualTableSql(ZxVirtualTableDef d) =>
+      'CREATE VIRTUAL TABLE ${quoteIdent(d.name)} USING ${d.module}'
+      '${d.args.isEmpty ? '' : '(${d.args.join(', ')})'}';
 
   static void putIndex(ZxWriteTxn txn, IndexDef ix, String? sql) {
     final t = txn.tree(catalogTree) ?? txn.createTree(catalogTree);

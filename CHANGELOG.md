@@ -12,6 +12,18 @@
   run scrypt again (`zxKdfRuns` counts the runs; `ZxKeys.clearCache`).
 - **`ZxDbStoreOptions.scryptLog2N`** sets scrypt's N for a new encrypted
   database: 1 for a program's random secret (no stretching needed).
+- **One handle: `ZxDb`.** Two sqlite3-shaped handles were written at once
+  (`ZxDb`, and `ZxSqlDb` for the XPRS stores); they are one now, `ZxDb`
+  (`lib/src/db/handle/zx_db.dart`), and `ZxSqlDb` / `ZxSqlDbStatement` are
+  other names for it. From `ZxDb`: one database per file per isolate,
+  statements that survive a compaction, compaction by itself, lazy rows
+  (`row[i]`, `rows`), the wrong-password message. From `ZxSqlDb`: the
+  writer-lock wait (`lockWaitMs`), `transaction` taking the lock at BEGIN
+  (IMMEDIATE), KV stores, time series, `textIndex`, `stats()`,
+  `maybeCompact()` with the size after the last compaction kept in the file
+  (the self-compaction uses it, so it holds across restarts), the system
+  tables, `ZxDb.open` with defaults for many small databases, and
+  `autoCompact: false` for a program that compacts when idle.
 - **`ZxDbError.wrongPassword`** for a wrong or missing password (was
   `generic`).
 - **`ZxSql.lockWaitMs`**: how long a SQL write waits for another writer.
@@ -32,6 +44,41 @@
   databases are written, compacted and read in a page; `ZxWebFs.changes()`
   and `restore` let the host persist them (IndexedDB, OPFS).
   docs/architecture.md section 20.
+- **ext: inodes in use that no folder names are listed as
+  `[UNKNOWN]/<inode>`, as 7-Zip lists them.** e2fsprogs 1.47 gives every
+  new ext4 file system an orphan file (inode 12) that no folder names; it
+  was missing from zx's listing (the CI failed on it since mke2fs 1.47
+  reached the runners).
+- **zxdb: `replace(x, '', y)` returns x as text**, as SQLite 3.45 does
+  (3.44 kept a number a number).
+- **`zxPackBytes` / `zxUnpackBytes`: one file in an in-memory .zx.** A
+  small file (a key, a settings file, a blob kept beside a database)
+  packed into a one-entry archive with the archive's own encryption and
+  compression, and read back, synchronously and without an isolate.
+  `zxLooksPacked` tells such bytes apart.
+- **zxdb: `ZxDbStoreOptions.scryptLog2N`.** The scrypt cost of a new
+  encrypted database. The default costs about a second per open on a
+  phone; a password that is already a random key passes 1 and opens at
+  once. The cost is stored in the header, so later opens need no option.
+- **zxdb: `package:zx/zxdb.dart`, the synchronous API, and `ZxDb`.** The
+  database opened in the calling isolate (`ZxDatabase`, `ZxSql`,
+  `ZxMemoryStore`), and `zxDbOpenFile` / `zxDbOpenMemory`: a handle shaped
+  like package:sqlite3's (`execute`, `select` with rows read as maps,
+  `prepare`, `updatedRows`, `lastInsertRowId`, `transaction`), sharing one
+  database per file per isolate and compacting the file when it has
+  doubled. The XPRS app replaced SQLite with it.
+- **zxdb: `ZxDbStore.livePages`.** The pages the last generation uses: a
+  database's live size, without the history a vacuum has not dropped.
+- **zxdb: full-text search with SQLite's FTS5 syntax.** `CREATE VIRTUAL
+  TABLE t USING fts5(a, b, id UNINDEXED, tokenize = 'unicode61')`,
+  `INSERT` / `UPDATE` / `DELETE`, `t MATCH '"hello" "wor"*'` (phrases,
+  prefixes, AND, OR, NOT, column filters, `^`) and `ORDER BY bm25(t)` with
+  SQLite's values, also when the table is joined with ordinary tables. The
+  definition and the index persist in the database; writes are in the
+  statement's transaction. Modules of `CREATE VIRTUAL TABLE` can be added
+  with `ZxSql.registerModule`. The tokenizer and BM25 code are shared with
+  the metadata index (`lib/src/db/fts_text.dart`). Deviations in
+  docs/zxdb-sql.md.
 
 ## 0.6.0
 

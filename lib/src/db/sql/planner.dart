@@ -2259,7 +2259,7 @@ class Planner {
       }
       return info;
     }
-    final vt = env.findVtab(s.name, snap);
+    final vt = env.findVtabIn(catalog, s.name, snap);
     if (vt != null) {
       final info = _vtabInfo(vt, alias, s.name, slot);
       info.snap = snap;
@@ -2311,7 +2311,7 @@ class Planner {
     if (s.name == 'json_each' || s.name == 'json_tree') {
       vt = _JsonEach(s.name == 'json_tree');
     } else {
-      vt = env.findVtab(s.name, ctx.snap);
+      vt = env.findVtabIn(ctx.catalog, s.name, ctx.snap);
     }
     if (vt == null) throw err('no such table-valued function: ${s.name}');
     final info = _vtabInfo(vt, s.alias ?? s.name, s.name, slot);
@@ -2729,9 +2729,13 @@ class Planner {
         if (vt.columns[i].hidden) i
     ];
     final args = src.vtabArgs ?? const [];
+    // the WHERE / ON conjunct of each constraint (null for arguments and
+    // BETWEEN halves), to drop the ones the table enforces
+    final conjunct = <Ev?>[];
     for (var i = 0; i < args.length; i++) {
       cons.add(ZxIndexConstraint(hidden[i], ZxConstraintOp.eq, true));
       vals.add(args[i]);
+      conjunct.add(null);
     }
     const opMap = {
       '=': ZxConstraintOp.eq,
@@ -2751,6 +2755,7 @@ class Planner {
       }
       cons.add(ZxIndexConstraint(col, o, true));
       vals.add(t.value!);
+      conjunct.add(t.ev);
     }
     // x BETWEEN a AND b gives the table x >= a and x <= b (the executor
     // still tests the BETWEEN).
@@ -2765,8 +2770,21 @@ class Planner {
       final col = e.col == src.rowidCol ? -1 : e.col;
       cons.add(ZxIndexConstraint(col, ZxConstraintOp.ge, true));
       vals.add(ev.lo);
+      conjunct.add(null);
       cons.add(ZxIndexConstraint(col, ZxConstraintOp.le, true));
       vals.add(ev.hi);
+      conjunct.add(null);
+    }
+    // column MATCH value (only the table can evaluate it)
+    for (final ev in l.filters) {
+      if (ev is! LikeEv || ev.op != 'MATCH' || ev.not) continue;
+      final e = ev.e;
+      if (e is! ColEv || e.depth != 0 || e.slot != src.slot) continue;
+      if (!okValue(ev.pat)) continue;
+      cons.add(ZxIndexConstraint(
+          e.col == src.rowidCol ? -1 : e.col, ZxConstraintOp.match, true));
+      vals.add(ev.pat);
+      conjunct.add(ev);
     }
     final ob = <ZxIndexOrderBy>[];
     if (order != null) {
@@ -2781,6 +2799,13 @@ class Planner {
     }
     final info = ZxIndexInfo(cons, ob, Set.of(src.used));
     vt.bestIndex(info);
+    for (var i = 0; i < cons.length; i++) {
+      final ev = conjunct[i];
+      if (ev == null || !info.omit[i] || info.argvIndex[i] == 0) continue;
+      if (cons[i].op == ZxConstraintOp.match || vt.enforcesOmitted) {
+        l.filters.remove(ev);
+      }
+    }
     final argv = <int, Ev>{};
     for (var i = 0; i < cons.length; i++) {
       final k = info.argvIndex[i];

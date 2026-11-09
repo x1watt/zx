@@ -182,6 +182,39 @@ cur.close();                               // releases its snapshot
 - Session state: `lastInsertRowid`, `changes`, `totalChanges`,
   `inTransaction`; `close()` rolls back an open transaction.
 
+### A handle shaped like package:sqlite3's (ZxDb)
+
+For code moving off SQLite, `package:zx/zxdb.dart` also gives a handle with
+the slice of package:sqlite3 that stores use, over a `ZxDatabase` and its
+SQL session, so their SQL and their code stay as they were:
+
+```dart
+final db = zxDbOpenFile('notes.zx', password: pw,      // ':memory:' too
+    options: ZxDbStoreOptions(compression: 'fast'));
+db.execute('CREATE TABLE IF NOT EXISTS t (k TEXT PRIMARY KEY, n INTEGER)');
+db.transaction(() {                                     // one commit
+  db.execute('INSERT INTO t VALUES (?, ?)', ['a', 1]);
+});
+final rows = db.select('SELECT k, n FROM t');           // ZxRows: a List
+rows.first['n'];                                        // ZxRow: a Map
+db.updatedRows; db.lastInsertRowId;
+db.bytes;      // the file, history included until the next compaction
+db.liveBytes;  // the live data (ZxDbStore.livePages times the page size)
+db.dispose();
+```
+
+- One database per file per isolate: a second `zxDbOpenFile` of the same
+  file shares the first's (as SQLite connections shared one file); the last
+  `dispose` closes it.
+- A statement outside BEGIN ... COMMIT is a generation of its own (about a
+  millisecond and a few KiB appended): write several rows in one
+  transaction.
+- The handle compacts the file (`ZxDatabase.vacuum(keep: 1)`) when it has
+  doubled since the last compaction (plus 4 MiB); prepared statements parse
+  again after it. `compact()` does it now.
+- A wrong password or a file that is not a database is a
+  `ZxDbException(corrupt)`.
+
 ### Extension points
 
 - Functions: `sql.functions.scalar(ZxScalarFunction(...))`,
@@ -194,6 +227,11 @@ cur.close();                               // releases its snapshot
   best index negotiation, cursors, table-valued functions, writable
   tables with conflict modes) is documented in
   `lib/src/db/sql/vtab.dart`. The system tables above are built on it.
+- Modules of `CREATE VIRTUAL TABLE`: `sql.registerModule(name, module)`
+  with a `ZxVirtualTableModule` (create, connect, destroy). The catalog
+  keeps the definition (name, module, argument texts, a reserved tree
+  name), so the table is there again after a reopen. `fts5` is registered
+  by default.
 - zx statements: `sql.registerStatementHook(kind, hook)` for
   `CREATE KV STORE`, `DROP KV STORE`, `CREATE TIMESERIES`,
   `DROP TIMESERIES`, `CREATE ROLLUP`, `DROP ROLLUP` and `VACUUM`. The
@@ -273,6 +311,8 @@ ns for any time value of the date functions.
   **Deviation**: plain `EXPLAIN` also returns the query plan (there is no
   bytecode).
 - `ANALYZE` and `REINDEX` are accepted and do nothing.
+- `CREATE VIRTUAL TABLE [IF NOT EXISTS] name USING module(args)` and
+  `DROP TABLE` of it (modules: `fts5`, see "Full-text search (fts5)").
 - `sqlite_schema` (also `sqlite_master`, `zx_schema`) lists tables,
   indexes and views with their SQL. **Deviation**: the `rootpage` column
   holds the name of the storage tree.
@@ -288,6 +328,85 @@ CREATE ROLLUP [IF NOT EXISTS] name [(cols)] [ON series] [EVERY '1h'] [RETENTION 
 DROP KV STORE | TIMESERIES | ROLLUP [IF EXISTS] name;
 VACUUM [ULTRA];
 ```
+
+### Full-text search (fts5)
+
+SQLite's FTS5 tables, with the same statements:
+
+```sql
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+  content, meta, event_id UNINDEXED, tokenize = 'unicode61');
+INSERT INTO events_fts(content, meta, event_id) VALUES (?, ?, ?);
+DELETE FROM events_fts WHERE event_id = ?;
+SELECT e.raw FROM events_fts JOIN events e ON e.id = events_fts.event_id
+  WHERE e.deleted = 0 AND events_fts MATCH '"hello" "wor"*'
+  ORDER BY bm25(events_fts), e.created_at DESC LIMIT 20;
+```
+
+- Columns are indexed unless `UNINDEXED` (stored and returned, not
+  tokenized). Every row has a rowid. Hidden columns, as in SQLite: one
+  named after the table (the left side of `t MATCH ?`; `t = ?` and the
+  table-valued form `FROM t(?)` work too) and `rank`.
+- `col MATCH ?` on an indexed column limits the query to that column.
+  Several MATCH terms in a WHERE are ANDed.
+- `bm25(t)` is SQLite's BM25 (k1 1.2, b 0.75, IDF
+  ln((N - hits + 0.5) / (hits + 0.5)) floored at 1e-6, document length in
+  tokens over all columns): a negative number, lower is a better match, so
+  `ORDER BY bm25(t)` gives the best first. The values equal SQLite's on
+  the test corpus (test/zxdb_fts5_test.dart). `rank` holds the same
+  value; `ORDER BY rank` needs no sort. Outside a MATCH scan both are 0.
+- Query syntax: phrases (`"quoted"` or bare words of letters, digits,
+  `_` and non-ASCII characters; several tokens in a phrase must be
+  adjacent), `*` after a phrase makes its last token a prefix, `+` joins
+  phrases, implicit AND, `AND`, `OR`, `NOT` (with FTS5's precedence: OR,
+  then AND, then NOT, then implicit AND), parentheses, column filters
+  (`col:`, `{a b}:`, `-col:`, also before a parenthesized expression) and
+  `^` (the phrase starts its column). An empty phrase (`""`) is left out;
+  a query left empty matches nothing. Syntax errors are
+  `ZxDbException(syntax)` "fts5: syntax error near ...".
+- `INSERT INTO t(t) VALUES ('optimize' | 'merge' | 'integrity-check' |
+  'rebuild')` do nothing (the index is always up to date);
+  `'delete-all'` empties the table.
+- `UPDATE` works (the row is reindexed). Index writes are in the
+  statement's transaction: a failed statement or a ROLLBACK undoes them.
+- Options: `tokenize = 'unicode61'` (also `unicode61 remove_diacritics 1`
+  or `2`), `prefix = ...` (accepted; prefix queries need no extra
+  index), `detail = full`, `columnsize = 0|1`.
+
+**Deviations**:
+
+- Not supported (`ZxDbException(unsupported)`): `NEAR(...)` queries,
+  bm25 column weights (`bm25(t, 2.0, 1.0)`), `highlight()`, `snippet()`,
+  other auxiliary functions, `rank MATCH` configuration, tokenizers other
+  than unicode61 (porter, trigram, ascii, custom), unicode61 options other
+  than remove_diacritics 1/2, `detail = none|column`, external content
+  and contentless tables (`content=`, `content_rowid=`,
+  `contentless_delete=`), `locale=`, `tokendata=`, the `delete` command,
+  the `fts5vocab` module. There are no shadow tables (`t_data`,
+  `t_idx`...).
+- The tokenizer is zxdb's (`lib/src/db/fts_text.dart`, shared with the
+  metadata index): runs of Unicode letters and digits, lowercased, common
+  Latin and Greek diacritics removed (as remove_diacritics=1); it also
+  folds `ß` to `ss`, `æ` to `ae`, `œ` to `oe`, `þ` to `th`, `ð` to `d`,
+  which unicode61 does not, so `"strasse"` finds `Straße` (in SQLite it
+  does not; `straße` finds it in both). Unicode61's private use
+  characters (Co) are separators here, and a combining mark splits a word.
+- An implicit AND may follow a parenthesized expression
+  (`(a OR b) c`, a syntax error in SQLite).
+- Phrase occurrences for bm25 are counted for every phrase of the query in
+  each matching row (SQLite counts only the phrases of the branches that
+  matched, which differs only for some OR / NOT combinations).
+- `UNINDEXED` columns have an index of their own, so `=` on one (the
+  delete by id above) is a lookup; in SQLite it is a scan.
+- A new rowid is the largest rowid + 1. The `rootpage` column of
+  `sqlite_schema` holds the storage tree (`v:<name>`); the CREATE
+  statement is stored without `IF NOT EXISTS`.
+- `ALTER TABLE` (rename) of an fts5 table, export to a SQLite file
+  (`sqlite_io`) and `PRAGMA table_info` of it are not supported.
+
+Storage: one tree `v:<name>` with the rows, the postings (term, rowid:
+token positions per column), the UNINDEXED value index and the counts
+(layout in `lib/src/db/sql/fts5.dart`).
 
 ### Time series (**Deviation**)
 
@@ -462,7 +581,9 @@ offset.
 Collations: BINARY, NOCASE (ASCII), RTRIM. LIKE is case insensitive for
 ASCII, GLOB case sensitive; both are false when either side is a BLOB,
 as in SQLite. `REGEXP` uses Dart regular expressions (SQLite has no
-built-in REGEXP; its shell has one); `MATCH` is not supported.
+built-in REGEXP; its shell has one). `MATCH` works on the virtual
+tables that take it (fts5, below); elsewhere it fails with "unable to use
+function MATCH in the requested context", as in SQLite.
 
 ### Planner and executor
 

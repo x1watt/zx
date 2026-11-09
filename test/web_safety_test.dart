@@ -100,6 +100,35 @@ void main() {
     }
   });
 
+  test('the application database reaches no FFI, and dart:io only through '
+      'its browser shim',
+      () {
+    // package:zx/zxdb.dart and zxdb_web.dart are what a web app's stores
+    // use (XPRS: every store, in the dart2wasm build): their files are the
+    // in-memory ZxWebFs there, never dart:io, and no worker isolate.
+    // No dart:ffi (a compile error in a browser), and dart:io only through
+    // the shim host/io_web.dart, which re-exports it without its file
+    // classes (those come from web_fs.dart). dart:isolate compiles (the
+    // worker pool, sync_pool.dart); test/browser/zxdb_web_test.dart runs a
+    // database in Chrome under dart2wasm.
+    final direct = RegExp(r'''^\s*(import|export)\s+'dart:io'\s*(;|show|hide|as)''',
+        multiLine: true);
+    for (final start in ['zxdb.dart', 'zxdb_web.dart']) {
+      final g = _graph('$_root/lib/$start');
+      expect(g.containsKey('dart:ffi'), isFalse,
+          reason: '$start reaches dart:ffi through ${_rel(g['dart:ffi'] ?? '')}');
+      for (final f in g.keys) {
+        if (f.startsWith('dart:') || !f.endsWith('.dart')) continue;
+        if (f.endsWith('/host/io_web.dart')) continue;
+        final File file = File(f);
+        if (!file.existsSync()) continue;
+        expect(direct.hasMatch(file.readAsStringSync()), isFalse,
+            reason: '$start reaches ${_rel(f)}, which imports dart:io '
+                '(from ${_rel(g[f] ?? '')})');
+      }
+    }
+  });
+
   test('the web UI imports no desktop-only file of the app', () {
     final g = _graph('$_root/app/lib/main_web.dart');
     for (final f in g.keys) {

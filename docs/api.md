@@ -100,6 +100,20 @@ codecs (`LzmaCompressor`, `Lzma2Compressor`, `PpmdCompressor`, their
 decoder streams, `createFilterEncoder`, `Crc32`, `Crc64`, `Sha256`). They
 block while they work: do not call them on the UI isolate.
 
+### One file in memory
+
+`zxPackBytes(data, {name, password, scryptLog2N, compression})` returns
+the bytes of a new .zx archive holding [data] as its one entry, encrypted
+when a password is given (data and Index); `zxUnpackBytes(bytes,
+{password})` returns the data, and throws `SevenZipException` (kind
+`wrongPassword` for a missing or wrong password). `compression` is
+`'none'`, `'fast'` (LZ4, the default) or `'max'`. Use it for small files
+that must stay encrypted on their own: key files, settings, blobs kept
+beside a database. When the password is already a random key, pass
+`scryptLog2N: 1` (the same option exists for databases,
+`ZxDbStoreOptions.scryptLog2N`): scrypt's default cost is about a second
+per open on a phone and adds nothing to a 256-bit key.
+
 ### The README of an archive
 
 `ZxArchive.readmeIn(dir)` is the README of a folder (README.md,
@@ -129,13 +143,14 @@ docs/zx-format.md section 17.
 ### An application database
 
 `package:zx/zxdb.dart` is the database alone, for a program that wants
-zxdb where it would use SQLite (no archiver, no isolate pool): `ZxSqlDb`
-(`lib/src/db/zx_sql_db.dart`).
+zxdb where it would use SQLite (no archiver, no isolate pool): `ZxDb`
+(`lib/src/db/handle/zx_db.dart`; `ZxSqlDb` is another name for it,
+`zxDbOpenFile` opens one with zxdb's desktop defaults).
 
 ```dart
 import 'package:zx/zxdb.dart';
 
-final db = ZxSqlDb.open('/data/app/notes.zx', password: secretHex, scryptLog2N: 1);
+final db = ZxDb.open('/data/app/notes.zx', password: secretHex, scryptLog2N: 1);
 db.execute('CREATE TABLE IF NOT EXISTS n (id INTEGER PRIMARY KEY, t TEXT) '
     "WITH (compression = 'fast')");
 db.transaction(() {
@@ -150,15 +165,24 @@ db.dispose();
 ```
 
 - Synchronous, like an SQLite binding: `execute`, `select` (rows are maps
-  by column name, `columnAt(i)` by position), `prepare`, `updatedRows`,
-  `lastInsertRowId`, `transaction(fn)` (one commit; rolled back when `fn`
-  throws; `fn` must not await). The SQL is zxdb's (docs/zxdb-sql.md).
+  by column name, `columnAt(i)` or `row[i]` by position, `rows` the raw
+  values), `prepare` (a statement survives a compaction), `updatedRows`,
+  `lastInsertRowId`, `transaction(fn)` (one commit, the writer lock taken
+  at BEGIN; rolled back when `fn` throws; `fn` must not await). The SQL is
+  zxdb's (docs/zxdb-sql.md); PRAGMAs that managed SQLite's file are
+  accepted and do nothing.
+- One database per file per isolate: a second open of the same file shares
+  the first's (the file closes with its last handle).
 - Every write outside a transaction is a commit of its own (about a
   millisecond and some bytes of file each): batch writes in transactions.
-- The file only grows; `maybeCompact()` rewrites it when it passed twice
-  its size after the last compaction (`stats()` gives the sizes). It holds
-  the writer lock while it rewrites: call it when idle, or from another
-  isolate that opens the same file.
+- The file only grows. The handle compacts it by itself every 32
+  statements once it is past twice its size after the last compaction and
+  4 MiB over (`autoCompact`, on by default; the size after a compaction is
+  kept in the file, so the rule holds across restarts). A compaction holds
+  the writer lock while it rewrites the file: a program that must not pause
+  mid-write (a UI) passes `autoCompact: false` and calls `maybeCompact()`
+  when idle; `compact()` does it now. `stats()` gives the sizes, `bytes`
+  the file and `liveBytes` the live data (for a byte budget).
 - Several isolates and processes may open one file: one writer at a time
   (a write waits `lockWaitMs` for the other, then throws
   `ZxDbError.busy`), and a read sees the others' commits (at every
@@ -174,7 +198,10 @@ db.dispose();
   table `name (key, value)`. `series(name)`: a time series.
 - `systemTables: true` adds the system tables (zx_files...), the metadata
   tables and full-text search over the archive's files.
-- `ZxSqlDb.memory()`: SQL in memory only (tests).
+- `ZxDb.memory()` (or `:memory:`): SQL in memory only (tests).
+- `textIndex(name, fields)`: BM25 full-text search over keyed documents,
+  its writes joining an open transaction (SQL's `fts5` tables are the
+  other way, docs/zxdb-sql.md).
 
 ### In a Flutter app
 
