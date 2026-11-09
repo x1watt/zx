@@ -24,32 +24,33 @@ import 'ts/ts_sql.dart';
 import 'zxdb.dart';
 
 /// A row of [ZxSqlDb.select]: the values by column name (a Map), or by
-/// position ([columnAt]).
-class ZxRow extends MapBase<String, Object?> {
+/// position ([columnAt]). Values are `dynamic`, as in the SQLite bindings,
+/// so `row['name']` passes where a String is expected.
+class ZxRow extends MapBase<String, dynamic> {
   ZxRow(this._names, this._values);
   final Map<String, int> _names;
   final List<Object?> _values;
 
   /// The value of result column [i].
-  Object? columnAt(int i) => _values[i];
+  dynamic columnAt(int i) => _values[i];
 
   /// The values in column order.
   @override
   List<Object?> get values => _values;
 
   @override
-  Object? operator [](Object? key) {
+  dynamic operator [](Object? key) {
     final i = _names[key];
     return i == null ? null : _values[i];
   }
 
   @override
-  void operator []=(String key, Object? value) =>
+  void operator []=(String key, dynamic value) =>
       throw UnsupportedError('a result row is read only');
   @override
   void clear() => throw UnsupportedError('a result row is read only');
   @override
-  Object? remove(Object? key) =>
+  dynamic remove(Object? key) =>
       throw UnsupportedError('a result row is read only');
   @override
   Iterable<String> get keys => _names.keys;
@@ -156,6 +157,9 @@ class ZxSqlDb {
   ///   the metadata tables and full-text search over files.
   /// - [refreshMicros]: how often a read checks for other writers'
   ///   commits; 0 checks at every statement (several isolates share it).
+  /// - [pageSize]: the default page of new tables. A commit rewrites the
+  ///   pages it touches, so a store of many small commits writes less with
+  ///   small pages (4096); big scans read faster with big ones.
   static ZxSqlDb open(String path,
       {String? password,
       bool readOnly = false,
@@ -167,7 +171,8 @@ class ZxSqlDb {
       int refreshMicros = 0,
       int scryptLog2N = 15,
       int pageCacheBytes = 16 << 20,
-      int blockCacheBytes = 4 << 20}) {
+      int blockCacheBytes = 4 << 20,
+      int pageSize = 16384}) {
     final db = ZxDatabase.open(path,
         password: password,
         readOnly: readOnly,
@@ -178,7 +183,8 @@ class ZxSqlDb {
             refreshMicros: refreshMicros,
             scryptLog2N: scryptLog2N,
             pageCacheBytes: pageCacheBytes,
-            blockCacheBytes: blockCacheBytes));
+            blockCacheBytes: blockCacheBytes,
+            pageSize: pageSize));
     final q = ZxSql(db.store)..lockWaitMs = lockWaitMs;
     final out = ZxSqlDb._(db, q);
     if (systemTables) {
