@@ -39,7 +39,7 @@ final Int64List _ri = Int64List.view(_rf.buffer);
 @pragma('vm:prefer-inline')
 double _rsqrt(double x) {
   _rf[0] = x;
-  _ri[0] = 0x5FE6EB50C7B537A9 - (_ri[0] >> 1);
+  _ri[0] = ((0x5FE6EB50 << 32) | 0xC7B537A9) - (_ri[0] >> 1);
   var y = _rf[0];
   final h = 0.5 * x;
   y = y * (1.5 - h * y * y);
@@ -53,7 +53,7 @@ double _rsqrt(double x) {
 @pragma('vm:prefer-inline')
 double _rsqrtLms(double x) {
   _rf[0] = x;
-  _ri[0] = 0x5FE6EB50C7B537A9 - (_ri[0] >> 1);
+  _ri[0] = ((0x5FE6EB50 << 32) | 0xC7B537A9) - (_ri[0] >> 1);
   var y = _rf[0];
   final h = 0.5 * x;
   y = y * (1.5 - h * y * y);

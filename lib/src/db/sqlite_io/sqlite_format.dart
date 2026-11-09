@@ -30,7 +30,7 @@ final Uint8List sqliteMagic =
 
 /// Bytes a varint of [v] takes.
 int varintLength(int v) {
-  if (v < 0 || v > 0x00ffffffffffffff) return 9;
+  if (v < 0 || v > ((0x00FFFFFF << 32) | 0xFFFFFFFF)) return 9;
   var n = 1;
   while (v > 0x7f) {
     v >>>= 7;
@@ -41,7 +41,7 @@ int varintLength(int v) {
 
 /// Writes the varint of [v] at [p]; returns its length.
 int writeVarint(Uint8List b, int p, int v) {
-  if (v < 0 || v > 0x00ffffffffffffff) {
+  if (v < 0 || v > ((0x00FFFFFF << 32) | 0xFFFFFFFF)) {
     b[p + 8] = v & 0xff;
     v >>>= 8;
     for (var i = 7; i >= 0; i--) {

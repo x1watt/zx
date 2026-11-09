@@ -411,7 +411,7 @@ double toDouble(Object? v) {
 /// CAST(x AS INTEGER) semantics for numbers: truncation, saturation.
 int doubleToInt(double d) {
   if (d.isNaN) return 0;
-  if (d >= _two63) return 0x7FFFFFFFFFFFFFFF;
+  if (d >= _two63) return ((0x7FFFFFFF << 32) | 0xFFFFFFFF);
   if (d <= -_two63) return -0x8000000000000000;
   return d.toInt();
 }
@@ -436,7 +436,7 @@ int textToIntPrefix(String s) {
   final digits = s.substring(st, i);
   final v = int.tryParse(neg ? '-$digits' : digits);
   if (v != null) return v;
-  return neg ? -0x8000000000000000 : 0x7FFFFFFFFFFFFFFF;
+  return neg ? -0x8000000000000000 : ((0x7FFFFFFF << 32) | 0xFFFFFFFF);
 }
 
 /// Converts to an integer (CAST AS INTEGER).

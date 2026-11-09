@@ -429,8 +429,8 @@ class RowidRangeCursor extends LevelCursor {
       if (v is num) {
         int b;
         if (v is int) {
-          b = loIncl ? v : (v == 0x7FFFFFFFFFFFFFFF ? v : v + 1);
-          if (!loIncl && v == 0x7FFFFFFFFFFFFFFF) {
+          b = loIncl ? v : (v == ((0x7FFFFFFF << 32) | 0xFFFFFFFF) ? v : v + 1);
+          if (!loIncl && v == ((0x7FFFFFFF << 32) | 0xFFFFFFFF)) {
             _empty = true;
             return;
           }
@@ -475,14 +475,14 @@ class RowidRangeCursor extends LevelCursor {
             return;
           }
           if (d > 9.2e18) {
-            b = 0x7FFFFFFFFFFFFFFF;
+            b = ((0x7FFFFFFF << 32) | 0xFFFFFFFF);
           } else {
             final fl = d.floorToDouble();
             b = fl.toInt();
             if (!hiIncl && fl == d) b--;
           }
         }
-        if (b != 0x7FFFFFFFFFFFFFFF) to = encodeRowid(b + 1);
+        if (b != ((0x7FFFFFFF << 32) | 0xFFFFFFFF)) to = encodeRowid(b + 1);
       }
       // text/blob upper bound: every integer is below it.
     }

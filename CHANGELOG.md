@@ -15,6 +15,17 @@
 - **`ZxDbError.wrongPassword`** for a wrong or missing password (was
   `generic`).
 - **`ZxSql.lockWaitMs`**: how long a SQL write waits for another writer.
+- **`ZxTextIndex` and `ZxSqlDb.textIndex(name, fields)`: full-text search
+  for application data.** Documents under a key with named, weighted
+  fields, ranked by BM25, with the metadata index's query language (AND,
+  OR, -word, word*, "quoted", field:word) and tokenizer (lowercase, accents
+  folded). Writes join an open transaction, so a row and its index entry
+  commit together.
+- **The database compiles with dart2js.** 64-bit literals that a JavaScript
+  double cannot hold are written as `((high << 32) | low)` (same value on
+  the VM and dart2wasm), so an app whose web build is dart2wasm with
+  Flutter's dart2js fallback compiles; zxdb itself still needs dart2wasm or
+  the VM to run.
 - **A writable database in the browser.** Compiled for the web (dart2wasm),
   the library's files are held in memory (`lib/src/host/web_fs.dart`,
   exported by `host/io.dart` instead of dart:io's file classes), so zxdb

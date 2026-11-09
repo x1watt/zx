@@ -163,7 +163,7 @@ const int _pathnameLimit = 1048576;
 const int _gunameLimit = 65536;
 const int _sparseMapLimit = 8 * 1048576;
 const int _extSizeLimit = 1 << 26; // libarchive allows 1 GiB; memory is small
-const int _entryLimit = 0xfffffffffffffff;
+const int _entryLimit = ((0x0FFFFFFF << 32) | 0xFFFFFFFF);
 
 /// struct tar: the state of the reader.
 class TarReader {
@@ -625,7 +625,7 @@ class TarReader {
       return null;
     }
     final r = tarAtol10(v, 0, v.length);
-    if (r < 0 || r == 0x7FFFFFFFFFFFFFFF) {
+    if (r < 0 || r == ((0x7FFFFFFF << 32) | 0xFFFFFFFF)) {
       warning = true;
       return null;
     }
@@ -1069,10 +1069,10 @@ class TarReader {
           if (c == 0x0A) break;
           if (comment) continue;
           if (c < 0x30 || c > 0x39) return -1;
-          if (l < 0x7FFFFFFFFFFFFFFF ~/ 10) {
+          if (l < ((0x7FFFFFFF << 32) | 0xFFFFFFFF) ~/ 10) {
             l = l * 10 + (c - 0x30);
           } else {
-            l = 0x7FFFFFFFFFFFFFFF;
+            l = ((0x7FFFFFFF << 32) | 0xFFFFFFFF);
           }
         }
         if (!comment) return l;

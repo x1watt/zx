@@ -284,7 +284,7 @@ int xzBlockParse(XzBlock p, Uint8List header) {
     if (s == 0) return szErrorArchive;
     pos += s;
     p.packSize = v;
-    if (p.packSize == 0 || p.packSize > 0x7FFFFFFFFFFFFFFF - headerSize) {
+    if (p.packSize == 0 || p.packSize > ((0x7FFFFFFF << 32) | 0xFFFFFFFF) - headerSize) {
       return szErrorArchive;
     }
   }

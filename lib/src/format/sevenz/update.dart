@@ -1043,7 +1043,7 @@ class _LocalProgress {
       cb.setCompleted(progressOffset + inSize + inS);
 }
 
-const int _kMaxU64 = 0x7FFFFFFFFFFFFFFF;
+const int _kMaxU64 = ((0x7FFFFFFF << 32) | 0xFFFFFFFF);
 
 /// Update (7zUpdate.cpp): writes a new archive to [seqOutStream] from the
 /// old archive ([inStream], [db], may be null) and [updateItems].

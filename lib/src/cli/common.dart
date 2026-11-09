@@ -309,7 +309,7 @@ String hexUpper(int v) {
   var n = 0;
   while ((x != 0) && n < 16) {
     sb.add(_hexDigitUpper(x & 0xF));
-    x = (x >> 4) & 0x0FFFFFFFFFFFFFFF;
+    x = (x >> 4) & ((0x0FFFFFFF << 32) | 0xFFFFFFFF);
     n++;
   }
   return sb.reversed.join();

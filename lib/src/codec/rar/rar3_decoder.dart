@@ -281,7 +281,7 @@ final class Rar3Decoder {
   int _lastFilterNum = 0;
   Uint8List? _vm;
 
-  static const int _noFilter = 0x7FFFFFFFFFFFFFFF;
+  static const int _noFilter = ((0x7FFFFFFF << 32) | 0xFFFFFFFF);
 
   // bit reader (rar_br)
   InStream? _src;

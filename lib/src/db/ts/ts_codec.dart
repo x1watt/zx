@@ -510,7 +510,7 @@ Int32List tsStringOffsets(Uint8List b, int n) {
 /// FNV-1a 64 of the bytes of a tag value (its text; numbers in decimal).
 int tsHashValue(Object? v) {
   final s = v is String ? v : '$v';
-  var h = 0xcbf29ce484222325;
+  var h = ((0xCBF29CE4 << 32) | 0x84222325);
   for (var i = 0; i < s.length; i++) {
     h ^= s.codeUnitAt(i);
     h *= 0x100000001b3;

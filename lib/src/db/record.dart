@@ -40,7 +40,7 @@ class RecordWriter {
     // Unsigned 64-bit LEB128.
     while (true) {
       final low = x & 0x7F;
-      x = (x >> 7) & 0x01FFFFFFFFFFFFFF;
+      x = (x >> 7) & ((0x01FFFFFF << 32) | 0xFFFFFFFF);
       if (x == 0) {
         _b[_n++] = low;
         return;
@@ -121,7 +121,7 @@ List<Object?> decodeRecord(Uint8List b, [List<Object?>? out]) {
           if (c < 0x80) break;
           s += 7;
         }
-        out.add(((x >> 1) & 0x7FFFFFFFFFFFFFFF) ^ -(x & 1));
+        out.add(((x >> 1) & ((0x7FFFFFFF << 32) | 0xFFFFFFFF)) ^ -(x & 1));
       case 2:
         out.add(ByteData.sublistView(b, p, p + 8).getFloat64(0));
         p += 8;

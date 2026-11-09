@@ -172,6 +172,10 @@ class ZxSql {
 
   bool get inTransaction => _txn != null;
 
+  /// The write transaction of an open BEGIN, for code that writes trees in
+  /// the same commit as the SQL (a text index); null outside one.
+  ZxWriteTxn? get writeTxn => _txn;
+
   /// How long a write waits for the writer lock of another writer (another
   /// isolate or process) before it fails with [ZxDbError.busy].
   int lockWaitMs = 5000;

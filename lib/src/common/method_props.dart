@@ -127,8 +127,8 @@ _Num _convertStringToUInt64(String s, int start) {
     final v = c - 0x30;
     // overflow check for unsigned 64 bits: res * 10 + v > 2^64 - 1
     if (res < 0 ||
-        res > 0x1999999999999999 ||
-        (res == 0x1999999999999999 && v > 5)) {
+        res > ((0x19999999 << 32) | 0x99999999) ||
+        (res == ((0x19999999 << 32) | 0x99999999) && v > 5)) {
       return _Num(0, start);
     }
     res = res * 10 + v;
@@ -168,7 +168,7 @@ _Num _convertStringToUInt32(String s, int start) {
 // Calc_From_Val_Percents_Less100
 int calcFromValPercentsLess100(int val, int percents) {
   if (percents == 0) return 0;
-  if (val <= 0x7FFFFFFFFFFFFFFF ~/ percents) return val * percents ~/ 100;
+  if (val <= ((0x7FFFFFFF << 32) | 0xFFFFFFFF) ~/ percents) return val * percents ~/ 100;
   return val ~/ 100 * percents;
 }
 
@@ -178,18 +178,18 @@ int calcFromValPercents(int val, int percents) {
   final r = percents % 100;
   var res = 0;
   if (q != 0) {
-    if (val > 0x7FFFFFFFFFFFFFFF ~/ q) return 0x7FFFFFFFFFFFFFFF;
+    if (val > ((0x7FFFFFFF << 32) | 0xFFFFFFFF) ~/ q) return ((0x7FFFFFFF << 32) | 0xFFFFFFFF);
     res = val * q;
   }
   if (r != 0) {
     int v2;
-    if (val <= 0x7FFFFFFFFFFFFFFF ~/ r) {
+    if (val <= ((0x7FFFFFFF << 32) | 0xFFFFFFFF) ~/ r) {
       v2 = val * r ~/ 100;
     } else {
       v2 = val ~/ 100 * r;
     }
     res += v2;
-    if (res < v2) return 0x7FFFFFFFFFFFFFFF;
+    if (res < v2) return ((0x7FFFFFFF << 32) | 0xFFFFFFFF);
   }
   return res;
 }

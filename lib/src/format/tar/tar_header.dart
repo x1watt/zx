@@ -95,7 +95,7 @@ bool tarBlockIsNull(Uint8List p, [int off = 0]) {
   return true;
 }
 
-const int _int64Max = 0x7FFFFFFFFFFFFFFF;
+const int _int64Max = ((0x7FFFFFFF << 32) | 0xFFFFFFFF);
 const int _int64Min = -0x8000000000000000;
 
 // tar_atol_base_n

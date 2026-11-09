@@ -13,7 +13,15 @@
 library;
 
 export 'src/db/zx_sql_db.dart'
-    show ZxSqlDb, ZxRow, ZxRows, ZxSqlDbStatement, ZxSqlDbStats, zxUtf8;
+    show
+        ZxSqlDb,
+        ZxRow,
+        ZxRows,
+        ZxSqlDbStatement,
+        ZxSqlDbStats,
+        ZxSqlDbTextIndex,
+        zxUtf8;
+export 'src/db/text_index.dart' show ZxTextIndex, ZxTextHit;
 export 'src/db/zxdb.dart' show ZxDatabase;
 export 'src/db/engine/store.dart' show ZxDbStoreOptions;
 export 'src/db/kv.dart'

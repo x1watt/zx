@@ -245,7 +245,7 @@ final class RarHeaderError implements Exception {
 void writeVint(BytesBuilder out, int v) {
   while (true) {
     final c = v & 0x7F;
-    v = (v >> 7) & 0x01FFFFFFFFFFFFFF;
+    v = (v >> 7) & ((0x01FFFFFF << 32) | 0xFFFFFFFF);
     if (v == 0) {
       out.addByte(c);
       return;
@@ -257,7 +257,7 @@ void writeVint(BytesBuilder out, int v) {
 /// The number of bytes of the vint of [v].
 int vintSize(int v) {
   var n = 1;
-  v = (v >> 7) & 0x01FFFFFFFFFFFFFF;
+  v = (v >> 7) & ((0x01FFFFFF << 32) | 0xFFFFFFFF);
   while (v != 0) {
     n++;
     v >>= 7;

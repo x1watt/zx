@@ -14,11 +14,11 @@ const int _p32c = 0xC2B2AE3D;
 const int _p32d = 0x27D4EB2F;
 const int _p32e = 0x165667B1;
 
-const int _p64a = 0x9E3779B185EBCA87;
-const int _p64b = 0xC2B2AE3D27D4EB4F;
-const int _p64c = 0x165667B19E3779F9;
-const int _p64d = 0x85EBCA77C2B2AE63;
-const int _p64e = 0x27D4EB2F165667C5;
+const int _p64a = ((0x9E3779B1 << 32) | 0x85EBCA87);
+const int _p64b = ((0xC2B2AE3D << 32) | 0x27D4EB4F);
+const int _p64c = ((0x165667B1 << 32) | 0x9E3779F9);
+const int _p64d = ((0x85EBCA77 << 32) | 0xC2B2AE63);
+const int _p64e = ((0x27D4EB2F << 32) | 0x165667C5);
 
 const int _m32 = 0xFFFFFFFF;
 

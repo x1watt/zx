@@ -205,7 +205,7 @@ class TableWriter {
       final s = Catalog.readInt(ctx.txn!, 'seq:${td.name.toLowerCase()}');
       if (s > m) m = s;
     }
-    if (m == 0x7FFFFFFFFFFFFFFF) {
+    if (m == ((0x7FFFFFFF << 32) | 0xFFFFFFFF)) {
       if (td.autoincrement) throw const ZxDbException('database or disk is full');
       // Pick an unused rowid.
       for (var r = 1;; r++) {

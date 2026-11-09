@@ -19,6 +19,7 @@ import 'kv_sql.dart';
 import 'memory_store.dart';
 import 'sql/zx_sql.dart';
 import 'system/archive_view.dart';
+import 'text_index.dart';
 import 'system/sql_adapter.dart';
 import 'ts/ts_sql.dart';
 import 'zxdb.dart';
@@ -104,6 +105,57 @@ class ZxSqlDbStatement {
 
   /// Nothing to free (kept for code written against SQLite bindings).
   void dispose() {}
+}
+
+/// A full-text index bound to a [ZxSqlDb] ([ZxSqlDb.textIndex]).
+class ZxSqlDbTextIndex {
+  ZxSqlDbTextIndex._(this._db, this.index);
+  final ZxSqlDb _db;
+  final ZxTextIndex index;
+
+  void _write(void Function(ZxWriteTxn t) f) {
+    final open = _db.sql.writeTxn;
+    if (open != null) {
+      f(open);
+      return;
+    }
+    final t = _db.sql.store.begin(waitMs: _db.sql.lockWaitMs);
+    try {
+      f(t);
+      t.commit();
+    } catch (_) {
+      t.rollback();
+      rethrow;
+    }
+  }
+
+  T _read<T>(T Function(ZxSnapshot s) f) {
+    final open = _db.sql.writeTxn;
+    if (open != null) return f(open);
+    final s = _db.sql.store.snapshot();
+    try {
+      return f(s);
+    } finally {
+      s.close();
+    }
+  }
+
+  /// Puts (or replaces) document [key] with [fields].
+  void put(String key, Map<String, String?> fields) =>
+      _write((t) => index.put(t, key, fields));
+
+  /// Removes document [key].
+  void remove(String key) => _write((t) => index.remove(t, key));
+
+  /// The best [limit] documents for [query], best first.
+  List<ZxTextHit> search(String query, {int limit = 50}) =>
+      _read((s) => index.search(s, query, limit: limit));
+
+  /// Documents in the index.
+  int get length => _read(index.length);
+
+  /// Whether document [key] is indexed.
+  bool contains(String key) => _read((s) => index.contains(s, key));
 }
 
 /// Sizes of a [ZxSqlDb] file.
@@ -274,6 +326,15 @@ class ZxSqlDb {
     _check();
     if (db.kvStores.contains(name)) return db.kv(name);
     return db.createKvStore(name, ttl: ttl);
+  }
+
+  /// Full-text index [name] over documents with [fields] (name to weight),
+  /// ranked by BM25 (lib/src/db/text_index.dart). Its writes join an open
+  /// [transaction], so a row and its index entry commit together; outside
+  /// one each write commits on its own.
+  ZxSqlDbTextIndex textIndex(String name, Map<String, double> fields) {
+    _check();
+    return ZxSqlDbTextIndex._(this, ZxTextIndex(name, fields));
   }
 
   /// Time series [name] (create it with CREATE TIMESERIES).
