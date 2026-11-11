@@ -312,7 +312,9 @@ class ZxSql {
 
   ExecCtx _ctx(ZxSnapshot snap, ZxWriteTxn? txn, List<Object?> params) =>
       ExecCtx(_env, snap, txn, _catalogFor(snap), params, _now(),
-          lastRowid: _lastRowid, totalChangesBase: _totalChanges);
+          lastRowid: _lastRowid,
+          totalChangesBase: _totalChanges,
+          changesBase: _changes);
 
   static bool _isRead(Stmt st) =>
       st is SelectStmt ||
@@ -353,7 +355,11 @@ class ZxSql {
     try {
       final r = _writeStmt(st, ctx);
       if (!explicit) txn.commit();
-      _changes = ctx.nChanges;
+      // Only INSERT, UPDATE and DELETE set changes() (SQLite): a CREATE
+      // TABLE between an INSERT and `SELECT changes()` leaves it alone.
+      if (st is InsertStmt || st is UpdateStmt || st is DeleteStmt) {
+        _changes = ctx.nChanges;
+      }
       _totalChanges += ctx.nChanges;
       _lastRowid = ctx.lastRowid;
       return ZxSqlResult(r.columns, r.rows, ctx.nChanges, ctx.lastRowid);

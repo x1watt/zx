@@ -312,6 +312,26 @@ final List<String> _queries = [
 
 // Scripts with writes: each ends with the query that is compared.
 final List<_Case> _scripts = [
+  // Connection state between statements: changes() is the row count of the
+  // most recently COMPLETED INSERT, UPDATE or DELETE, total_changes() every
+  // row since the connection opened, last_insert_rowid() the newest rowid.
+  // The query runs as a statement of its own after the setup, which is how
+  // an application asks ("SELECT changes()" after its INSERT OR IGNORE).
+  _Case('''CREATE TABLE t (id TEXT PRIMARY KEY, n INT);
+INSERT OR IGNORE INTO t VALUES ('a', 1);''', 'SELECT changes(), total_changes(), last_insert_rowid()'),
+  _Case('''CREATE TABLE t (id TEXT PRIMARY KEY, n INT);
+INSERT INTO t VALUES ('a', 1);
+INSERT OR IGNORE INTO t VALUES ('a', 2);''', 'SELECT changes(), total_changes()'),
+  _Case('''CREATE TABLE t (id INTEGER PRIMARY KEY, n INT);
+INSERT INTO t (n) VALUES (1), (1), (2);
+UPDATE t SET n = 5 WHERE n = 1;''', 'SELECT changes(), total_changes(), last_insert_rowid()'),
+  _Case('''CREATE TABLE t (id INTEGER PRIMARY KEY, n INT);
+INSERT INTO t (n) VALUES (1), (2), (3);
+DELETE FROM t WHERE n > 1;
+CREATE TABLE u (x INT);''', 'SELECT changes(), total_changes()'),
+  _Case('''CREATE TABLE t (id INTEGER PRIMARY KEY, n INT);
+INSERT INTO t (n) VALUES (1), (2);
+INSERT INTO t (n) VALUES (changes());''', 'SELECT n FROM t ORDER BY id'),
   // INSERT ... SELECT streams unless the source reads the target, and
   // UPDATE / DELETE keep only rowids when they can: the results must not
   // change (a statement never sees its own writes).

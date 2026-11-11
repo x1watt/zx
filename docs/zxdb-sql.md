@@ -539,8 +539,9 @@ DROP ROLLUP [IF EXISTS] hourly;
 ### Functions
 
 Scalar: `abs`, `char`, `coalesce`, `concat`, `concat_ws`, `format`,
-`glob`, `hex`, `ifnull`, `iif`, `instr`, `last_insert_rowid`, `changes`,
-`total_changes`, `length`, `octet_length`, `like`, `likely`,
+`glob`, `hex`, `ifnull`, `iif`, `instr`, `last_insert_rowid`, `changes` (the rows the most recently
+completed INSERT, UPDATE or DELETE changed, kept across statements as in
+SQLite), `total_changes`, `length`, `octet_length`, `like`, `likely`,
 `unlikely`, `likelihood`, `lower`, `upper` (ASCII only, as SQLite
 without ICU), `ltrim`, `rtrim`, `trim`, `max`, `min` (several
 arguments), `nullif`, `printf`, `quote`, `random`, `randomblob`,

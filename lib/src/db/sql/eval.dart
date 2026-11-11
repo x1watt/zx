@@ -212,8 +212,14 @@ class ExecCtx implements ZxFunctionContext {
   int lastRowid;
   int totalChangesBase;
 
+  /// What changes() reports: the rows the most recently COMPLETED INSERT,
+  /// UPDATE or DELETE on this connection modified, as in SQLite. Not this
+  /// statement's own count: `SELECT changes()` after an INSERT is the
+  /// common use, and it must see the INSERT, not itself.
+  int changesBase;
+
   ExecCtx(this.env, this.snap, this.txn, this.catalog, this.params, this.nowNs,
-      {this.lastRowid = 0, this.totalChangesBase = 0});
+      {this.lastRowid = 0, this.totalChangesBase = 0, this.changesBase = 0});
 
   @override
   ZxSnapshot get snapshot => snap;
@@ -223,7 +229,7 @@ class ExecCtx implements ZxFunctionContext {
   @override
   int get lastInsertRowid => lastRowid;
   @override
-  int get changes => nChanges;
+  int get changes => changesBase;
   @override
   int get totalChanges => totalChangesBase + nChanges;
 
